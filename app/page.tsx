@@ -171,9 +171,9 @@ export default function SetupPage() {
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Header */}
         <div className="text-center space-y-2">
-          <h1 className="text-4xl font-bold tracking-tight">Starfinder 2e Campaign Manager</h1>
+          <h1 className="text-4xl font-bold tracking-tight">TTRPG Session Manager</h1>
           <p className="text-muted-foreground">
-            Configure your campaign sessions with plans, images, audio, and more
+            Configure your tabletop RPG sessions with plans, images, audio, and more
           </p>
         </div>
 

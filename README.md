@@ -1,6 +1,6 @@
-# Starfinder 2e Session Manager
+# TTRPG Session Manager
 
-A modern web application for managing Starfinder 2e campaign sessions. Built with Next.js, it allows GMs to organize their campaign materials including plans, images, audio, NPCs, monsters, and more.
+A modern web application for managing tabletop RPG campaign sessions. Built with Next.js, it allows GMs to organize their campaign materials including plans, images, audio, NPCs, monsters, and more.
 
 ## Features
 
@@ -119,4 +119,4 @@ This is a personal project, but suggestions and improvements are welcome!
 
 ## Acknowledgments
 
-Built for running amazing Starfinder 2e sessions! (Or any other TTRPG game!)
+Built for running amazing tabletop RPG sessions!

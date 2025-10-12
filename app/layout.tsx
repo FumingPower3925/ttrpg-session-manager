@@ -13,8 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Starfinder 2e Campaign Manager",
-  description: "A campaign management tool for Starfinder 2e sessions",
+  title: "TTRPG Session Manager",
+  description: "A campaign management tool for tabletop RPG sessions",
+  icons: {
+    icon: '/favicon.ico',
+  },
 };
 
 export default function RootLayout({
