@@ -202,11 +202,18 @@ export default function PlayPage() {
 
     // Load audio
     if (audioManager) {
+      // Check if we're already playing the same BGM tracks
+      const isSameBGM = audioManager.getCurrentMode() === 'bgm' && 
+        audioManager.getBGMPlaylist().length === part.bgmPlaylist.length &&
+        audioManager.getBGMPlaylist().every((track, index) => 
+          track.path === part.bgmPlaylist[index]?.path
+        );
+
       audioManager.loadBGM(part.bgmPlaylist);
       audioManager.loadEventPlaylists(part.eventPlaylists);
       
-      // Start playing BGM if there are tracks
-      if (part.bgmPlaylist.length > 0) {
+      // Only start playing BGM if there are tracks and we're not already playing the same BGM
+      if (part.bgmPlaylist.length > 0 && !isSameBGM) {
         audioManager.playBGM();
       }
     }
