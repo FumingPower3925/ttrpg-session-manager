@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { SessionConfig, Part, FileReference } from '@/types';
 import { FileSystemManager } from '@/lib/fileSystem';
@@ -28,6 +28,7 @@ export default function PlayPage() {
   const [searchManager] = useState(() => new SearchManager());
   const [currentPartId, setCurrentPartId] = useState<string | null>(null);
   const [currentTab, setCurrentTab] = useState<string>('plan');
+  const [previousTab, setPreviousTab] = useState<string>('plan');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [contentCache, setContentCache] = useState<Map<string, string>>(new Map());
@@ -37,6 +38,7 @@ export default function PlayPage() {
   const [currentPlanContent, setCurrentPlanContent] = useState<string | null>(null);
   const [isHeaderCompact, setIsHeaderCompact] = useState(false);
   const [lastScrollY, setLastScrollY] = useState(0);
+  const [scrollPositions, setScrollPositions] = useState<Map<string, number>>(new Map());
 
   const currentPart = config?.parts.find(p => p.id === currentPartId);
 
@@ -230,14 +232,44 @@ export default function PlayPage() {
   const handlePartChange = useCallback(async (partId: string) => {
     setCurrentPartId(partId);
     setCurrentTab('plan');
+    setPreviousTab('plan');
     setSplitViewEnabled(false);
     setIsHeaderCompact(false); // Reset header when changing parts
     setLastScrollY(0);
   }, []);
 
-  // Handle scroll for header compacting
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+  // Handle tab change with previous tab tracking
+  const handleTabChange = useCallback((newTab: string) => {
+    // If switching to an image tab, save the current tab as previous
+    if (newTab.startsWith('image-')) {
+      setPreviousTab(currentTab);
+    }
+    setCurrentTab(newTab);
+  }, [currentTab]);
+
+  // Handle image close - restore previous tab
+  const handleImageClose = useCallback(() => {
+    setCurrentTab(previousTab);
+  }, [previousTab]);
+
+  // Save scroll position for a file
+  const saveScrollPosition = useCallback((filePath: string, scrollTop: number) => {
+    setScrollPositions(prev => new Map(prev).set(filePath, scrollTop));
+  }, []);
+
+  // Get scroll position for a file
+  const getScrollPosition = useCallback((filePath: string): number => {
+    return scrollPositions.get(filePath) || 0;
+  }, [scrollPositions]);
+
+  // Handle scroll for header compacting and position saving
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>, filePath?: string) => {
     const currentScrollY = e.currentTarget.scrollTop;
+    
+    // Save scroll position for the current file
+    if (filePath) {
+      saveScrollPosition(filePath, currentScrollY);
+    }
     
     // Compact header when scrolling down past 50px
     if (currentScrollY > 50 && currentScrollY > lastScrollY) {
@@ -249,7 +281,7 @@ export default function PlayPage() {
     }
     
     setLastScrollY(currentScrollY);
-  }, [lastScrollY]);
+  }, [lastScrollY, saveScrollPosition]);
 
   // Handle search result click
   const handleSearchResultClick = (filePath: string) => {
@@ -258,6 +290,7 @@ export default function PlayPage() {
       if (part.planFile?.path === filePath) {
         setCurrentPartId(part.id);
         setCurrentTab('plan');
+        setPreviousTab('plan');
         return;
       }
 
@@ -265,6 +298,7 @@ export default function PlayPage() {
       if (docIndex !== -1) {
         setCurrentPartId(part.id);
         setCurrentTab(`doc-${docIndex}`);
+        setPreviousTab(`doc-${docIndex}`);
         return;
       }
     }
@@ -436,7 +470,7 @@ export default function PlayPage() {
         )}
 
         {/* Tabs */}
-        <Tabs value={currentTab} onValueChange={setCurrentTab} className="flex-1 flex flex-col overflow-hidden">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col overflow-hidden">
           <div className="px-6 border-b">
             <TabsList className="h-12">
               <TabsTrigger value="plan">Plan</TabsTrigger>
@@ -461,7 +495,8 @@ export default function PlayPage() {
                   file={currentPart.planFile}
                   loadContent={loadContent}
                   splitViewEnabled={false}
-                  onScroll={handleScroll}
+                  onScroll={(e) => handleScroll(e, currentPart.planFile!.path)}
+                  getScrollPosition={getScrollPosition}
                 />
               ) : (
                 <div className="flex items-center justify-center h-full">
@@ -480,7 +515,7 @@ export default function PlayPage() {
                 <PlayImageContent
                   file={img}
                   loadImageUrl={loadImageUrl}
-                  onClose={() => setCurrentTab('plan')}
+                  onClose={handleImageClose}
                 />
               </TabsContent>
             ))}
@@ -497,14 +532,16 @@ export default function PlayPage() {
                     leftFile={splitViewDoc}
                     rightFile={doc}
                     loadContent={loadContent}
-                    onScroll={handleScroll}
+                    onScroll={(e) => handleScroll(e, doc.path)}
+                    getScrollPosition={getScrollPosition}
                   />
                 ) : (
                   <PlayContent
                     file={doc}
                     loadContent={loadContent}
                     splitViewEnabled={false}
-                    onScroll={handleScroll}
+                    onScroll={(e) => handleScroll(e, doc.path)}
+                    getScrollPosition={getScrollPosition}
                   />
                 )}
               </TabsContent>
@@ -522,14 +559,17 @@ function PlayContent({
   loadContent,
   splitViewEnabled,
   onScroll,
+  getScrollPosition,
 }: {
   file: FileReference;
   loadContent: (file: FileReference) => Promise<string>;
   splitViewEnabled: boolean;
   onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
+  getScrollPosition?: (filePath: string) => number;
 }) {
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
@@ -541,6 +581,16 @@ function PlayContent({
     load();
   }, [file, loadContent]);
 
+  // Restore scroll position when content loads
+  useEffect(() => {
+    if (!isLoading && getScrollPosition && scrollRef.current) {
+      const savedScrollPosition = getScrollPosition(file.path);
+      if (savedScrollPosition > 0) {
+        scrollRef.current.scrollTop = savedScrollPosition;
+      }
+    }
+  }, [isLoading, getScrollPosition, file.path]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -550,7 +600,7 @@ function PlayContent({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto" onScroll={onScroll}>
+    <div ref={scrollRef} className="flex-1 overflow-y-auto" onScroll={onScroll}>
       <div className="p-6 max-w-4xl mx-auto">
         <MarkdownViewer content={content} />
       </div>
@@ -598,11 +648,13 @@ function PlaySplitContent({
   rightFile,
   loadContent,
   onScroll,
+  getScrollPosition,
 }: {
   leftFile: FileReference;
   rightFile: FileReference;
   loadContent: (file: FileReference) => Promise<string>;
   onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
+  getScrollPosition?: (filePath: string) => number;
 }) {
   const [leftContent, setLeftContent] = useState<string>('');
   const [rightContent, setRightContent] = useState<string>('');
