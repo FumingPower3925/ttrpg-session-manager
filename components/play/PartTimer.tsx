@@ -29,8 +29,22 @@ export function PartTimer({ partName, planContent }: PartTimerProps) {
     // Look for patterns like:
     // "## Duración: 15 minutos"
     // "## Duración: 60-75 minutos"
-    const durationRegex = /##\s*Duración:\s*(\d+)(?:-(\d+))?\s*minutos?/i;
-    const match = planContent.match(durationRegex);
+    // "15-20 minutos"
+    // "Interaccion con Jora 5 minutos"
+    // "Combate 5-10 minutos"
+    // "Epilogo 5 minutos"
+    
+    // First try to find a duration with the ## Duración: header
+    const headerDurationRegex = /##\s*Duración:\s*(\d+)(?:-(\d+))?\s*minutos?/i;
+    let match = planContent.match(headerDurationRegex);
+    
+    // If no header duration found, look for any duration pattern in the content
+    if (!match) {
+      // This regex finds durations like "15-20 minutos", "5 minutos", "5-10 minutos"
+      // It looks for number(s) followed by "minutos" anywhere in the text
+      const generalDurationRegex = /(\d+)(?:-(\d+))?\s*minutos?/i;
+      match = planContent.match(generalDurationRegex);
+    }
 
     if (match) {
       const min = parseInt(match[1], 10);
