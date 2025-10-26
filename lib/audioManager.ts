@@ -263,6 +263,13 @@ export class AudioManager {
   }
 
   /**
+   * Gets the current BGM playlist
+   */
+  getBGMPlaylist(): AudioFile[] {
+    return [...this.bgmTracks];
+  }
+
+  /**
    * Skips to the next track
    */
   async skipNext() {
