@@ -166,7 +166,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+      <DialogContent className="max-w-2xl max-h-[80vh] grid grid-rows-[auto_auto_1fr_auto] overflow-hidden gap-4">
         <DialogHeader>
           <DialogTitle>Select Files</DialogTitle>
         </DialogHeader>
@@ -193,7 +193,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
         </div>
 
         {/* File list */}
-        <ScrollArea className="flex-1 border rounded min-h-0">
+        <ScrollArea className="w-full border rounded min-h-0">
           {loading ? (
             <div className="p-4 text-center text-muted-foreground">Loading...</div>
           ) : items.length === 0 ? (
