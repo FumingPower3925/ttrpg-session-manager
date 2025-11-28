@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Play, Pause, SkipForward, SkipBack, Music2 } from 'lucide-react';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface AudioControlsProps {
   audioManager: AudioManager | null;
@@ -45,7 +46,7 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
 
   const handlePlayPause = () => {
     if (!audioManager) return;
-    
+
     if (isPlaying) {
       audioManager.pause();
     } else {
@@ -102,79 +103,83 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
         }}
         onMouseLeave={() => setIsExpanded(false)}
       >
-        <Card className="w-80 shadow-lg">
-        <CardContent className="pt-6 space-y-4">
-        {/* Current Track Info */}
-        <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">Now Playing</span>
-            <Badge variant={currentMode === 'bgm' ? 'secondary' : 'default'} className="text-xs">
-              {currentMode === 'bgm' ? 'BGM' : currentEventPlaylist?.name || 'Event'}
-            </Badge>
-          </div>
-          <p className="font-medium truncate text-sm" title={currentTrack}>
-            {currentTrack}
-          </p>
-        </div>
+        <Card className="w-80 shadow-lg max-h-[calc(100vh-2rem)] flex flex-col">
+          <CardContent className="pt-6 space-y-4 flex flex-col min-h-0">
+            {/* Current Track Info */}
+            <div className="space-y-1 flex-shrink-0">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">Now Playing</span>
+                <Badge variant={currentMode === 'bgm' ? 'secondary' : 'default'} className="text-xs">
+                  {currentMode === 'bgm' ? 'BGM' : currentEventPlaylist?.name || 'Event'}
+                </Badge>
+              </div>
+              <p className="font-medium truncate text-sm" title={currentTrack}>
+                {currentTrack}
+              </p>
+            </div>
 
-        {/* Playback Controls */}
-        <div className="flex items-center justify-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleSkipPrevious}
-          >
-            <SkipBack className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="default"
-            size="icon"
-            onClick={handlePlayPause}
-          >
-            {isPlaying ? (
-              <Pause className="h-4 w-4" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleSkipNext}
-          >
-            <SkipForward className="h-4 w-4" />
-          </Button>
-        </div>
+            {/* Playback Controls */}
+            <div className="flex items-center justify-center gap-2 flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleSkipPrevious}
+              >
+                <SkipBack className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="default"
+                size="icon"
+                onClick={handlePlayPause}
+              >
+                {isPlaying ? (
+                  <Pause className="h-4 w-4" />
+                ) : (
+                  <Play className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleSkipNext}
+              >
+                <SkipForward className="h-4 w-4" />
+              </Button>
+            </div>
 
-        {/* Playlist Selection */}
-        <div className="space-y-2">
-          <span className="text-sm font-medium">Select Playlist</span>
-          
-          {/* BGM Button */}
-          <Button
-            variant={currentMode === 'bgm' ? 'default' : 'outline'}
-            size="sm"
-            className="w-full justify-start"
-            onClick={handleSelectBGM}
-          >
-            Background Music
-          </Button>
+            {/* Playlist Selection */}
+            <div className="space-y-2 flex-1 min-h-0 flex flex-col">
+              <span className="text-sm font-medium flex-shrink-0">Select Playlist</span>
 
-          {/* Event Playlists */}
-          {eventPlaylists.map((playlist) => (
-            <Button
-              key={playlist.id}
-              variant={currentMode === 'event' && currentEventPlaylist?.id === playlist.id ? 'default' : 'outline'}
-              size="sm"
-              className="w-full justify-start"
-              onClick={() => handleSelectEvent(playlist.id)}
-            >
-              {playlist.name}
-            </Button>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+              <ScrollArea className="flex-1 h-full pr-4">
+                <div className="space-y-2 pb-2">
+                  {/* BGM Button */}
+                  <Button
+                    variant={currentMode === 'bgm' ? 'default' : 'outline'}
+                    size="sm"
+                    className="w-full justify-start"
+                    onClick={handleSelectBGM}
+                  >
+                    Background Music
+                  </Button>
+
+                  {/* Event Playlists */}
+                  {eventPlaylists.map((playlist) => (
+                    <Button
+                      key={playlist.id}
+                      variant={currentMode === 'event' && currentEventPlaylist?.id === playlist.id ? 'default' : 'outline'}
+                      size="sm"
+                      className="w-full justify-start"
+                      onClick={() => handleSelectEvent(playlist.id)}
+                    >
+                      {playlist.name}
+                    </Button>
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </>
   );
