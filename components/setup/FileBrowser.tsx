@@ -27,7 +27,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
       console.log('Getting directory handle for path:', currentPath);
       const dirHandle = await getCurrentDirectoryHandle();
       console.log('Got directory handle:', dirHandle.name);
-      
+
       const entries: Array<{ name: string; type: 'file' | 'directory'; handle: FileSystemHandle }> = [];
 
       for await (const [name, handle] of dirHandle.entries()) {
@@ -35,7 +35,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
         if (handle.kind === 'file') {
           const fileHandle = handle as FileSystemFileHandle;
           const file = await fileHandle.getFile();
-          
+
           if (shouldIncludeFile(file.name)) {
             entries.push({ name, type: 'file', handle });
           }
@@ -69,7 +69,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
     }
 
     console.log('Starting at root, will navigate through:', currentPath);
-    
+
     for (const segment of currentPath) {
       console.log('Getting subdirectory:', segment);
       try {
@@ -86,7 +86,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
 
   const shouldIncludeFile = (filename: string): boolean => {
     const ext = filename.toLowerCase().split('.').pop();
-    
+
     if (accept === 'markdown') {
       return ext === 'md' || ext === 'markdown';
     } else if (accept === 'image') {
@@ -94,7 +94,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
     } else if (accept === 'audio') {
       return ['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext || '');
     }
-    
+
     return false;
   };
 
@@ -134,7 +134,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
 
   const handleConfirm = async () => {
     const selected: Array<{ name: string; path: string; handle: FileSystemFileHandle }> = [];
-    
+
     for (const fileName of selectedFiles) {
       const item = items.find(i => i.name === fileName && i.type === 'file');
       if (item) {
@@ -154,7 +154,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
     if (type === 'directory') {
       return <Folder className="h-4 w-4 text-blue-500" />;
     }
-    
+
     if (accept === 'markdown') {
       return <FileText className="h-4 w-4 text-green-500" />;
     } else if (accept === 'image') {
@@ -166,11 +166,11 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Select Files</DialogTitle>
         </DialogHeader>
-        
+
         {/* Breadcrumb */}
         <div className="flex items-center gap-1 text-sm text-muted-foreground border-b pb-2">
           <button
@@ -193,7 +193,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
         </div>
 
         {/* File list */}
-        <ScrollArea className="flex-1 border rounded">
+        <ScrollArea className="flex-1 border rounded min-h-0">
           {loading ? (
             <div className="p-4 text-center text-muted-foreground">Loading...</div>
           ) : items.length === 0 ? (
@@ -213,9 +213,8 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
                 <button
                   key={item.name}
                   onClick={() => item.type === 'directory' ? handleDirectoryClick(item.name) : handleFileClick(item.name)}
-                  className={`w-full flex items-center gap-2 p-2 hover:bg-accent rounded ${
-                    selectedFiles.has(item.name) ? 'bg-accent' : ''
-                  }`}
+                  className={`w-full flex items-center gap-2 p-2 hover:bg-accent rounded ${selectedFiles.has(item.name) ? 'bg-accent' : ''
+                    }`}
                 >
                   {getIcon(item.type, item.name)}
                   <span className="flex-1 text-left truncate">{item.name}</span>
