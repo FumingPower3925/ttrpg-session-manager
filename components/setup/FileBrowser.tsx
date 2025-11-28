@@ -193,7 +193,7 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
         </div>
 
         {/* File list */}
-        <ScrollArea className="flex-1 border rounded min-h-0 h-full overflow-hidden">
+        <ScrollArea className="flex-1 border rounded min-h-0">
           {loading ? (
             <div className="p-4 text-center text-muted-foreground">Loading...</div>
           ) : items.length === 0 ? (
