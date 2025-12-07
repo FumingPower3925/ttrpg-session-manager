@@ -59,37 +59,90 @@ bun dev
 4. **Search**: Press Cmd/Ctrl+K or click Search to find content
 5. **Split View**: When viewing support docs, click "Split with Plan" to view two documents at once
 
-### Folder Structure Example
+### Folder Structure
 
-Your campaign folder is recommended to be organized like this (albeit it is not necesary):
+#### Auto-Detection Structure (Recommended)
+
+For the best experience with the **Auto-Detect** feature, organize your session folder like this:
+
+```
+session-folder/
+├── characters/
+│   ├── PCs/                    ← Optional: Player Characters
+│   │   ├── Aragorn.md
+│   │   └── Legolas.md
+│   ├── act1/
+│   │   ├── npc_captain.md
+│   │   └── npc_merchant.md
+│   └── act2/
+│       └── npc_villain.md
+├── images/
+│   ├── act1/
+│   │   ├── tavern.png
+│   │   └── map_overview.jpg
+│   └── act2/
+│       └── dungeon_entrance.webp
+├── maps/
+│   ├── act1/
+│   │   └── town_map.md
+│   └── act2/
+│       └── dungeon_map.md
+├── music/
+│   ├── act1/
+│   │   ├── ambient_town.mp3      ← BGM tracks (loose files)
+│   │   ├── combat_theme.wav
+│   │   └── Combat/               ← Event playlist (subfolder)
+│   │       ├── battle_1.mp3
+│   │       └── battle_2.mp3
+│   └── act2/
+│       └── dungeon_ambience.ogg
+├── plan/
+│   ├── act1/
+│   │   └── main_plan.md
+│   └── act2/
+│       └── main_plan.md
+└── threats/
+    ├── act1/
+    │   └── goblin_raiders.md
+    └── act2/
+        └── dragon_boss.md
+```
+
+**How Auto-Detect Works:**
+- Each `act[N]/` folder becomes a separate Part in your session
+- The first plan file (alphabetically) becomes the main plan for that part
+- Characters, threats, maps, and additional plan files become support documents
+- Images are assigned to their respective parts
+- **BGM Music**: Files directly in `music/act[N]/` become background music tracks
+- **Event Playlists**: Subfolders in `music/act[N]/PlaylistName/` become event playlists (folder name = playlist name)
+- **Player Characters**: Files in `characters/PCs/` are used to populate the PC list for initiative tracking (filename = PC name)
+
+Click the **?** icon next to the Configuration section in the app to see this structure and supported formats.
+
+#### Flexible Structure (Manual Setup)
+
+If you prefer a different organization, you can manually configure each part:
 
 ```
 my-campaign/
 ├── plan/
 │   ├── part1_opening.md
-│   ├── part2_investigation.md
-│   └── part3_finale.md
+│   └── part2_investigation.md
 ├── npcs/
-│   ├── captain_steel.md
-│   ├── dr_nova.md
-│   └── mysterious_stranger.md
-├── monsters/
-│   ├── space_kraken.md
-│   └── security_drones.md
+│   └── captain_steel.md
 ├── images/
-│   ├── part1/
-│   │   ├── space_station.png
-│   │   └── cantina.png
-│   └── part2/
-│       └── investigation_scene.png
+│   └── scene.png
 └── music/
-    ├── bgm/
-    │   ├── ambient_1.mp3
-    │   └── ambient_2.mp3
-    └── combat/
-        ├── battle_1.mp3
-        └── battle_2.mp3
+    └── ambient.mp3
 ```
+
+### Supported File Formats
+
+| Type | Extensions |
+|------|------------|
+| **Images** | jpg, jpeg, png, gif, webp, svg, bmp, ico, tiff, tif |
+| **Audio** | mp3, wav, ogg, flac, m4a, aac, wma, aiff, opus |
+| **Documents** | md, markdown |
 
 ## Browser Compatibility
 

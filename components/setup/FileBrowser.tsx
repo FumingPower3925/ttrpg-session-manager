@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { FileSystemManager } from '@/lib/fileSystem';
+import { FileSystemManager, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_MARKDOWN_EXTENSIONS } from '@/lib/fileSystem';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -88,11 +88,11 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
     const ext = filename.toLowerCase().split('.').pop();
 
     if (accept === 'markdown') {
-      return ext === 'md' || ext === 'markdown';
+      return SUPPORTED_MARKDOWN_EXTENSIONS.includes(ext || '');
     } else if (accept === 'image') {
-      return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '');
+      return SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '');
     } else if (accept === 'audio') {
-      return ['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext || '');
+      return SUPPORTED_AUDIO_EXTENSIONS.includes(ext || '');
     }
 
     return false;

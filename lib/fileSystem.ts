@@ -33,7 +33,7 @@ export class FileSystemManager {
   /**
    * Selects a single file from the directory with relative path
    */
-  async selectFile(accept: Record<string, string[]>): Promise<{file: File, relativePath: string} | null> {
+  async selectFile(accept: Record<string, string[]>): Promise<{ file: File, relativePath: string } | null> {
     if (!('showOpenFilePicker' in window)) {
       throw new Error('File System Access API is not supported in this browser.');
     }
@@ -49,7 +49,7 @@ export class FileSystemManager {
       });
 
       const file = await fileHandle.getFile();
-      
+
       // Try to get relative path if we have a directory handle
       let relativePath = file.name;
       if (this.directoryHandle) {
@@ -72,7 +72,7 @@ export class FileSystemManager {
   /**
    * Selects multiple files with relative paths
    */
-  async selectFiles(accept: Record<string, string[]>): Promise<Array<{file: File, relativePath: string}>> {
+  async selectFiles(accept: Record<string, string[]>): Promise<Array<{ file: File, relativePath: string }>> {
     if (!('showOpenFilePicker' in window)) {
       throw new Error('File System Access API is not supported in this browser.');
     }
@@ -90,7 +90,7 @@ export class FileSystemManager {
       const filesWithPaths = await Promise.all(
         fileHandles.map(async handle => {
           const file = await handle.getFile();
-          
+
           // Try to get relative path
           let relativePath = file.name;
           if (this.directoryHandle) {
@@ -99,7 +99,7 @@ export class FileSystemManager {
               relativePath = pathArray.join('/');
             }
           }
-          
+
           return { file, relativePath };
         })
       );
@@ -187,33 +187,40 @@ export function getRelativePath(file: File, basePath: string): string {
   // For File System Access API, we use webkitRelativePath if available
   // Otherwise, we just use the name
   const fullPath = (file as any).webkitRelativePath || file.name;
-  
+
   // If basePath is provided and the file path starts with it, remove it
   if (basePath && fullPath.startsWith(basePath)) {
     return fullPath.substring(basePath.length).replace(/^\//, '');
   }
-  
+
   return fullPath;
 }
+
+/**
+ * Supported file extensions for different media types
+ */
+export const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tiff', 'tif'];
+export const SUPPORTED_AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'wma', 'aiff', 'opus'];
+export const SUPPORTED_MARKDOWN_EXTENSIONS = ['md', 'markdown'];
 
 /**
  * Helper to determine file type from extension
  */
 export function getFileType(fileName: string): 'markdown' | 'image' | 'audio' | 'unknown' {
   const ext = fileName.toLowerCase().split('.').pop();
-  
-  if (ext === 'md' || ext === 'markdown') {
+
+  if (SUPPORTED_MARKDOWN_EXTENSIONS.includes(ext || '')) {
     return 'markdown';
   }
-  
-  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '')) {
+
+  if (SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) {
     return 'image';
   }
-  
-  if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext || '')) {
+
+  if (SUPPORTED_AUDIO_EXTENSIONS.includes(ext || '')) {
     return 'audio';
   }
-  
+
   return 'unknown';
 }
 
