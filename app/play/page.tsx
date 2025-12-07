@@ -418,7 +418,7 @@ export default function PlayPage() {
 
       {/* Initiative Tracker */}
       {currentTab !== 'image' && config && (
-        <InitiativeTracker playerCharacters={config.playerCharacters} />
+        <InitiativeTracker playerCharacters={config.playerCharacters} pcStats={config.pcStats} />
       )}
 
       {/* Main Content Area */}
