@@ -98,9 +98,9 @@ session-folder/
 │       └── dungeon_ambience.ogg
 ├── plan/
 │   ├── act1/
-│   │   └── main_plan.md
+│   │   └── the_tavern_opening.md   ← Filename becomes "the tavern opening"
 │   └── act2/
-│       └── main_plan.md
+│       └── dungeon_descent.md      ← Filename becomes "dungeon descent"
 └── threats/
     ├── act1/
     │   └── goblin_raiders.md
@@ -110,7 +110,8 @@ session-folder/
 
 **How Auto-Detect Works:**
 - Each `act[N]/` folder becomes a separate Part in your session
-- The first plan file (alphabetically) becomes the main plan for that part
+- **Act Names**: The plan file name (without extension) becomes the act name. Underscores are replaced with spaces and words are capitalized (e.g., `the_tavern_opening.md` → "The Tavern Opening")
+- Only one plan file should be in each `plan/act[N]/` folder (the first file alphabetically is used)
 - Characters, threats, maps, and additional plan files become support documents
 - Images are assigned to their respective parts
 - **BGM Music**: Files directly in `music/act[N]/` become background music tracks

@@ -295,6 +295,51 @@ async function detectPlayerCharacterStats(handle: FileSystemDirectoryHandle): Pr
 }
 
 /**
+ * Converts a filename to a readable display name
+ * Removes extension, replaces underscores with spaces, and capitalizes each word
+ * Short words (2 letters or less) stay lowercase unless they're the first word
+ */
+function fileNameToDisplayName(fileName: string): string {
+    // Remove extension
+    const nameWithoutExt = fileName.replace(/\.(md|markdown)$/i, '');
+    // Replace underscores with spaces and capitalize words
+    const words = nameWithoutExt.replace(/_/g, ' ').split(' ');
+    return words
+        .map((word, index) => {
+            // Always capitalize first word, or words longer than 2 characters
+            if (index === 0 || word.length > 2) {
+                return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+            }
+            // Keep short words lowercase
+            return word.toLowerCase();
+        })
+        .join(' ');
+}
+
+/**
+ * Gets the act display name from the plan file in the act folder
+ * Returns null if no plan file is found
+ */
+async function getActDisplayName(
+    handle: FileSystemDirectoryHandle,
+    actName: string
+): Promise<string | null> {
+    const planFolder = await getSubdirectory(handle, 'plan', actName);
+    if (!planFolder) return null;
+
+    const planFiles = await getFilesFromDirectory(
+        planFolder,
+        `plan/${actName}`,
+        SUPPORTED_MARKDOWN_EXTENSIONS
+    );
+
+    if (planFiles.length === 0) return null;
+
+    // Use the first file's name (alphabetically) as the act display name
+    return fileNameToDisplayName(planFiles[0].name);
+}
+
+/**
  * Scans a session folder and generates a SessionConfig based on its structure
  */
 export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Promise<SessionConfig> {
@@ -319,7 +364,9 @@ export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Prom
 
     for (const actName of acts) {
         const actNumber = actName.match(ACT_PATTERN)?.[1] || '1';
-        const part = await scanActFolder(handle, actName, `Act ${actNumber}`);
+        // Get the display name from the plan file, fallback to "Act N"
+        const displayName = await getActDisplayName(handle, actName) || `Act ${actNumber}`;
+        const part = await scanActFolder(handle, actName, displayName);
         parts.push(part);
     }
 
@@ -522,7 +569,7 @@ export function getExpectedStructure(): string {
 │           └── *.mp3
 ├── plan/
 │   └── act[N]/
-│       └── *.md
+│       └── act_name.md      (filename → act name, _ → space)
 └── threats/
     └── act[N]/
         └── *.md`;
