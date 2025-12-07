@@ -38,7 +38,6 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
       setIsPlaying(playing);
     });
 
-    // Update current event playlist and track info
     const interval = setInterval(() => {
       setCurrentEventPlaylist(audioManager.getCurrentEventPlaylist());
       setCurrentMode(audioManager.getCurrentMode());
@@ -77,13 +76,13 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
   const handleSelectBGM = async () => {
     if (!audioManager) return;
     await audioManager.playBGM();
-    setSearchQuery(''); // Clear search when selecting BGM
+    setSearchQuery('');
   };
 
   const handleSelectEvent = async (playlistId: string) => {
     if (!audioManager) return;
     await audioManager.startEvent(playlistId);
-    setSearchQuery(''); // Clear search after selection
+    setSearchQuery('');
   };
 
   const handleSelectTrack = async (index: number) => {
@@ -96,10 +95,8 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
     }
   };
 
-  // Filter playlists based on search query
   const filteredPlaylists = filterPlaylists(eventPlaylists, searchQuery);
 
-  // Check if BGM matches search
   const bgmMatchesSearch = !searchQuery ||
     'background music'.includes(searchQuery.toLowerCase()) ||
     'bgm'.includes(searchQuery.toLowerCase());

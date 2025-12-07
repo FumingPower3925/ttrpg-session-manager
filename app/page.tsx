@@ -38,7 +38,6 @@ export default function SetupPage() {
         folderName: handle.name,
       });
     } catch (error) {
-      // User cancelled - not an error
       if ((error as Error).name === 'AbortError') {
         console.log('Folder selection cancelled by user');
         return;
@@ -78,7 +77,6 @@ export default function SetupPage() {
     const existingIndex = config.parts.findIndex(p => p.id === updatedPart.id);
 
     if (existingIndex >= 0) {
-      // Update existing part
       const newParts = [...config.parts];
       newParts[existingIndex] = updatedPart;
       setConfig({
@@ -86,7 +84,6 @@ export default function SetupPage() {
         parts: newParts,
       });
     } else {
-      // Add new part
       setConfig({
         ...config,
         parts: [...config.parts, updatedPart],
@@ -110,7 +107,6 @@ export default function SetupPage() {
     const importedConfig = await importConfig();
     if (importedConfig) {
       setConfig(importedConfig);
-      // Note: User will still need to select the folder again
       setFolderSelected(false);
       alert('Configuration imported successfully. Please select your campaign folder to continue.');
     }
@@ -173,7 +169,6 @@ export default function SetupPage() {
       return;
     }
 
-    // Store config in sessionStorage to pass to play mode
     sessionStorage.setItem('campaignConfig', JSON.stringify(config));
     sessionStorage.setItem('folderSelected', 'true');
 

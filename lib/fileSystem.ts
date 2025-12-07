@@ -50,7 +50,6 @@ export class FileSystemManager {
 
       const file = await fileHandle.getFile();
 
-      // Try to get relative path if we have a directory handle
       let relativePath = file.name;
       if (this.directoryHandle) {
         const pathArray = await this.directoryHandle.resolve(fileHandle);
@@ -61,7 +60,6 @@ export class FileSystemManager {
 
       return { file, relativePath };
     } catch (error) {
-      // User cancelled
       if ((error as Error).name === 'AbortError') {
         return null;
       }
@@ -91,7 +89,6 @@ export class FileSystemManager {
         fileHandles.map(async handle => {
           const file = await handle.getFile();
 
-          // Try to get relative path
           let relativePath = file.name;
           if (this.directoryHandle) {
             const pathArray = await this.directoryHandle.resolve(handle);
@@ -106,7 +103,6 @@ export class FileSystemManager {
 
       return filesWithPaths;
     } catch (error) {
-      // User cancelled
       if ((error as Error).name === 'AbortError') {
         return [];
       }
@@ -138,12 +134,10 @@ export class FileSystemManager {
     const parts = relativePath.split('/');
     let currentDir = this.directoryHandle;
 
-    // Navigate through directories
     for (let i = 0; i < parts.length - 1; i++) {
       currentDir = await currentDir.getDirectoryHandle(parts[i]);
     }
 
-    // Get the file
     return await currentDir.getFileHandle(parts[parts.length - 1]);
   }
 
@@ -184,11 +178,8 @@ export class FileSystemManager {
  * Helper to get relative path from base directory
  */
 export function getRelativePath(file: File, basePath: string): string {
-  // For File System Access API, we use webkitRelativePath if available
-  // Otherwise, we just use the name
   const fullPath = (file as any).webkitRelativePath || file.name;
 
-  // If basePath is provided and the file path starts with it, remove it
   if (basePath && fullPath.startsWith(basePath)) {
     return fullPath.substring(basePath.length).replace(/^\//, '');
   }

@@ -31,7 +31,6 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
       const entries: Array<{ name: string; type: 'file' | 'directory'; handle: FileSystemHandle }> = [];
 
       for await (const [name, handle] of dirHandle.entries()) {
-        // Filter based on accept type
         if (handle.kind === 'file') {
           const fileHandle = handle as FileSystemFileHandle;
           const file = await fileHandle.getFile();
@@ -46,7 +45,6 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
 
       console.log('Loaded', entries.length, 'entries');
 
-      // Sort: directories first, then files, both alphabetically
       entries.sort((a, b) => {
         if (a.type !== b.type) {
           return a.type === 'directory' ? -1 : 1;
@@ -125,7 +123,6 @@ export function FileBrowser({ fileSystemManager, accept, multiple = false, onSel
     setSelectedFiles(new Set());
   };
 
-  // Load directory when path changes
   useEffect(() => {
     console.log('useEffect triggered, currentPath:', currentPath);
     loadDirectory();

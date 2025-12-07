@@ -45,7 +45,6 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
   const [newStatusInput, setNewStatusInput] = useState<Record<string, string>>({});
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
 
-  // Load state from localStorage on mount
   useEffect(() => {
     const savedState = localStorage.getItem(STORAGE_KEY);
     if (savedState) {
@@ -60,13 +59,11 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
     }
   }, []);
 
-  // Save state to localStorage when it changes
   useEffect(() => {
     const state: CombatState = { entries, currentTurnIndex, roundCount };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [entries, currentTurnIndex, roundCount]);
 
-  // Initialize PCs when playerCharacters change
   useEffect(() => {
     setEntries(prev => {
       const npcs = prev.filter(e => e.type === 'npc');
@@ -74,7 +71,6 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
         const existing = prev.find(e => e.type === 'pc' && e.name === pc);
         if (existing) return existing;
 
-        // Look up parsed stats for this PC
         const stats = pcStats?.find(s => s.name === pc);
         const maxHP = stats?.maxHP ?? 0;
         const defense = stats?.defense ?? 0;
@@ -84,7 +80,7 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
           name: pc,
           initiative: 0,
           type: 'pc' as const,
-          currentHP: maxHP, // Set current HP to max if available
+          currentHP: maxHP,
           maxHP,
           tempHP: 0,
           defense,
@@ -110,7 +106,6 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
       prev.map(e => {
         if (e.id !== id) return e;
         const updated = { ...e, [field]: numValue };
-        // Auto-set current HP to max if max is set and current is 0
         if (field === 'maxHP' && e.currentHP === 0) {
           updated.currentHP = numValue;
         }
@@ -166,7 +161,6 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
   const handleRemoveNPC = (id: string) => {
     setEntries(prev => {
       const newEntries = prev.filter(e => e.id !== id);
-      // Adjust current turn index if needed
       if (currentTurnIndex >= newEntries.length) {
         setCurrentTurnIndex(Math.max(0, newEntries.length - 1));
       }
