@@ -9,3 +9,10 @@ updates:
       - "dependencies"
     commit-message:
       prefix: "deps"
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
