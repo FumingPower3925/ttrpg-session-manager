@@ -205,15 +205,15 @@ export default function PlayPage() {
     // Load audio
     if (audioManager) {
       // Check if we're already playing the same BGM tracks
-      const isSameBGM = audioManager.getCurrentMode() === 'bgm' && 
+      const isSameBGM = audioManager.getCurrentMode() === 'bgm' &&
         audioManager.getBGMPlaylist().length === part.bgmPlaylist.length &&
-        audioManager.getBGMPlaylist().every((track, index) => 
+        audioManager.getBGMPlaylist().every((track, index) =>
           track.path === part.bgmPlaylist[index]?.path
         );
 
       audioManager.loadBGM(part.bgmPlaylist);
       audioManager.loadEventPlaylists(part.eventPlaylists);
-      
+
       // Only start playing BGM if there are tracks and we're not already playing the same BGM
       if (part.bgmPlaylist.length > 0 && !isSameBGM) {
         audioManager.playBGM();
@@ -265,12 +265,12 @@ export default function PlayPage() {
   // Handle scroll for header compacting and position saving
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>, filePath?: string) => {
     const currentScrollY = e.currentTarget.scrollTop;
-    
+
     // Save scroll position for the current file
     if (filePath) {
       saveScrollPosition(filePath, currentScrollY);
     }
-    
+
     // Compact header when scrolling down past 50px
     if (currentScrollY > 50 && currentScrollY > lastScrollY) {
       setIsHeaderCompact(true);
@@ -279,7 +279,7 @@ export default function PlayPage() {
     else if (currentScrollY < lastScrollY - 10) {
       setIsHeaderCompact(false);
     }
-    
+
     setLastScrollY(currentScrollY);
   }, [lastScrollY, saveScrollPosition]);
 
@@ -405,6 +405,7 @@ export default function PlayPage() {
       {/* Part Timer */}
       {currentTab !== 'image' && currentPart && (
         <PartTimer
+          partId={currentPart.id}
           partName={currentPart.name}
           planContent={currentPlanContent}
         />
@@ -421,7 +422,7 @@ export default function PlayPage() {
       )}
 
       {/* Main Content Area */}
-      <div 
+      <div
         className="flex-1 flex flex-col overflow-hidden transition-all duration-300 ease-in-out"
         style={{
           paddingTop: isHeaderCompact ? '0' : '5rem'
@@ -429,17 +430,16 @@ export default function PlayPage() {
       >
         {/* Top Bar with Search and Actions */}
         {currentTab !== 'image' && (
-          <div 
-            className={`transition-all duration-300 ease-in-out overflow-hidden ${
-              isHeaderCompact ? 'max-h-0 opacity-0' : 'max-h-20 opacity-100'
-            }`}
+          <div
+            className={`transition-all duration-300 ease-in-out overflow-hidden ${isHeaderCompact ? 'max-h-0 opacity-0' : 'max-h-20 opacity-100'
+              }`}
           >
             <div className="px-6 pb-4 flex items-center gap-4">
               <Button variant="outline" size="sm" onClick={() => router.push('/')}>
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Back to Setup
               </Button>
-              
+
               <div className="flex-1 flex justify-center">
                 <SearchDialog
                   searchManager={searchManager}
