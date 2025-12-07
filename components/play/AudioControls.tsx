@@ -86,7 +86,7 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
       {/* Semi-circle indicator when collapsed */}
       {!isExpanded && (
         <div
-          className="fixed top-4 right-0 z-40 cursor-pointer"
+          className="fixed top-4 right-0 z-50 cursor-pointer"
           onMouseEnter={() => setIsExpanded(true)}
         >
           <div className="bg-primary text-primary-foreground rounded-l-full pr-3 pl-4 py-3 shadow-lg flex items-center">
@@ -97,13 +97,13 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
 
       {/* Full panel when expanded */}
       <div
-        className="fixed top-4 right-0 z-40 transition-transform duration-300 ease-in-out"
+        className="fixed top-4 right-0 z-50 transition-transform duration-300 ease-in-out"
         style={{
           transform: isExpanded ? 'translateX(0)' : 'translateX(100%)'
         }}
         onMouseLeave={() => setIsExpanded(false)}
       >
-        <Card className="w-80 shadow-lg max-h-[calc(100vh-2rem)] flex flex-col">
+        <Card className="w-80 shadow-lg max-h-[600px] flex flex-col">
           <CardContent className="pt-6 space-y-4 flex flex-col min-h-0">
             {/* Current Track Info */}
             <div className="space-y-1 flex-shrink-0">
@@ -148,11 +148,11 @@ export function AudioControls({ audioManager, eventPlaylists }: AudioControlsPro
             </div>
 
             {/* Playlist Selection */}
-            <div className="space-y-2 flex-1 min-h-0 flex flex-col">
+            <div className="space-y-2 min-h-0 flex flex-col">
               <span className="text-sm font-medium flex-shrink-0">Select Playlist</span>
 
-              <ScrollArea className="flex-1 h-full pr-4">
-                <div className="space-y-2 pb-2">
+              <ScrollArea className="h-[200px]">
+                <div className="space-y-2 pb-2 pr-3">
                   {/* BGM Button */}
                   <Button
                     variant={currentMode === 'bgm' ? 'default' : 'outline'}
