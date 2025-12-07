@@ -19,7 +19,7 @@ export class AudioManager {
     this.audio = new Audio();
     this.audio.volume = this.volume;
     this.fileSystemManager = fileSystemManager;
-    
+
     // Auto-play next track when current one ends
     this.audio.addEventListener('ended', () => {
       this.playNext();
@@ -113,7 +113,7 @@ export class AudioManager {
     this.currentEventPlaylist = null;
     this.currentEventIndex = 0;
     this.currentMode = 'bgm';
-    
+
     if (this.bgmTracks.length > 0) {
       await this.playBGM();
     }
@@ -150,7 +150,7 @@ export class AudioManager {
       console.warn('Attempted to play an undefined track.');
       return;
     }
-    
+
     try {
       // Pause current playback to prevent interruption errors
       if (!this.audio.paused) {
@@ -158,16 +158,16 @@ export class AudioManager {
       }
 
       const url = await this.fileSystemManager.getFileURL(track.path);
-      
+
       // Clean up old URL if exists
       if (this.audio.src) {
         URL.revokeObjectURL(this.audio.src);
       }
-      
+
       // Load new source
       this.audio.src = url;
       this.audio.load(); // Explicitly load the new source
-      
+
       // Play the audio and handle promise properly
       await this.audio.play().catch((error) => {
         // Ignore AbortError which happens during rapid track changes
@@ -175,7 +175,7 @@ export class AudioManager {
           console.error('Error playing audio:', error);
         }
       });
-      
+
       this.onTrackChangeCallback?.(track.name, this.currentMode);
     } catch (error) {
       console.error('Error loading/playing track:', error);
@@ -282,8 +282,8 @@ export class AudioManager {
   async skipPrevious() {
     if (this.currentMode === 'bgm') {
       if (this.bgmTracks.length === 0) return;
-      this.currentBgmIndex = this.currentBgmIndex === 0 
-        ? this.bgmTracks.length - 1 
+      this.currentBgmIndex = this.currentBgmIndex === 0
+        ? this.bgmTracks.length - 1
         : this.currentBgmIndex - 1;
       const track = this.bgmTracks[this.currentBgmIndex];
       if (track) {
@@ -291,14 +291,76 @@ export class AudioManager {
       }
     } else if (this.currentEventPlaylist) {
       if (this.currentEventPlaylist.tracks.length === 0) return;
-      this.currentEventIndex = this.currentEventIndex === 0 
-        ? this.currentEventPlaylist.tracks.length - 1 
+      this.currentEventIndex = this.currentEventIndex === 0
+        ? this.currentEventPlaylist.tracks.length - 1
         : this.currentEventIndex - 1;
       const track = this.currentEventPlaylist.tracks[this.currentEventIndex];
       if (track) {
         await this.loadAndPlayTrack(track);
       }
     }
+  }
+
+  /**
+   * Plays a specific track from the BGM playlist by index
+   */
+  async playBGMTrack(index: number) {
+    if (index < 0 || index >= this.bgmTracks.length) {
+      console.warn(`Invalid BGM track index: ${index}`);
+      return;
+    }
+
+    this.currentMode = 'bgm';
+    this.currentBgmIndex = index;
+    await this.loadAndPlayTrack(this.bgmTracks[index]);
+  }
+
+  /**
+   * Plays a specific track from the current event playlist by index
+   */
+  async playEventTrack(index: number) {
+    if (!this.currentEventPlaylist) {
+      console.warn('No event playlist is currently active');
+      return;
+    }
+
+    if (index < 0 || index >= this.currentEventPlaylist.tracks.length) {
+      console.warn(`Invalid event track index: ${index}`);
+      return;
+    }
+
+    this.currentEventIndex = index;
+    await this.loadAndPlayTrack(this.currentEventPlaylist.tracks[index]);
+  }
+
+  /**
+   * Gets the current track index for the active playlist
+   */
+  getCurrentTrackIndex(): number {
+    if (this.currentMode === 'bgm') {
+      return this.currentBgmIndex;
+    }
+    return this.currentEventIndex;
+  }
+
+  /**
+   * Gets the total number of tracks in the current playlist
+   */
+  getCurrentPlaylistLength(): number {
+    if (this.currentMode === 'bgm') {
+      return this.bgmTracks.length;
+    }
+    return this.currentEventPlaylist?.tracks.length || 0;
+  }
+
+  /**
+   * Gets all tracks in the current playlist
+   */
+  getCurrentPlaylistTracks(): AudioFile[] {
+    if (this.currentMode === 'bgm') {
+      return [...this.bgmTracks];
+    }
+    return this.currentEventPlaylist ? [...this.currentEventPlaylist.tracks] : [];
   }
 
   /**
