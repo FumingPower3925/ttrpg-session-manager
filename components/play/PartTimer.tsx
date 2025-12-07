@@ -1,23 +1,38 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Clock } from 'lucide-react';
 
 interface PartTimerProps {
+  partId: string;
   partName: string;
   planContent: string | null;
 }
 
-export function PartTimer({ partName, planContent }: PartTimerProps) {
+// Store elapsed time per part ID - persists across component renders
+const partTimeStore = new Map<string, number>();
+
+export function PartTimer({ partId, partName, planContent }: PartTimerProps) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [expectedMinutes, setExpectedMinutes] = useState<{ min: number; max?: number } | null>(null);
+  const previousPartIdRef = useRef<string | null>(null);
 
-  // Reset timer when part changes
+  // Save current time and restore time for new part when part changes
   useEffect(() => {
-    setElapsedSeconds(0);
-  }, [partName]);
+    // Save the previous part's time before switching
+    if (previousPartIdRef.current !== null && previousPartIdRef.current !== partId) {
+      partTimeStore.set(previousPartIdRef.current, elapsedSeconds);
+    }
+
+    // Restore the new part's time (or start at 0)
+    const storedTime = partTimeStore.get(partId) ?? 0;
+    setElapsedSeconds(storedTime);
+
+    // Update the ref to track the current part
+    previousPartIdRef.current = partId;
+  }, [partId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Parse expected duration from plan content
   useEffect(() => {
@@ -33,11 +48,11 @@ export function PartTimer({ partName, planContent }: PartTimerProps) {
     // "Interaccion con Jora 5 minutos"
     // "Combate 5-10 minutos"
     // "Epilogo 5 minutos"
-    
+
     // First try to find a duration with the ## Duración: header
     const headerDurationRegex = /##\s*Duración:\s*(\d+)(?:-(\d+))?\s*minutos?/i;
     let match = planContent.match(headerDurationRegex);
-    
+
     // If no header duration found, look for any duration pattern in the content
     if (!match) {
       // This regex finds durations like "15-20 minutos", "5 minutos", "5-10 minutos"
@@ -72,7 +87,7 @@ export function PartTimer({ partName, planContent }: PartTimerProps) {
 
   const getTimeStatus = (): 'normal' | 'warning' | 'over' => {
     if (!expectedMinutes) return 'normal';
-    
+
     const elapsedMinutes = elapsedSeconds / 60;
     const maxMinutes = expectedMinutes.max || expectedMinutes.min;
 
@@ -90,29 +105,27 @@ export function PartTimer({ partName, planContent }: PartTimerProps) {
     <Card className="fixed bottom-4 right-4 z-40 shadow-lg">
       <CardContent className="pt-4 pb-3 px-4 space-y-2">
         <div className="flex items-center gap-2">
-          <Clock className={`h-4 w-4 ${
-            status === 'over' ? 'text-destructive' :
+          <Clock className={`h-4 w-4 ${status === 'over' ? 'text-destructive' :
             status === 'warning' ? 'text-yellow-500' :
-            'text-muted-foreground'
-          }`} />
+              'text-muted-foreground'
+            }`} />
           <span className="text-xs font-medium text-muted-foreground">
             {partName}
           </span>
         </div>
-        
+
         <div className="flex items-baseline gap-2">
-          <span className={`text-2xl font-bold tabular-nums ${
-            status === 'over' ? 'text-destructive' :
+          <span className={`text-2xl font-bold tabular-nums ${status === 'over' ? 'text-destructive' :
             status === 'warning' ? 'text-yellow-500' :
-            'text-foreground'
-          }`}>
+              'text-foreground'
+            }`}>
             {formatTime(elapsedSeconds)}
           </span>
-          
+
           {expectedMinutes && (
             <span className="text-sm text-muted-foreground">
-              / {expectedMinutes.max 
-                ? `${expectedMinutes.min}-${expectedMinutes.max}` 
+              / {expectedMinutes.max
+                ? `${expectedMinutes.min}-${expectedMinutes.max}`
                 : expectedMinutes.min} min
             </span>
           )}
@@ -123,7 +136,7 @@ export function PartTimer({ partName, planContent }: PartTimerProps) {
             Approaching time limit
           </Badge>
         )}
-        
+
         {status === 'over' && (
           <Badge variant="destructive" className="text-xs">
             Over time
