@@ -20,7 +20,6 @@ export class SearchManager {
   ) {
     this.documents.clear();
 
-    // Store documents
     documents.forEach(doc => {
       this.documents.set(doc.file.path, {
         name: doc.file.name,
@@ -28,7 +27,6 @@ export class SearchManager {
       });
     });
 
-    // Create lunr index
     this.index = lunr(function () {
       this.ref('path');
       this.field('name', { boost: 10 });
@@ -80,18 +78,17 @@ export class SearchManager {
    * Extracts a snippet of text around the search query
    */
   private extractContext(content: string, query: string, contextLength: number = 150): string {
-    // Remove markdown syntax for cleaner context
     const cleanContent = content
-      .replace(/#{1,6}\s/g, '') // Remove headers
-      .replace(/\*\*(.+?)\*\*/g, '$1') // Remove bold
-      .replace(/\*(.+?)\*/g, '$1') // Remove italic
-      .replace(/\[(.+?)\]\(.+?\)/g, '$1') // Remove links
-      .replace(/`(.+?)`/g, '$1'); // Remove code
+      .replace(/#{1,6}\s/g, '')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/\[(.+?)\]\(.+?\)/g, '$1')
+      .replace(/`(.+?)`/g, '$1');
 
     // Find the first occurrence of any word in the query
     const queryWords = query.toLowerCase().split(/\s+/);
     const lowerContent = cleanContent.toLowerCase();
-    
+
     let matchIndex = -1;
     for (const word of queryWords) {
       matchIndex = lowerContent.indexOf(word);
@@ -101,17 +98,15 @@ export class SearchManager {
     }
 
     if (matchIndex === -1) {
-      // No match found, return the beginning
       return cleanContent.substring(0, contextLength) + '...';
     }
 
     // Extract context around the match
     const start = Math.max(0, matchIndex - contextLength / 2);
     const end = Math.min(cleanContent.length, matchIndex + contextLength / 2);
-    
+
     let snippet = cleanContent.substring(start, end);
-    
-    // Add ellipsis if needed
+
     if (start > 0) {
       snippet = '...' + snippet;
     }

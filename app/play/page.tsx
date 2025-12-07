@@ -44,7 +44,6 @@ export default function PlayPage() {
 
   const [needsFolderSelection, setNeedsFolderSelection] = useState(true);
 
-  // Load config on mount
   useEffect(() => {
     const configJson = sessionStorage.getItem('campaignConfig');
     const folderSelected = sessionStorage.getItem('folderSelected');
@@ -60,13 +59,11 @@ export default function PlayPage() {
     setIsLoading(false);
   }, [router]);
 
-  // Handle folder selection (must be triggered by user action)
   const handleSelectFolder = async () => {
     try {
       setIsLoading(true);
       setError(null);
 
-      // Request folder access - this MUST be triggered by user interaction
       await fileSystemManager.selectFolder();
 
       if (!config) {
@@ -75,22 +72,18 @@ export default function PlayPage() {
         return;
       }
 
-      // Initialize audio manager
       const audio = new AudioManager(fileSystemManager);
       setAudioManager(audio);
 
-      // Set first part as current
       if (config.parts.length > 0) {
         setCurrentPartId(config.parts[0].id);
       }
 
-      // Load all markdown content for search
       await loadAllMarkdownContent(config);
 
       setNeedsFolderSelection(false);
       setIsLoading(false);
     } catch (err) {
-      // User cancelled - not an error
       if ((err as Error).name === 'AbortError') {
         console.log('Folder selection cancelled by user');
         setIsLoading(false);
@@ -102,12 +95,10 @@ export default function PlayPage() {
     }
   };
 
-  // Load markdown content for search indexing
   const loadAllMarkdownContent = async (config: SessionConfig) => {
     const documents: Array<{ file: FileReference; content: string }> = [];
 
     for (const part of config.parts) {
-      // Load plan
       if (part.planFile) {
         try {
           const content = await fileSystemManager.readTextFile(part.planFile.path);
@@ -117,7 +108,6 @@ export default function PlayPage() {
         }
       }
 
-      // Load support docs
       for (const doc of part.supportDocs) {
         try {
           const content = await fileSystemManager.readTextFile(doc.path);
@@ -131,7 +121,6 @@ export default function PlayPage() {
     await searchManager.indexDocuments(documents);
   };
 
-  // Load content for a file
   const loadContent = useCallback(async (file: FileReference): Promise<string> => {
     if (contentCache.has(file.path)) {
       return contentCache.get(file.path)!;
@@ -157,7 +146,6 @@ export default function PlayPage() {
     }
   }, [fileSystemManager, contentCache]);
 
-  // Load image URL
   const loadImageUrl = useCallback(async (file: FileReference): Promise<string> => {
     if (imageUrlCache.has(file.path)) {
       return imageUrlCache.get(file.path)!;
@@ -169,7 +157,6 @@ export default function PlayPage() {
       return url;
     } catch (err) {
       console.error(`Error loading image ${file.path}:`, err);
-      // Return a data URL for a simple error placeholder
       const canvas = document.createElement('canvas');
       canvas.width = 400;
       canvas.height = 300;
@@ -189,12 +176,10 @@ export default function PlayPage() {
     }
   }, [fileSystemManager, imageUrlCache]);
 
-  // Load part content (audio and plan)
   const loadPartContent = useCallback(async (partId: string) => {
     const part = config?.parts.find(p => p.id === partId);
     if (!part) return;
 
-    // Load plan content for timer
     if (part.planFile) {
       const content = await loadContent(part.planFile);
       setCurrentPlanContent(content);
@@ -202,9 +187,7 @@ export default function PlayPage() {
       setCurrentPlanContent(null);
     }
 
-    // Load audio
     if (audioManager) {
-      // Check if we're already playing the same BGM tracks
       const isSameBGM = audioManager.getCurrentMode() === 'bgm' &&
         audioManager.getBGMPlaylist().length === part.bgmPlaylist.length &&
         audioManager.getBGMPlaylist().every((track, index) =>
@@ -214,68 +197,56 @@ export default function PlayPage() {
       audioManager.loadBGM(part.bgmPlaylist);
       audioManager.loadEventPlaylists(part.eventPlaylists);
 
-      // Only start playing BGM if there are tracks and we're not already playing the same BGM
       if (part.bgmPlaylist.length > 0 && !isSameBGM) {
         audioManager.playBGM();
       }
     }
   }, [config, audioManager, loadContent]);
 
-  // Effect to load content when currentPartId or audioManager changes
   useEffect(() => {
     if (currentPartId && audioManager) {
       loadPartContent(currentPartId);
     }
   }, [currentPartId, audioManager, loadPartContent]);
 
-  // Handle part change
   const handlePartChange = useCallback(async (partId: string) => {
     setCurrentPartId(partId);
     setCurrentTab('plan');
     setPreviousTab('plan');
     setSplitViewEnabled(false);
-    setIsHeaderCompact(false); // Reset header when changing parts
+    setIsHeaderCompact(false);
     setLastScrollY(0);
   }, []);
 
-  // Handle tab change with previous tab tracking
   const handleTabChange = useCallback((newTab: string) => {
-    // If switching to an image tab, save the current tab as previous
     if (newTab.startsWith('image-')) {
       setPreviousTab(currentTab);
     }
     setCurrentTab(newTab);
   }, [currentTab]);
 
-  // Handle image close - restore previous tab
   const handleImageClose = useCallback(() => {
     setCurrentTab(previousTab);
   }, [previousTab]);
 
-  // Save scroll position for a file
   const saveScrollPosition = useCallback((filePath: string, scrollTop: number) => {
     setScrollPositions(prev => new Map(prev).set(filePath, scrollTop));
   }, []);
 
-  // Get scroll position for a file
   const getScrollPosition = useCallback((filePath: string): number => {
     return scrollPositions.get(filePath) || 0;
   }, [scrollPositions]);
 
-  // Handle scroll for header compacting and position saving
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>, filePath?: string) => {
     const currentScrollY = e.currentTarget.scrollTop;
 
-    // Save scroll position for the current file
     if (filePath) {
       saveScrollPosition(filePath, currentScrollY);
     }
 
-    // Compact header when scrolling down past 50px
     if (currentScrollY > 50 && currentScrollY > lastScrollY) {
       setIsHeaderCompact(true);
     }
-    // Expand header when scrolling up a bit
     else if (currentScrollY < lastScrollY - 10) {
       setIsHeaderCompact(false);
     }
@@ -283,9 +254,7 @@ export default function PlayPage() {
     setLastScrollY(currentScrollY);
   }, [lastScrollY, saveScrollPosition]);
 
-  // Handle search result click
   const handleSearchResultClick = (filePath: string) => {
-    // Find which part and tab this file belongs to
     for (const part of config?.parts || []) {
       if (part.planFile?.path === filePath) {
         setCurrentPartId(part.id);
@@ -304,7 +273,6 @@ export default function PlayPage() {
     }
   };
 
-  // Toggle split view
   const toggleSplitView = (doc: FileReference | null) => {
     if (doc && !splitViewEnabled) {
       setSplitViewDoc(doc);
@@ -340,7 +308,6 @@ export default function PlayPage() {
     );
   }
 
-  // Show folder selection prompt
   if (needsFolderSelection && config) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 bg-background">

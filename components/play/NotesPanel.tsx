@@ -9,7 +9,6 @@ export function NotesPanel() {
   const [notes, setNotes] = useState('');
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Load notes from localStorage on mount
   useEffect(() => {
     const savedNotes = localStorage.getItem('campaignNotes');
     if (savedNotes) {
@@ -17,12 +16,10 @@ export function NotesPanel() {
     }
   }, []);
 
-  // Save notes to localStorage on change
   useEffect(() => {
     localStorage.setItem('campaignNotes', notes);
   }, [notes]);
 
-  // Calculate dynamic height based on content
   const textareaRows = Math.max(3, Math.min(15, notes.split('\n').length));
 
   return (

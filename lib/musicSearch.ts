@@ -36,16 +36,11 @@ export function fuzzyScore(text: string, query: string): number {
     const lowerText = text.toLowerCase();
     const lowerQuery = query.toLowerCase();
 
-    // Exact match gets highest score
     if (lowerText === lowerQuery) return 100;
 
-    // Contains exact query as substring
     if (lowerText.includes(lowerQuery)) return 80;
 
-    // Starts with query
     if (lowerText.startsWith(lowerQuery)) return 90;
-
-    // Fuzzy match
     let textIndex = 0;
     let queryIndex = 0;
     let consecutiveMatches = 0;
@@ -64,10 +59,8 @@ export function fuzzyScore(text: string, query: string): number {
         textIndex++;
     }
 
-    // No match if we didn't match all query characters
     if (queryIndex < lowerQuery.length) return 0;
 
-    // Score based on how compact the match was
     const coverage = totalMatches / lowerText.length;
     const consecutiveBonus = maxConsecutive / lowerQuery.length;
 

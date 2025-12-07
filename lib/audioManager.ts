@@ -28,7 +28,6 @@ export class AudioManager {
     this.audio.volume = this.volume;
     this.fileSystemManager = fileSystemManager;
 
-    // Auto-play next track when current one ends
     this.audio.addEventListener('ended', () => {
       this.playNext();
     });
@@ -85,7 +84,7 @@ export class AudioManager {
     }
 
     this.currentMode = 'bgm';
-    this.currentBgmIndex = 0; // Start from beginning
+    this.currentBgmIndex = 0;
     await this.loadAndPlayTrack(this.bgmTracks[this.currentBgmIndex]);
   }
 
@@ -133,7 +132,6 @@ export class AudioManager {
   private async playNext() {
     if (this.currentMode === 'bgm') {
       if (this.bgmTracks.length === 0) return;
-      // Loop through BGM tracks
       this.currentBgmIndex = (this.currentBgmIndex + 1) % this.bgmTracks.length;
       const track = this.bgmTracks[this.currentBgmIndex];
       if (track) {
@@ -141,7 +139,6 @@ export class AudioManager {
       }
     } else if (this.currentEventPlaylist) {
       if (this.currentEventPlaylist.tracks.length === 0) return;
-      // Loop through event tracks
       this.currentEventIndex = (this.currentEventIndex + 1) % this.currentEventPlaylist.tracks.length;
       const track = this.currentEventPlaylist.tracks[this.currentEventIndex];
       if (track) {
@@ -160,40 +157,33 @@ export class AudioManager {
     }
 
     try {
-      // Cancel any ongoing fade to handle rapid track changes
       this.cancelFade();
 
-      // If audio is currently playing, fade out first
       if (!this.audio.paused) {
         await this.fadeOut();
       }
 
       const url = await this.fileSystemManager.getFileURL(track.path);
 
-      // Clean up old URL if exists
       if (this.audio.src) {
         URL.revokeObjectURL(this.audio.src);
       }
 
-      // Load new source with volume at 0 for fade-in
       this.audio.src = url;
       this.audio.volume = 0;
       this.audio.load();
 
-      // Start playing and fade in
       await this.audio.play().catch((error) => {
         if (error.name !== 'AbortError') {
           console.error('Error playing audio:', error);
         }
       });
 
-      // Fade in to target volume
       await this.fadeIn();
 
       this.onTrackChangeCallback?.(track.name, this.currentMode);
     } catch (error) {
       console.error('Error loading/playing track:', error);
-      // Reset volume and try next track if this one fails
       this.audio.volume = this.volume;
       this.isFading = false;
       this.playNext();
@@ -227,7 +217,6 @@ export class AudioManager {
    */
   setVolume(volume: number) {
     this.volume = Math.max(0, Math.min(1, volume));
-    // Only update audio volume if not currently fading
     if (!this.isFading) {
       this.audio.volume = this.volume;
     }

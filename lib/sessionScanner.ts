@@ -29,7 +29,6 @@ export async function isValidSessionStructure(handle: FileSystemDirectoryHandle)
             }
         }
 
-        // Require at least 2 of the expected folders
         return foundFolders >= 2;
     } catch {
         return false;
@@ -48,7 +47,6 @@ export async function detectActs(handle: FileSystemDirectoryHandle): Promise<str
 
         const folderHandle = entryHandle as FileSystemDirectoryHandle;
 
-        // Look for act subfolders
         for await (const [subName, subHandle] of folderHandle.entries()) {
             if (subHandle.kind === 'directory' && ACT_PATTERN.test(subName)) {
                 actSet.add(subName.toLowerCase());
@@ -56,7 +54,6 @@ export async function detectActs(handle: FileSystemDirectoryHandle): Promise<str
         }
     }
 
-    // Sort acts by number
     return Array.from(actSet).sort((a, b) => {
         const numA = parseInt(a.match(ACT_PATTERN)?.[1] || '0');
         const numB = parseInt(b.match(ACT_PATTERN)?.[1] || '0');
@@ -86,7 +83,6 @@ async function getFilesFromDirectory(
         }
     }
 
-    // Sort alphabetically
     return files.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -140,7 +136,6 @@ function createAudioFile(file: { name: string; path: string }): AudioFile {
 async function detectPlayerCharacters(handle: FileSystemDirectoryHandle): Promise<string[]> {
     const pcsFolder = await getSubdirectory(handle, 'characters', 'PCs');
     if (!pcsFolder) {
-        // Also try lowercase
         const pcsLower = await getSubdirectory(handle, 'characters', 'pcs');
         if (!pcsLower) return [];
         return await extractPCNames(pcsLower);
@@ -160,14 +155,12 @@ async function extractPCNames(folder: FileSystemDirectoryHandle): Promise<string
         const ext = name.toLowerCase().split('.').pop();
         if (!SUPPORTED_MARKDOWN_EXTENSIONS.includes(ext || '')) continue;
 
-        // Extract name without extension
         const pcName = name.replace(/\.(md|markdown)$/i, '');
         if (pcName) {
             pcNames.push(pcName);
         }
     }
 
-    // Sort alphabetically
     return pcNames.sort((a, b) => a.localeCompare(b));
 }
 
@@ -257,15 +250,12 @@ async function extractPCStats(folder: FileSystemDirectoryHandle): Promise<Player
         const ext = name.toLowerCase().split('.').pop();
         if (!SUPPORTED_MARKDOWN_EXTENSIONS.includes(ext || '')) continue;
 
-        // Extract name without extension
         const pcName = name.replace(/\.(md|markdown)$/i, '');
         if (!pcName) continue;
 
-        // Read file content
         const fileHandle = entryHandle as FileSystemFileHandle;
         const content = await readFileContent(fileHandle);
 
-        // Extract stats using regex patterns
         const maxHP = extractStat(content, HP_PATTERNS);
         const defense = extractStat(content, DEF_PATTERNS);
 
@@ -276,7 +266,6 @@ async function extractPCStats(folder: FileSystemDirectoryHandle): Promise<Player
         });
     }
 
-    // Sort alphabetically
     return stats.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -286,7 +275,6 @@ async function extractPCStats(folder: FileSystemDirectoryHandle): Promise<Player
 async function detectPlayerCharacterStats(handle: FileSystemDirectoryHandle): Promise<PlayerCharacterStats[]> {
     const pcsFolder = await getSubdirectory(handle, 'characters', 'PCs');
     if (!pcsFolder) {
-        // Also try lowercase
         const pcsLower = await getSubdirectory(handle, 'characters', 'pcs');
         if (!pcsLower) return [];
         return await extractPCStats(pcsLower);
@@ -306,11 +294,9 @@ function fileNameToDisplayName(fileName: string): string {
     const words = nameWithoutExt.replace(/_/g, ' ').split(' ');
     return words
         .map((word, index) => {
-            // Always capitalize first word, or words longer than 2 characters
             if (index === 0 || word.length > 2) {
                 return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
             }
-            // Keep short words lowercase
             return word.toLowerCase();
         })
         .join(' ');
@@ -349,7 +335,6 @@ export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Prom
     const pcStats = await detectPlayerCharacterStats(handle);
 
     if (acts.length === 0) {
-        // No acts found, create a single part with whatever we find
         const part = await scanForSinglePart(handle, 'Part 1');
         return {
             folderName,
@@ -406,10 +391,8 @@ async function scanActFolder(
         );
 
         if (planFiles.length > 0) {
-            // First file alphabetically is the main plan
             part.planFile = createFileReference(planFiles[0], 'markdown');
 
-            // Rest go to support docs
             for (let i = 1; i < planFiles.length; i++) {
                 part.supportDocs.push(createFileReference(planFiles[i], 'markdown'));
             }
@@ -460,10 +443,8 @@ async function scanActFolder(
         part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
     }
 
-    // Scan music folder - files become BGM, subfolders become event playlists
     const musicFolder = await getSubdirectory(handle, 'music', actName);
     if (musicFolder) {
-        // Get files directly in the music folder (these are BGM)
         const bgmFiles = await getFilesFromDirectory(
             musicFolder,
             `music/${actName}`,
@@ -471,7 +452,6 @@ async function scanActFolder(
         );
         part.bgmPlaylist = bgmFiles.map(f => createAudioFile(f));
 
-        // Scan for subfolders (these are event playlists)
         for await (const [subName, subHandle] of musicFolder.entries()) {
             if (subHandle.kind !== 'directory') continue;
 

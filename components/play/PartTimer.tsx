@@ -19,44 +19,29 @@ export function PartTimer({ partId, partName, planContent }: PartTimerProps) {
   const [expectedMinutes, setExpectedMinutes] = useState<{ min: number; max?: number } | null>(null);
   const previousPartIdRef = useRef<string | null>(null);
 
-  // Save current time and restore time for new part when part changes
   useEffect(() => {
-    // Save the previous part's time before switching
     if (previousPartIdRef.current !== null && previousPartIdRef.current !== partId) {
       partTimeStore.set(previousPartIdRef.current, elapsedSeconds);
     }
 
-    // Restore the new part's time (or start at 0)
     const storedTime = partTimeStore.get(partId) ?? 0;
     setElapsedSeconds(storedTime);
 
-    // Update the ref to track the current part
     previousPartIdRef.current = partId;
   }, [partId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Parse expected duration from plan content
+  // Parse expected duration from plan content - supports patterns like:
+  // "## Duración: 15 minutos", "15-20 minutos", "Combate 5-10 minutos"
   useEffect(() => {
     if (!planContent) {
       setExpectedMinutes(null);
       return;
     }
 
-    // Look for patterns like:
-    // "## Duración: 15 minutos"
-    // "## Duración: 60-75 minutos"
-    // "15-20 minutos"
-    // "Interaccion con Jora 5 minutos"
-    // "Combate 5-10 minutos"
-    // "Epilogo 5 minutos"
-
-    // First try to find a duration with the ## Duración: header
     const headerDurationRegex = /##\s*Duración:\s*(\d+)(?:-(\d+))?\s*minutos?/i;
     let match = planContent.match(headerDurationRegex);
 
-    // If no header duration found, look for any duration pattern in the content
     if (!match) {
-      // This regex finds durations like "15-20 minutos", "5 minutos", "5-10 minutos"
-      // It looks for number(s) followed by "minutos" anywhere in the text
       const generalDurationRegex = /(\d+)(?:-(\d+))?\s*minutos?/i;
       match = planContent.match(generalDurationRegex);
     }
