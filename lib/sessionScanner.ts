@@ -1,4 +1,4 @@
-import { SessionConfig, Part, FileReference, AudioFile } from '@/types';
+import { SessionConfig, Part, FileReference, AudioFile, PlayerCharacterStats } from '@/types';
 import {
     getFileType,
     SUPPORTED_IMAGE_EXTENSIONS,
@@ -172,12 +172,136 @@ async function extractPCNames(folder: FileSystemDirectoryHandle): Promise<string
 }
 
 /**
+ * Regex patterns for extracting HP from various TTRPG character sheet formats
+ * Supports: Pathfinder, Starfinder, D&D, and generic formats
+ */
+const HP_PATTERNS = [
+    // Pathfinder 2e / Starfinder 2e style: "HP 45" or "HP: 45"
+    /\bHP\s*[:=]?\s*(\d+)/i,
+    // Hit Points explicit: "Hit Points: 45" or "Hit Points 45"
+    /\bHit\s+Points\s*[:=]?\s*(\d+)/i,
+    // Max HP style: "Max HP: 45" or "Maximum HP: 45"
+    /\bMax(?:imum)?\s+HP\s*[:=]?\s*(\d+)/i,
+    // Current/Max format: "HP: 45/45" or "HP 45/45" - takes max value
+    /\bHP\s*[:=]?\s*\d+\s*\/\s*(\d+)/i,
+    // Stamina Points for Starfinder: "SP 30" (also track HP)
+    /\bSP\s*[:=]?\s*(\d+)/i,
+    // Table row format: "| HP | 45 |"
+    /\|\s*HP\s*\|\s*(\d+)\s*\|/i,
+    // Markdown bold format: "**HP:** 45" or "**HP** 45"
+    /\*\*HP\*\*\s*[:=]?\s*(\d+)/i,
+    // Health: "Health: 45"
+    /\bHealth\s*[:=]?\s*(\d+)/i,
+];
+
+/**
+ * Regex patterns for extracting AC/DEF from various TTRPG character sheet formats
+ * Supports: AC (Armor Class), DEF (Defense), and various formats
+ */
+const DEF_PATTERNS = [
+    // AC style: "AC 18" or "AC: 18"
+    /\bAC\s*[:=]?\s*(\d+)/i,
+    // Armor Class explicit: "Armor Class: 18" or "Armor Class 18"
+    /\bArmor\s+Class\s*[:=]?\s*(\d+)/i,
+    // Defense style: "DEF 18" or "DEF: 18" or "Defense: 18"
+    /\bDef(?:ense)?\s*[:=]?\s*(\d+)/i,
+    // EAC/KAC for Starfinder 1e: "EAC 15; KAC 17" - takes first (EAC)
+    /\bEAC\s*[:=]?\s*(\d+)/i,
+    // KAC as fallback for Starfinder 1e
+    /\bKAC\s*[:=]?\s*(\d+)/i,
+    // Table row format: "| AC | 18 |"
+    /\|\s*AC\s*\|\s*(\d+)\s*\|/i,
+    // Markdown bold format: "**AC:** 18" or "**AC** 18"
+    /\*\*AC\*\*\s*[:=]?\s*(\d+)/i,
+    // Defence (British spelling)
+    /\bDefence\s*[:=]?\s*(\d+)/i,
+];
+
+/**
+ * Extracts a numeric stat from content using multiple regex patterns
+ */
+function extractStat(content: string, patterns: RegExp[]): number | null {
+    for (const pattern of patterns) {
+        const match = content.match(pattern);
+        if (match && match[1]) {
+            const value = parseInt(match[1], 10);
+            if (!isNaN(value) && value > 0) {
+                return value;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Reads a file's content from a FileSystemFileHandle
+ */
+async function readFileContent(fileHandle: FileSystemFileHandle): Promise<string> {
+    try {
+        const file = await fileHandle.getFile();
+        return await file.text();
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * Extracts player character stats (HP, AC/DEF) from character sheet markdown files
+ */
+async function extractPCStats(folder: FileSystemDirectoryHandle): Promise<PlayerCharacterStats[]> {
+    const stats: PlayerCharacterStats[] = [];
+
+    for await (const [name, entryHandle] of folder.entries()) {
+        if (entryHandle.kind !== 'file') continue;
+
+        const ext = name.toLowerCase().split('.').pop();
+        if (!SUPPORTED_MARKDOWN_EXTENSIONS.includes(ext || '')) continue;
+
+        // Extract name without extension
+        const pcName = name.replace(/\.(md|markdown)$/i, '');
+        if (!pcName) continue;
+
+        // Read file content
+        const fileHandle = entryHandle as FileSystemFileHandle;
+        const content = await readFileContent(fileHandle);
+
+        // Extract stats using regex patterns
+        const maxHP = extractStat(content, HP_PATTERNS);
+        const defense = extractStat(content, DEF_PATTERNS);
+
+        stats.push({
+            name: pcName,
+            maxHP,
+            defense,
+        });
+    }
+
+    // Sort alphabetically
+    return stats.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Detects player character stats from the characters/PCs folder
+ */
+async function detectPlayerCharacterStats(handle: FileSystemDirectoryHandle): Promise<PlayerCharacterStats[]> {
+    const pcsFolder = await getSubdirectory(handle, 'characters', 'PCs');
+    if (!pcsFolder) {
+        // Also try lowercase
+        const pcsLower = await getSubdirectory(handle, 'characters', 'pcs');
+        if (!pcsLower) return [];
+        return await extractPCStats(pcsLower);
+    }
+    return await extractPCStats(pcsFolder);
+}
+
+/**
  * Scans a session folder and generates a SessionConfig based on its structure
  */
 export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Promise<SessionConfig> {
     const folderName = handle.name;
     const acts = await detectActs(handle);
     const playerCharacters = await detectPlayerCharacters(handle);
+    const pcStats = await detectPlayerCharacterStats(handle);
 
     if (acts.length === 0) {
         // No acts found, create a single part with whatever we find
@@ -186,6 +310,7 @@ export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Prom
             folderName,
             parts: part ? [part] : [],
             playerCharacters,
+            pcStats,
         };
     }
 
@@ -202,6 +327,7 @@ export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Prom
         folderName,
         parts,
         playerCharacters,
+        pcStats,
     };
 }
 

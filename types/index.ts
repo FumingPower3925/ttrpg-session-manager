@@ -1,7 +1,14 @@
+export interface PlayerCharacterStats {
+  name: string;
+  maxHP: number | null;
+  defense: number | null;
+}
+
 export interface SessionConfig {
   folderName: string;
   parts: Part[];
   playerCharacters: string[]; // PC names for initiative tracking
+  pcStats: PlayerCharacterStats[]; // Parsed stats from character sheets
 }
 
 export interface Part {

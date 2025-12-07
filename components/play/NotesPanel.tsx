@@ -27,24 +27,24 @@ export function NotesPanel() {
 
   return (
     <>
-      {/* Semi-circle indicator when collapsed */}
+      {/* Semi-circle indicator when collapsed - RIGHT side */}
       {!isExpanded && (
         <div
-          className="fixed left-0 bottom-20 z-40 cursor-pointer"
+          className="fixed right-0 bottom-48 z-40 cursor-pointer"
           onMouseEnter={() => setIsExpanded(true)}
         >
-          <div className="bg-primary text-primary-foreground rounded-r-full pl-3 pr-4 py-3 shadow-lg flex items-center">
+          <div className="bg-primary text-primary-foreground rounded-l-full pr-3 pl-4 py-3 shadow-lg flex items-center">
             <FileText className="h-5 w-5" />
           </div>
         </div>
       )}
 
-      {/* Full panel when expanded */}
+      {/* Full panel when expanded - RIGHT side */}
       <div
-        className="fixed left-0 bottom-20 z-40 transition-all duration-300 ease-in-out"
+        className="fixed right-0 bottom-48 z-40 transition-all duration-300 ease-in-out"
         style={{
-          transform: `translateX(${isExpanded ? '0' : '-100%'})`,
-          maxHeight: '400px' // Smaller max height
+          transform: `translateX(${isExpanded ? '0' : '100%'})`,
+          maxHeight: '400px'
         }}
         onMouseLeave={() => setIsExpanded(false)}
       >
@@ -72,4 +72,3 @@ export function NotesPanel() {
     </>
   );
 }
-
