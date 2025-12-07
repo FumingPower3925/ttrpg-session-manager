@@ -1,6 +1,10 @@
 import { AudioFile, EventPlaylist } from '@/types';
 import { FileSystemManager } from './fileSystem';
 
+// Crossfade configuration
+const FADE_DURATION_MS = 1500; // Duration of fade in/out in milliseconds
+const FADE_INTERVAL_MS = 50;   // Update frequency for smooth animation
+
 export class AudioManager {
   private audio: HTMLAudioElement;
   private currentMode: 'bgm' | 'event' = 'bgm';
@@ -14,6 +18,10 @@ export class AudioManager {
   private volume: number = 0.7;
   private onTrackChangeCallback?: (trackName: string, mode: 'bgm' | 'event') => void;
   private onPlayStateChangeCallback?: (isPlaying: boolean) => void;
+
+  // Crossfade state management
+  private fadeInterval: ReturnType<typeof setInterval> | null = null;
+  private isFading: boolean = false;
 
   constructor(fileSystemManager: FileSystemManager) {
     this.audio = new Audio();
@@ -143,7 +151,7 @@ export class AudioManager {
   }
 
   /**
-   * Loads and plays a track
+   * Loads and plays a track with crossfade transition
    */
   private async loadAndPlayTrack(track: AudioFile) {
     if (!track) {
@@ -152,9 +160,12 @@ export class AudioManager {
     }
 
     try {
-      // Pause current playback to prevent interruption errors
+      // Cancel any ongoing fade to handle rapid track changes
+      this.cancelFade();
+
+      // If audio is currently playing, fade out first
       if (!this.audio.paused) {
-        this.audio.pause();
+        await this.fadeOut();
       }
 
       const url = await this.fileSystemManager.getFileURL(track.path);
@@ -164,22 +175,27 @@ export class AudioManager {
         URL.revokeObjectURL(this.audio.src);
       }
 
-      // Load new source
+      // Load new source with volume at 0 for fade-in
       this.audio.src = url;
-      this.audio.load(); // Explicitly load the new source
+      this.audio.volume = 0;
+      this.audio.load();
 
-      // Play the audio and handle promise properly
+      // Start playing and fade in
       await this.audio.play().catch((error) => {
-        // Ignore AbortError which happens during rapid track changes
         if (error.name !== 'AbortError') {
           console.error('Error playing audio:', error);
         }
       });
 
+      // Fade in to target volume
+      await this.fadeIn();
+
       this.onTrackChangeCallback?.(track.name, this.currentMode);
     } catch (error) {
       console.error('Error loading/playing track:', error);
-      // Try to play the next track if this one fails
+      // Reset volume and try next track if this one fails
+      this.audio.volume = this.volume;
+      this.isFading = false;
       this.playNext();
     }
   }
@@ -211,7 +227,85 @@ export class AudioManager {
    */
   setVolume(volume: number) {
     this.volume = Math.max(0, Math.min(1, volume));
-    this.audio.volume = this.volume;
+    // Only update audio volume if not currently fading
+    if (!this.isFading) {
+      this.audio.volume = this.volume;
+    }
+  }
+
+  /**
+   * Fades out the audio volume to 0 over FADE_DURATION_MS
+   */
+  private fadeOut(): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.audio.paused || this.audio.volume === 0) {
+        resolve();
+        return;
+      }
+
+      this.isFading = true;
+      const startVolume = this.audio.volume;
+      const steps = FADE_DURATION_MS / FADE_INTERVAL_MS;
+      const volumeStep = startVolume / steps;
+      let currentStep = 0;
+
+      this.fadeInterval = setInterval(() => {
+        currentStep++;
+        const newVolume = Math.max(0, startVolume - (volumeStep * currentStep));
+        this.audio.volume = newVolume;
+
+        if (currentStep >= steps || newVolume <= 0) {
+          this.audio.volume = 0;
+          this.audio.pause();
+          this.cancelFade();
+          resolve();
+        }
+      }, FADE_INTERVAL_MS);
+    });
+  }
+
+  /**
+   * Fades in the audio volume from 0 to the target volume over FADE_DURATION_MS
+   */
+  private fadeIn(): Promise<void> {
+    return new Promise((resolve) => {
+      const targetVolume = this.volume;
+
+      if (targetVolume === 0) {
+        this.isFading = false;
+        resolve();
+        return;
+      }
+
+      this.isFading = true;
+      this.audio.volume = 0;
+      const steps = FADE_DURATION_MS / FADE_INTERVAL_MS;
+      const volumeStep = targetVolume / steps;
+      let currentStep = 0;
+
+      this.fadeInterval = setInterval(() => {
+        currentStep++;
+        const newVolume = Math.min(targetVolume, volumeStep * currentStep);
+        this.audio.volume = newVolume;
+
+        if (currentStep >= steps || newVolume >= targetVolume) {
+          this.audio.volume = targetVolume;
+          this.cancelFade();
+          resolve();
+        }
+      }, FADE_INTERVAL_MS);
+    });
+  }
+
+  /**
+   * Cancels any ongoing fade operation
+   */
+  private cancelFade() {
+    if (this.fadeInterval) {
+      clearInterval(this.fadeInterval);
+      this.fadeInterval = null;
+    }
+    this.isFading = false;
   }
 
   /**
@@ -367,6 +461,7 @@ export class AudioManager {
    * Cleans up resources
    */
   cleanup() {
+    this.cancelFade();
     this.audio.pause();
     if (this.audio.src) {
       URL.revokeObjectURL(this.audio.src);
