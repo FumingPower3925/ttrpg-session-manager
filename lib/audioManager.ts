@@ -1,6 +1,12 @@
 import { AudioFile, EventPlaylist } from '@/types';
 import { FileSystemManager } from './fileSystem';
 
+// State saved per playlist to enable resume functionality
+interface PlaylistState {
+  trackIndex: number;
+  currentTime: number;
+}
+
 // Crossfade configuration
 const FADE_DURATION_MS = 1500; // Duration of fade in/out in milliseconds
 const FADE_INTERVAL_MS = 50;   // Update frequency for smooth animation
@@ -16,6 +22,10 @@ export class AudioManager {
   private fileSystemManager: FileSystemManager;
   private isInitialized: boolean = false;
   private volume: number = 0.7;
+
+  // State storage for resuming playlists
+  private playlistStates: Map<string, PlaylistState> = new Map();
+  private bgmState: PlaylistState = { trackIndex: 0, currentTime: 0 };
   private onTrackChangeCallback?: (trackName: string, mode: 'bgm' | 'event') => void;
   private onPlayStateChangeCallback?: (isPlaying: boolean) => void;
 
@@ -74,9 +84,26 @@ export class AudioManager {
   }
 
   /**
+   * Saves the current playlist state (track index and playback position)
+   */
+  private saveCurrentState(): void {
+    const currentTime = this.audio.currentTime || 0;
+    if (this.currentMode === 'bgm') {
+      this.bgmState = { trackIndex: this.currentBgmIndex, currentTime };
+    } else if (this.currentEventPlaylist) {
+      this.playlistStates.set(this.currentEventPlaylist.id, {
+        trackIndex: this.currentEventIndex,
+        currentTime
+      });
+    }
+  }
+
+  /**
    * Starts playing BGM
    */
   async playBGM() {
+    this.saveCurrentState();
+
     if (this.bgmTracks.length === 0) {
       console.warn('No BGM tracks loaded');
       alert('No background music tracks configured for this part.');
@@ -84,14 +111,23 @@ export class AudioManager {
     }
 
     this.currentMode = 'bgm';
-    this.currentBgmIndex = 0;
-    await this.loadAndPlayTrack(this.bgmTracks[this.currentBgmIndex]);
+    this.currentBgmIndex = this.bgmState.trackIndex;
+
+    // Ensure the index is valid
+    if (this.currentBgmIndex >= this.bgmTracks.length) {
+      this.currentBgmIndex = 0;
+      this.bgmState = { trackIndex: 0, currentTime: 0 };
+    }
+
+    await this.loadAndPlayTrack(this.bgmTracks[this.currentBgmIndex], this.bgmState.currentTime);
   }
 
   /**
    * Starts an event playlist
    */
   async startEvent(playlistId: string) {
+    this.saveCurrentState();
+
     const playlist = this.eventPlaylists.get(playlistId);
     if (!playlist) {
       console.error(`Event playlist not found: ${playlistId}`);
@@ -105,8 +141,19 @@ export class AudioManager {
 
     this.currentMode = 'event';
     this.currentEventPlaylist = playlist;
-    this.currentEventIndex = 0;
-    await this.loadAndPlayTrack(playlist.tracks[0]);
+
+    // Restore saved state for this playlist
+    const savedState = this.playlistStates.get(playlistId);
+    this.currentEventIndex = savedState?.trackIndex ?? 0;
+    const startTime = savedState?.currentTime ?? 0;
+
+    // Ensure the index is valid
+    if (this.currentEventIndex >= playlist.tracks.length) {
+      this.currentEventIndex = 0;
+      this.playlistStates.delete(playlistId);
+    }
+
+    await this.loadAndPlayTrack(playlist.tracks[this.currentEventIndex], startTime);
   }
 
   /**
@@ -150,7 +197,7 @@ export class AudioManager {
   /**
    * Loads and plays a track with crossfade transition
    */
-  private async loadAndPlayTrack(track: AudioFile) {
+  private async loadAndPlayTrack(track: AudioFile, startTime: number = 0) {
     if (!track) {
       console.warn('Attempted to play an undefined track.');
       return;
@@ -172,6 +219,11 @@ export class AudioManager {
       this.audio.src = url;
       this.audio.volume = 0;
       this.audio.load();
+
+      // Restore playback position if resuming
+      if (startTime > 0) {
+        this.audio.currentTime = startTime;
+      }
 
       await this.audio.play().catch((error) => {
         if (error.name !== 'AbortError') {
