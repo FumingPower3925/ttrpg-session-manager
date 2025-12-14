@@ -465,7 +465,7 @@ async function scanActFolder(
             if (playlistTracks.length > 0) {
                 part.eventPlaylists.push({
                     id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-                    name: subName,
+                    name: fileNameToDisplayName(subName),
                     tracks: playlistTracks.map(f => createAudioFile(f)),
                 });
             }
