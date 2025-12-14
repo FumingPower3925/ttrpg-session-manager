@@ -38,7 +38,7 @@ export default function PlayPage() {
   const [currentPlanContent, setCurrentPlanContent] = useState<string | null>(null);
   const [isHeaderCompact, setIsHeaderCompact] = useState(false);
   const [lastScrollY, setLastScrollY] = useState(0);
-  const [scrollPositions, setScrollPositions] = useState<Map<string, number>>(new Map());
+  const scrollPositionsRef = useRef<Map<string, number>>(new Map());
 
   const currentPart = config?.parts.find(p => p.id === currentPartId);
 
@@ -239,12 +239,16 @@ export default function PlayPage() {
   }, [previousTab]);
 
   const saveScrollPosition = useCallback((filePath: string, scrollTop: number) => {
-    setScrollPositions(prev => new Map(prev).set(filePath, scrollTop));
-  }, []);
+    if (!currentPartId) return;
+    const key = `${currentPartId}:${filePath}`;
+    scrollPositionsRef.current.set(key, scrollTop);
+  }, [currentPartId]);
 
   const getScrollPosition = useCallback((filePath: string): number => {
-    return scrollPositions.get(filePath) || 0;
-  }, [scrollPositions]);
+    if (!currentPartId) return 0;
+    const key = `${currentPartId}:${filePath}`;
+    return scrollPositionsRef.current.get(key) || 0;
+  }, [currentPartId]);
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>, filePath?: string) => {
     const currentScrollY = e.currentTarget.scrollTop;
@@ -557,13 +561,11 @@ function PlayContent({
     load();
   }, [file, loadContent]);
 
-  // Restore scroll position when content loads
+  // Restore scroll position when content loads (0 for first-time visits, saved position for returns)
   useEffect(() => {
     if (!isLoading && getScrollPosition && scrollRef.current) {
       const savedScrollPosition = getScrollPosition(file.path);
-      if (savedScrollPosition > 0) {
-        scrollRef.current.scrollTop = savedScrollPosition;
-      }
+      scrollRef.current.scrollTop = savedScrollPosition;
     }
   }, [isLoading, getScrollPosition, file.path]);
 
