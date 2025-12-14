@@ -188,16 +188,25 @@ export default function PlayPage() {
     }
 
     if (audioManager) {
+      const isInEventMode = audioManager.getCurrentMode() === 'event';
       const isSameBGM = audioManager.getCurrentMode() === 'bgm' &&
         audioManager.getBGMPlaylist().length === part.bgmPlaylist.length &&
         audioManager.getBGMPlaylist().every((track, index) =>
           track.path === part.bgmPlaylist[index]?.path
         );
 
+      // Check if current event playlist still exists in the new part's playlists
+      const currentEventPlaylist = audioManager.getCurrentEventPlaylist();
+      const eventPlaylistStillExists = currentEventPlaylist !== null &&
+        part.eventPlaylists.some(playlist => playlist.id === currentEventPlaylist.id);
+
       audioManager.loadBGM(part.bgmPlaylist);
       audioManager.loadEventPlaylists(part.eventPlaylists);
 
-      if (part.bgmPlaylist.length > 0 && !isSameBGM) {
+      // Only auto-start BGM if:
+      // 1. Not currently in event mode OR current event playlist no longer exists
+      // 2. BGM playlists have changed
+      if (part.bgmPlaylist.length > 0 && !isSameBGM && (!isInEventMode || !eventPlaylistStillExists)) {
         audioManager.playBGM();
       }
     }
