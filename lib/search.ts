@@ -6,17 +6,19 @@ export interface SearchResult {
   name: string; // file name
   score: number;
   context: string; // snippet of text around the match
+  partId: string;
+  partName: string;
 }
 
 export class SearchManager {
   private index: lunr.Index | null = null;
-  private documents: Map<string, { name: string; content: string }> = new Map();
+  private documents: Map<string, { name: string; content: string; partId: string; partName: string }> = new Map();
 
   /**
    * Indexes markdown documents for search
    */
   async indexDocuments(
-    documents: Array<{ file: FileReference; content: string }>
+    documents: Array<{ file: FileReference; content: string; partId: string; partName: string }>
   ) {
     this.documents.clear();
 
@@ -24,6 +26,8 @@ export class SearchManager {
       this.documents.set(doc.file.path, {
         name: doc.file.name,
         content: doc.content,
+        partId: doc.partId,
+        partName: doc.partName,
       });
     });
 
@@ -43,9 +47,9 @@ export class SearchManager {
   }
 
   /**
-   * Searches the indexed documents
+   * Searches the indexed documents, optionally filtered by part
    */
-  search(query: string, maxResults: number = 10): SearchResult[] {
+  search(query: string, maxResults: number = 10, filterPartId?: string): SearchResult[] {
     if (!this.index || !query.trim()) {
       return [];
     }
@@ -53,21 +57,25 @@ export class SearchManager {
     try {
       const results = this.index.search(query);
 
-      return results.slice(0, maxResults).map(result => {
-        const doc = this.documents.get(result.ref);
-        if (!doc) {
-          return null;
-        }
+      return results
+        .map(result => {
+          const doc = this.documents.get(result.ref);
+          if (!doc) return null;
+          if (filterPartId && doc.partId !== filterPartId) return null;
 
-        const context = this.extractContext(doc.content, query);
+          const context = this.extractContext(doc.content, query);
 
-        return {
-          ref: result.ref,
-          name: doc.name,
-          score: result.score,
-          context,
-        };
-      }).filter((r): r is SearchResult => r !== null);
+          return {
+            ref: result.ref,
+            name: doc.name,
+            score: result.score,
+            context,
+            partId: doc.partId,
+            partName: doc.partName,
+          };
+        })
+        .filter((r): r is SearchResult => r !== null)
+        .slice(0, maxResults);
     } catch (error) {
       console.error('Search error:', error);
       return [];
