@@ -96,13 +96,13 @@ export default function PlayPage() {
   };
 
   const loadAllMarkdownContent = async (config: SessionConfig) => {
-    const documents: Array<{ file: FileReference; content: string }> = [];
+    const documents: Array<{ file: FileReference; content: string; partId: string; partName: string }> = [];
 
     for (const part of config.parts) {
       if (part.planFile) {
         try {
           const content = await fileSystemManager.readTextFile(part.planFile.path);
-          documents.push({ file: part.planFile, content });
+          documents.push({ file: part.planFile, content, partId: part.id, partName: part.name });
         } catch (err) {
           console.error(`Error loading plan for ${part.name}:`, err);
         }
@@ -111,7 +111,7 @@ export default function PlayPage() {
       for (const doc of part.supportDocs) {
         try {
           const content = await fileSystemManager.readTextFile(doc.path);
-          documents.push({ file: doc, content });
+          documents.push({ file: doc, content, partId: part.id, partName: part.name });
         } catch (err) {
           console.error(`Error loading doc ${doc.name}:`, err);
         }
@@ -424,6 +424,8 @@ export default function PlayPage() {
                 <SearchDialog
                   searchManager={searchManager}
                   onResultClick={handleSearchResultClick}
+                  currentPartId={currentPartId}
+                  currentPartName={currentPart?.name ?? null}
                 />
               </div>
 
