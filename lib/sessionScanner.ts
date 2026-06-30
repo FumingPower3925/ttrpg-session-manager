@@ -1,4 +1,4 @@
-import { SessionConfig, Part, FileReference, AudioFile, PlayerCharacterStats } from '@/types';
+import { SessionConfig, Part, PathDef, FileReference, AudioFile, PlayerCharacterStats } from '@/types';
 import {
     getFileType,
     SUPPORTED_IMAGE_EXTENSIONS,
@@ -15,6 +15,17 @@ const SESSION_FOLDERS = ['characters', 'images', 'maps', 'music', 'plan', 'threa
  * Pattern to match act folders (act1, act2, etc.)
  */
 const ACT_PATTERN = /^act(\d+)$/i;
+
+/**
+ * Reserved subfolder names that are never treated as branching path folders.
+ * (PCs/pcs under characters hold player-character sheets, not a story branch.)
+ */
+const RESERVED_PATH_SUBFOLDERS = new Set(['pcs']);
+
+/**
+ * Color palette cycled across detected paths so each branch is visually distinct.
+ */
+const PATH_COLOR_PALETTE = ['#ef4444', '#3b82f6', '#22c55e', '#a855f7', '#f59e0b', '#ec4899'];
 
 /**
  * Checks if a folder structure matches the expected session format
@@ -59,6 +70,59 @@ export async function detectActs(handle: FileSystemDirectoryHandle): Promise<str
         const numB = parseInt(b.match(ACT_PATTERN)?.[1] || '0');
         return numA - numB;
     });
+}
+
+/**
+ * Detects all branching "path" (node) folders across the session structure.
+ *
+ * Within each category folder (characters, images, maps, music, plan, threats), any
+ * subfolder that is NOT a trunk `act<N>` folder and NOT a reserved folder (PCs/pcs)
+ * is considered a branching path. The same path folder name appears across categories.
+ *
+ * Folder names are returned case-preserved (FileSystemDirectoryHandle is case-sensitive)
+ * and de-duplicated by their exact name, sorted alphabetically.
+ */
+export async function detectPathFolders(handle: FileSystemDirectoryHandle): Promise<string[]> {
+    const pathSet = new Set<string>();
+
+    for await (const [name, entryHandle] of handle.entries()) {
+        if (entryHandle.kind !== 'directory') continue;
+
+        const categoryLower = name.toLowerCase();
+        if (!SESSION_FOLDERS.includes(categoryLower as any)) continue;
+
+        const folderHandle = entryHandle as FileSystemDirectoryHandle;
+        const isCharacters = categoryLower === 'characters';
+
+        for await (const [subName, subHandle] of folderHandle.entries()) {
+            if (subHandle.kind !== 'directory') continue;
+            if (ACT_PATTERN.test(subName)) continue; // trunk act folder
+            if (isCharacters && RESERVED_PATH_SUBFOLDERS.has(subName.toLowerCase())) continue; // PCs
+            pathSet.add(subName);
+        }
+    }
+
+    return Array.from(pathSet).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Produces a human-readable display name for a path folder.
+ *
+ * Strips a leading branch-marker prefix (nodo/node/path/ruta/camino...) if present, then
+ * converts the remainder to a display name. Falls back to the full folder name if stripping
+ * the prefix would leave nothing.
+ *
+ * Examples:
+ *   "nodoA_coro_de_vidrio" -> "Coro De Vidrio"
+ *   "nodoB"                 -> "Nodob"
+ */
+function prettifyPathName(folderName: string): string {
+    const stripped = folderName.replace(/^(nodo|node|path|ruta|camino)[a-z0-9]*[_-]/i, '');
+    if (stripped && stripped !== folderName) {
+        const pretty = fileNameToDisplayName(stripped);
+        if (pretty) return pretty;
+    }
+    return fileNameToDisplayName(folderName);
 }
 
 /**
@@ -331,10 +395,12 @@ async function getActDisplayName(
 export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Promise<SessionConfig> {
     const folderName = handle.name;
     const acts = await detectActs(handle);
+    const pathFolders = await detectPathFolders(handle);
     const playerCharacters = await detectPlayerCharacters(handle);
     const pcStats = await detectPlayerCharacterStats(handle);
 
-    if (acts.length === 0) {
+    // No acts AND no branching paths: fall back to a single flat part (legacy behavior).
+    if (acts.length === 0 && pathFolders.length === 0) {
         const part = await scanForSinglePart(handle, 'Part 1');
         return {
             folderName,
@@ -344,7 +410,7 @@ export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Prom
         };
     }
 
-    // Create a part for each act
+    // Trunk parts: one per act folder, in act-number order.
     const parts: Part[] = [];
 
     for (const actName of acts) {
@@ -355,11 +421,41 @@ export async function scanSessionFolder(handle: FileSystemDirectoryHandle): Prom
         parts.push(part);
     }
 
+    // No branching paths: byte-identical legacy output (no paths/activePathId, no pathId).
+    if (pathFolders.length === 0) {
+        return {
+            folderName,
+            parts,
+            playerCharacters,
+            pcStats,
+        };
+    }
+
+    // Branch point is the last trunk part (empty string when there are no trunk parts at all).
+    const branchAfterPartId = parts.length > 0 ? parts[parts.length - 1].id : '';
+
+    const paths: PathDef[] = [];
+
+    for (let i = 0; i < pathFolders.length; i++) {
+        const pathFolder = pathFolders[i];
+        const pathParts = await scanPathFolder(handle, pathFolder);
+        parts.push(...pathParts);
+
+        paths.push({
+            id: pathFolder,
+            name: prettifyPathName(pathFolder),
+            branchAfterPartId,
+            color: PATH_COLOR_PALETTE[i % PATH_COLOR_PALETTE.length],
+        });
+    }
+
     return {
         folderName,
         parts,
         playerCharacters,
         pcStats,
+        paths,
+        activePathId: null,
     };
 }
 
@@ -476,6 +572,151 @@ async function scanActFolder(
 }
 
 /**
+ * Collects the non-plan support content (characters, threats, maps markdown -> supportDocs;
+ * images; music BGM + event playlists) for a given path subfolder. Used to attach a path's
+ * shared media to its FIRST Part only, avoiding duplicate search indexing.
+ */
+async function collectPathSupportContent(
+    handle: FileSystemDirectoryHandle,
+    pathFolder: string,
+    part: Part
+): Promise<void> {
+    // Images
+    const imagesFolder = await getSubdirectory(handle, 'images', pathFolder);
+    if (imagesFolder) {
+        const imageFiles = await getFilesFromDirectory(
+            imagesFolder,
+            `images/${pathFolder}`,
+            SUPPORTED_IMAGE_EXTENSIONS
+        );
+        part.images = imageFiles.map(f => createFileReference(f, 'image'));
+    }
+
+    // Characters
+    const charactersFolder = await getSubdirectory(handle, 'characters', pathFolder);
+    if (charactersFolder) {
+        const characterFiles = await getFilesFromDirectory(
+            charactersFolder,
+            `characters/${pathFolder}`,
+            SUPPORTED_MARKDOWN_EXTENSIONS
+        );
+        part.supportDocs.push(...characterFiles.map(f => createFileReference(f, 'markdown')));
+    }
+
+    // Threats
+    const threatsFolder = await getSubdirectory(handle, 'threats', pathFolder);
+    if (threatsFolder) {
+        const threatFiles = await getFilesFromDirectory(
+            threatsFolder,
+            `threats/${pathFolder}`,
+            SUPPORTED_MARKDOWN_EXTENSIONS
+        );
+        part.supportDocs.push(...threatFiles.map(f => createFileReference(f, 'markdown')));
+    }
+
+    // Maps
+    const mapsFolder = await getSubdirectory(handle, 'maps', pathFolder);
+    if (mapsFolder) {
+        const mapFiles = await getFilesFromDirectory(
+            mapsFolder,
+            `maps/${pathFolder}`,
+            SUPPORTED_MARKDOWN_EXTENSIONS
+        );
+        part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+    }
+
+    // Music (BGM tracks + event playlist subfolders), same logic as scanActFolder
+    const musicFolder = await getSubdirectory(handle, 'music', pathFolder);
+    if (musicFolder) {
+        const bgmFiles = await getFilesFromDirectory(
+            musicFolder,
+            `music/${pathFolder}`,
+            SUPPORTED_AUDIO_EXTENSIONS
+        );
+        part.bgmPlaylist = bgmFiles.map(f => createAudioFile(f));
+
+        for await (const [subName, subHandle] of musicFolder.entries()) {
+            if (subHandle.kind !== 'directory') continue;
+
+            const playlistFolder = subHandle as FileSystemDirectoryHandle;
+            const playlistTracks = await getFilesFromDirectory(
+                playlistFolder,
+                `music/${pathFolder}/${subName}`,
+                SUPPORTED_AUDIO_EXTENSIONS
+            );
+
+            if (playlistTracks.length > 0) {
+                part.eventPlaylists.push({
+                    id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+                    name: fileNameToDisplayName(subName),
+                    tracks: playlistTracks.map(f => createAudioFile(f)),
+                });
+            }
+        }
+    }
+}
+
+/**
+ * Creates an empty Part shell tagged with the given path id.
+ */
+function createPathPart(name: string, pathId: string): Part {
+    return {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        name,
+        planFile: null,
+        images: [],
+        supportDocs: [],
+        bgmPlaylist: [],
+        eventPlaylists: [],
+        pathId,
+    };
+}
+
+/**
+ * Scans a branching path (node) folder and produces its ordered Parts.
+ *
+ * Each markdown file in plan/<pathFolder>/ becomes ONE Part (ordered by filename). All of the
+ * path's support docs/media (characters, threats, maps, images, music) attach to the FIRST Part
+ * only, so they are not indexed multiple times. Every Part is tagged with `pathId = pathFolder`.
+ *
+ * Edge case: if plan/<pathFolder>/ has no markdown but other categories provide content, a single
+ * Part (planFile null) is created to hold that support content.
+ */
+async function scanPathFolder(
+    handle: FileSystemDirectoryHandle,
+    pathFolder: string
+): Promise<Part[]> {
+    const parts: Part[] = [];
+
+    const planFolder = await getSubdirectory(handle, 'plan', pathFolder);
+    let planFiles: Array<{ name: string; path: string }> = [];
+    if (planFolder) {
+        planFiles = await getFilesFromDirectory(
+            planFolder,
+            `plan/${pathFolder}`,
+            SUPPORTED_MARKDOWN_EXTENSIONS
+        );
+    }
+
+    if (planFiles.length > 0) {
+        for (const planFile of planFiles) {
+            const part = createPathPart(fileNameToDisplayName(planFile.name), pathFolder);
+            part.planFile = createFileReference(planFile, 'markdown');
+            parts.push(part);
+        }
+        // Support docs/media attach to the first Part only.
+        await collectPathSupportContent(handle, pathFolder, parts[0]);
+    } else {
+        // No plan markdown: still surface any support content on a single Part.
+        const part = createPathPart(prettifyPathName(pathFolder), pathFolder);
+        await collectPathSupportContent(handle, pathFolder, part);
+        parts.push(part);
+    }
+
+    return parts;
+}
+
+/**
  * Fallback: scan top-level folders without act structure
  */
 async function scanForSinglePart(
@@ -534,25 +775,43 @@ export function getExpectedStructure(): string {
 ├── characters/
 │   ├── PCs/                 (optional)
 │   │   └── CharacterName.md
-│   └── act[N]/
+│   ├── act[N]/             (TRUNK act — shared spine)
+│   │   └── *.md
+│   └── nodeName/           (PATH/"node" — a branch; same name across categories)
 │       └── *.md
 ├── images/
-│   └── act[N]/
+│   ├── act[N]/
+│   │   └── (images)
+│   └── nodeName/
 │       └── (images)
 ├── maps/
-│   └── act[N]/
+│   ├── act[N]/
+│   │   └── *.md
+│   └── nodeName/
 │       └── *.md
 ├── music/
-│   └── act[N]/
-│       ├── *.mp3            (BGM tracks)
-│       └── PlaylistName/    (event playlists)
-│           └── *.mp3
+│   ├── act[N]/
+│   │   ├── *.mp3            (BGM tracks)
+│   │   └── PlaylistName/    (event playlists)
+│   │       └── *.mp3
+│   └── nodeName/
+│       └── *.mp3
 ├── plan/
-│   └── act[N]/
-│       └── act_name.md      (filename → act name, _ → space)
+│   ├── act[N]/
+│   │   └── act_name.md      (filename → act name, _ → space)
+│   └── nodeName/            (each plan file = one ACT of this path, ordered by filename)
+│       ├── acto2.md
+│       └── acto3.md
 └── threats/
-    └── act[N]/
-        └── *.md`;
+    ├── act[N]/
+    │   └── *.md
+    └── nodeName/
+        └── *.md
+
+Branching: act[N] folders form the TRUNK (the shared spine). Any other named
+subfolder (a "node", e.g. nodoA_coro_de_vidrio) is a branching PATH. Its plan
+files are that path's acts; its support docs/media attach to the path's first
+act. Paths branch after the last trunk act, and the GM picks one at play time.`;
 }
 
 /**
