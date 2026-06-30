@@ -172,8 +172,7 @@ test.describe('Play Page - Backward Compatibility (no paths)', () => {
         await expect(page.getByRole('menuitem', { name: 'Act 2' })).toBeVisible();
         await page.keyboard.press('Escape');
 
-        // No path switcher and no branch picker for a config without paths.
-        await expect(page.getByText('Choose a path')).toHaveCount(0);
+        // No path switcher for a config without paths.
         await expect(page.getByRole('button', { name: /No path/i })).toHaveCount(0);
     });
 });
@@ -196,13 +195,13 @@ test.describe('Play Page - Branching Paths', () => {
         activePathId: null,
     };
 
-    test('should hide branch picker before the branch point and only show trunk parts', async ({ page }) => {
+    test('should show only trunk parts while no path is active', async ({ page }) => {
         await enterPlayMode(page, BRANCHED_CONFIG);
 
-        // Starts on Act 1 (before the fork): no branch picker yet.
-        await expect(page.getByRole('heading', { name: 'Choose a path' })).toHaveCount(0);
+        // The path switcher is present (config has paths) and defaults to "No path".
+        await expect(page.getByRole('button', { name: /No path/i })).toBeVisible();
 
-        // The part dropdown should list only trunk parts (no path-only parts).
+        // The part dropdown lists only trunk parts (no path-only parts).
         await page.getByRole('button', { name: /Act 1 - Setup/ }).click();
         await expect(page.getByRole('menuitem', { name: 'Act 1 - Setup' })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: 'Act 2 - Fork' })).toBeVisible();
@@ -211,45 +210,42 @@ test.describe('Play Page - Branching Paths', () => {
         await page.keyboard.press('Escape');
     });
 
-    test('should surface branch picker at the fork and filter visibleParts after choosing a path', async ({ page }) => {
+    test('should filter visibleParts to trunk + chosen path via the path switcher', async ({ page }) => {
         await enterPlayMode(page, BRANCHED_CONFIG);
 
-        // Navigate to the branch point (Act 2 - Fork).
+        // Choose "Sneak In" from the path switcher.
+        await page.getByRole('button', { name: /No path/i }).click();
+        await page.getByRole('menuitem', { name: 'Sneak In' }).click();
+
+        // The switcher reflects the active path.
+        await expect(page.getByRole('button', { name: /Sneak In/ })).toBeVisible();
+
+        // The part dropdown now shows trunk + Sneak In, but NOT Fight Through.
         await page.getByRole('button', { name: /Act 1 - Setup/ }).click();
-        await page.getByRole('menuitem', { name: 'Act 2 - Fork' }).click();
-
-        // Branch picker appears.
-        await expect(page.getByRole('heading', { name: 'Choose a path' })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Sneak In' })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Fight Through' })).toBeVisible();
-
-        // Choose "Sneak In".
-        await page.getByRole('button', { name: 'Sneak In' }).click();
-
-        // Picker dismissed once a path is active.
-        await expect(page.getByRole('heading', { name: 'Choose a path' })).toHaveCount(0);
-
-        // Now the part dropdown shows trunk + Sneak In, but NOT Fight Through.
-        await page.getByRole('button', { name: /Act 2 - Fork/ }).click();
         await expect(page.getByRole('menuitem', { name: 'Act 2 - Fork' })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: 'Sneak In' })).toBeVisible();
         await expect(page.getByRole('menuitem', { name: 'Fight Through' })).toHaveCount(0);
         await page.keyboard.press('Escape');
     });
 
-    test('should allow resetting the active path back to trunk-only', async ({ page }) => {
+    test('should reset the active path back to trunk-only via the path switcher', async ({ page }) => {
         await enterPlayMode(page, BRANCHED_CONFIG);
 
-        await page.getByRole('button', { name: /Act 1 - Setup/ }).click();
-        await page.getByRole('menuitem', { name: 'Act 2 - Fork' }).click();
-        await page.getByRole('button', { name: 'Fight Through' }).click();
+        // Activate a path...
+        await page.getByRole('button', { name: /No path/i }).click();
+        await page.getByRole('menuitem', { name: 'Fight Through' }).click();
+        await expect(page.getByRole('button', { name: /Fight Through/ })).toBeVisible();
 
-        // Path switcher now reads "Fight Through"; reset it to trunk only.
+        // ...then reset it back to trunk-only.
         await page.getByRole('button', { name: /Fight Through/ }).click();
         await page.getByRole('menuitem', { name: /No path \(trunk only\)/i }).click();
+        await expect(page.getByRole('button', { name: /No path/i })).toBeVisible();
 
-        // Branch picker returns since no path is active at/after the fork.
-        await expect(page.getByRole('heading', { name: 'Choose a path' })).toBeVisible();
+        // The part dropdown no longer lists path parts.
+        await page.getByRole('button', { name: /Act 1 - Setup/ }).click();
+        await expect(page.getByRole('menuitem', { name: 'Sneak In' })).toHaveCount(0);
+        await expect(page.getByRole('menuitem', { name: 'Fight Through' })).toHaveCount(0);
+        await page.keyboard.press('Escape');
     });
 });
 
