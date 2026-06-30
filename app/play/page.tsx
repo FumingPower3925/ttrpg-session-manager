@@ -18,7 +18,7 @@ import { InitiativeTracker } from '@/components/play/InitiativeTracker';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { ArrowLeft, Columns, FileText, FolderOpen } from 'lucide-react';
+import { ArrowLeft, Columns, FileText, FolderOpen, GitBranch } from 'lucide-react';
 
 export default function PlayPage() {
   const router = useRouter();
@@ -27,6 +27,7 @@ export default function PlayPage() {
   const [audioManager, setAudioManager] = useState<AudioManager | null>(null);
   const [searchManager] = useState(() => new SearchManager());
   const [currentPartId, setCurrentPartId] = useState<string | null>(null);
+  const [activePathId, setActivePathId] = useState<string | null>(null);
   const [currentTab, setCurrentTab] = useState<string>('plan');
   const [previousTab, setPreviousTab] = useState<string>('plan');
   const [isLoading, setIsLoading] = useState(true);
@@ -42,6 +43,25 @@ export default function PlayPage() {
 
   const currentPart = config?.parts.find(p => p.id === currentPartId);
 
+  // Parts visible given the active path: trunk parts (no pathId) plus the active path's parts,
+  // preserving the original array order.
+  const visibleParts = (config?.parts ?? []).filter(
+    p => p.pathId == null || p.pathId === activePathId
+  );
+
+  const paths = config?.paths ?? [];
+  const hasPaths = paths.length > 0;
+
+  // Paths the GM may choose right now: a path becomes eligible once the current part has
+  // reached its branch point (current trunk index >= the branchAfter part's index).
+  const allParts = config?.parts ?? [];
+  const currentPartIndex = allParts.findIndex(p => p.id === currentPartId);
+  const eligiblePaths = paths.filter(path => {
+    const branchIndex = allParts.findIndex(p => p.id === path.branchAfterPartId);
+    return branchIndex !== -1 && currentPartIndex !== -1 && currentPartIndex >= branchIndex;
+  });
+  const showBranchPicker = hasPaths && activePathId == null && eligiblePaths.length > 0;
+
   const [needsFolderSelection, setNeedsFolderSelection] = useState(true);
 
   useEffect(() => {
@@ -56,6 +76,7 @@ export default function PlayPage() {
 
     const loadedConfig: SessionConfig = JSON.parse(configJson);
     setConfig(loadedConfig);
+    setActivePathId(loadedConfig.activePathId ?? null);
     setIsLoading(false);
   }, [router]);
 
@@ -96,13 +117,13 @@ export default function PlayPage() {
   };
 
   const loadAllMarkdownContent = async (config: SessionConfig) => {
-    const documents: Array<{ file: FileReference; content: string; partId: string; partName: string }> = [];
+    const documents: Array<{ file: FileReference; content: string; partId: string; partName: string; pathId?: string | null }> = [];
 
     for (const part of config.parts) {
       if (part.planFile) {
         try {
           const content = await fileSystemManager.readTextFile(part.planFile.path);
-          documents.push({ file: part.planFile, content, partId: part.id, partName: part.name });
+          documents.push({ file: part.planFile, content, partId: part.id, partName: part.name, pathId: part.pathId });
         } catch (err) {
           console.error(`Error loading plan for ${part.name}:`, err);
         }
@@ -111,7 +132,7 @@ export default function PlayPage() {
       for (const doc of part.supportDocs) {
         try {
           const content = await fileSystemManager.readTextFile(doc.path);
-          documents.push({ file: doc, content, partId: part.id, partName: part.name });
+          documents.push({ file: doc, content, partId: part.id, partName: part.name, pathId: part.pathId });
         } catch (err) {
           console.error(`Error loading doc ${doc.name}:`, err);
         }
@@ -227,6 +248,29 @@ export default function PlayPage() {
     setLastScrollY(0);
   }, []);
 
+  const handlePathChange = useCallback((newPathId: string | null) => {
+    setActivePathId(newPathId);
+
+    // Persist the choice back into the in-memory config object.
+    setConfig(prev => (prev ? { ...prev, activePathId: newPathId } : prev));
+
+    // If the current part belongs to a now-hidden path, move selection to a visible part.
+    if (!config) return;
+    const current = config.parts.find(p => p.id === currentPartId);
+    if (current && current.pathId != null && current.pathId !== newPathId) {
+      const path = config.paths?.find(pd => pd.id === newPathId);
+      const fallback =
+        (path && config.parts.find(p => p.id === path.branchAfterPartId)) ||
+        config.parts.find(p => p.pathId == null || p.pathId === newPathId);
+      if (fallback) {
+        setCurrentPartId(fallback.id);
+        setCurrentTab('plan');
+        setPreviousTab('plan');
+        setSplitViewEnabled(false);
+      }
+    }
+  }, [config, currentPartId]);
+
   const handleTabChange = useCallback((newTab: string) => {
     if (newTab.startsWith('image-')) {
       setPreviousTab(currentTab);
@@ -269,7 +313,16 @@ export default function PlayPage() {
 
   const handleSearchResultClick = (filePath: string) => {
     for (const part of config?.parts || []) {
+      // If the target part lives on a non-active path, activate that path so it becomes visible.
+      const activatePathForPart = () => {
+        if (part.pathId != null && part.pathId !== activePathId) {
+          setActivePathId(part.pathId);
+          setConfig(prev => (prev ? { ...prev, activePathId: part.pathId } : prev));
+        }
+      };
+
       if (part.planFile?.path === filePath) {
+        activatePathForPart();
         setCurrentPartId(part.id);
         setCurrentTab('plan');
         setPreviousTab('plan');
@@ -278,6 +331,7 @@ export default function PlayPage() {
 
       const docIndex = part.supportDocs.findIndex(doc => doc.path === filePath);
       if (docIndex !== -1) {
+        activatePathForPart();
         setCurrentPartId(part.id);
         setCurrentTab(`doc-${docIndex}`);
         setPreviousTab(`doc-${docIndex}`);
@@ -367,10 +421,13 @@ export default function PlayPage() {
       {/* Floating Navigation */}
       {currentTab !== 'image' && (
         <FloatingNav
-          parts={config.parts}
+          parts={visibleParts}
           currentPartId={currentPartId}
           onPartChange={handlePartChange}
           isCompact={isHeaderCompact}
+          paths={paths}
+          activePathId={activePathId}
+          onPathChange={handlePathChange}
         />
       )}
 
@@ -426,6 +483,7 @@ export default function PlayPage() {
                   onResultClick={handleSearchResultClick}
                   currentPartId={currentPartId}
                   currentPartName={currentPart?.name ?? null}
+                  activePathId={activePathId}
                 />
               </div>
 
@@ -446,6 +504,33 @@ export default function PlayPage() {
                     {splitViewEnabled ? 'Close Split View' : 'Split with Plan'}
                   </Button>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Branch Picker: prompt the GM to choose a path once the branch point is reached */}
+        {currentTab !== 'image' && showBranchPicker && (
+          <div className="px-6 pb-4">
+            <div className="rounded-lg border border-primary/40 bg-primary/5 p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <GitBranch className="h-5 w-5 text-primary" />
+                <h3 className="font-semibold">Choose a path</h3>
+              </div>
+              <p className="text-sm text-muted-foreground mb-3">
+                The story branches here. Pick which path the party takes to continue.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {eligiblePaths.map((path) => (
+                  <Button
+                    key={path.id}
+                    onClick={() => handlePathChange(path.id)}
+                    variant="default"
+                  >
+                    <GitBranch className="h-4 w-4 mr-2" />
+                    {path.name}
+                  </Button>
+                ))}
               </div>
             </div>
           </div>

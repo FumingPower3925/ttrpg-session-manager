@@ -15,9 +15,10 @@ interface SearchDialogProps {
   onResultClick: (filePath: string) => void;
   currentPartId: string | null;
   currentPartName: string | null;
+  activePathId?: string | null;
 }
 
-export function SearchDialog({ searchManager, onResultClick, currentPartId, currentPartName }: SearchDialogProps) {
+export function SearchDialog({ searchManager, onResultClick, currentPartId, currentPartName, activePathId = null }: SearchDialogProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -33,13 +34,15 @@ export function SearchDialog({ searchManager, onResultClick, currentPartId, curr
     setIsSearching(true);
     const timeoutId = setTimeout(() => {
       const filterPartId = scope === 'current' ? (currentPartId ?? undefined) : undefined;
-      const searchResults = searchManager.search(query, 10, filterPartId);
+      // When searching all parts, still scope to trunk + the active path (if one is chosen).
+      const filterPathId = scope === 'all' ? (activePathId ?? undefined) : undefined;
+      const searchResults = searchManager.search(query, 10, filterPartId, filterPathId);
       setResults(searchResults);
       setIsSearching(false);
     }, 300); // Debounce search
 
     return () => clearTimeout(timeoutId);
-  }, [query, searchManager, scope, currentPartId]);
+  }, [query, searchManager, scope, currentPartId, activePathId]);
 
   useEffect(() => {
     // Keyboard shortcut: Cmd/Ctrl + K
