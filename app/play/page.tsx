@@ -9,6 +9,8 @@ import { SearchManager } from '@/lib/search';
 import { FloatingNav } from '@/components/play/FloatingNav';
 import { AudioControls } from '@/components/play/AudioControls';
 import { MarkdownViewer } from '@/components/play/MarkdownViewer';
+import { ActPanels } from '@/components/play/ActPanels';
+import { isActFormat } from '@/lib/actFormat';
 import { ImageViewer } from '@/components/play/ImageViewer';
 import { SplitView } from '@/components/play/SplitView';
 import { SearchDialog } from '@/components/play/SearchDialog';
@@ -623,6 +625,17 @@ function PlayContent({
       <div className="flex items-center justify-center h-full">
         <p className="text-muted-foreground">Loading...</p>
       </div>
+    );
+  }
+
+  // New standardized act format → render the 3-panel view (GM notes / read-aloud / actions).
+  if (isActFormat(content)) {
+    return (
+      <ActPanels
+        content={content}
+        initialScrollTop={getScrollPosition ? getScrollPosition(file.path) : 0}
+        onScroll={onScroll}
+      />
     );
   }
 
