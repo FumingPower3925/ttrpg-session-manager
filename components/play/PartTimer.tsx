@@ -68,7 +68,10 @@ export function PartTimer({ partId, partName, planContent }: PartTimerProps) {
   const status = getTimeStatus();
 
   return (
-    <Card className="fixed bottom-4 right-4 z-40 shadow-lg">
+    <Card
+      className="fixed bottom-4 z-40 shadow-lg transition-[right] duration-200"
+      style={{ right: 'calc(1rem + var(--actions-rail-w, 0px))' }}
+    >
       <CardContent className="pt-4 pb-3 px-4 space-y-2">
         <div className="flex items-center gap-2">
           <Clock className={`h-4 w-4 ${status === 'over' ? 'text-destructive' :

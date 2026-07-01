@@ -147,7 +147,23 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
     const root = centerRef.current;
     if (root) root.scrollTop = initialScrollTop;
     requestAnimationFrame(recomputeActive);
-  }, [model, initialScrollTop, recomputeActive]);
+    // initialScrollTop is intentionally excluded from deps: the parent updates it
+    // on every scroll (it saves the position), and we must NOT reset the active
+    // section on scroll — only when the content (model) changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
+
+  // Publish the actions-rail width so fixed-position widgets (e.g. the timer) can
+  // shift clear of it. Open = 20rem (w-80), collapsed = 2.25rem (w-9), unmounted = 0.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--actions-rail-w', rightOpen ? '20rem' : '2.25rem');
+  }, [rightOpen]);
+  useEffect(
+    () => () => {
+      document.documentElement.style.setProperty('--actions-rail-w', '0px');
+    },
+    []
+  );
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     onScroll?.(e);
