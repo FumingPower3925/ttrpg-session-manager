@@ -10,6 +10,7 @@ import {
   Dice5,
   Music,
   Image as ImageIcon,
+  Pin,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -66,7 +67,7 @@ function ActionCard({ block }: { block: ActBlock }) {
           ))}
         </dl>
       ) : (
-        <Md className="prose-xs">{block.body}</Md>
+        <Md>{block.body}</Md>
       )}
     </div>
   );
@@ -82,6 +83,36 @@ function ResourceChip({ block }: { block: ActBlock }) {
   );
 }
 
+// Read-aloud: prominent box (this is what the GM reads out).
+function ReadAloud({ block }: { block: ActBlock }) {
+  const isInfo = block.type === 'info';
+  return (
+    <div
+      className={`rounded-lg border-l-4 p-3 ${
+        isInfo ? 'border-l-muted-foreground/40 bg-muted/30' : 'border-l-primary bg-primary/5'
+      }`}
+    >
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        <ScrollText className="h-3 w-3" />
+        {isInfo ? 'Si preguntan' : 'Leer en voz alta'}
+      </div>
+      <Md>{block.body}</Md>
+    </div>
+  );
+}
+
+// GM guidance flowing inline in the center (NOT read aloud — how to run the beat).
+function GmNote({ block }: { block: ActBlock }) {
+  return (
+    <div className="rounded-md border border-dashed bg-muted/25 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        <StickyNote className="h-3 w-3" /> Guía GM
+      </div>
+      <Md className="text-muted-foreground">{block.body}</Md>
+    </div>
+  );
+}
+
 interface ActPanelsProps {
   content: string;
   initialScrollTop?: number;
@@ -91,25 +122,25 @@ interface ActPanelsProps {
 export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanelsProps) {
   const model = useMemo(() => parseAct(content), [content]);
   const centerRef = useRef<HTMLDivElement>(null);
-  const sectionEls = useRef<Map<string, HTMLElement>>(new Map());
+  const ticking = useRef(false);
   const [activeId, setActiveId] = useState<string | null>(model.sections[0]?.id ?? null);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
 
+  // Determine the active section by reading the DOM directly (no ref map, so a
+  // re-render can't transiently empty it). Only update state when it changes.
   const recomputeActive = useCallback(() => {
     const root = centerRef.current;
     if (!root) return;
     const rootTop = root.getBoundingClientRect().top;
-    let active: string | null = model.sections[0]?.id ?? null;
-    for (const s of model.sections) {
-      const el = sectionEls.current.get(s.id);
-      if (!el) continue;
-      const top = el.getBoundingClientRect().top - rootTop;
-      if (top <= 96) active = s.id;
+    const els = root.querySelectorAll<HTMLElement>('[data-section-id]');
+    let active: string | null = els.length ? els[0].getAttribute('data-section-id') : null;
+    for (const el of els) {
+      if (el.getBoundingClientRect().top - rootTop <= 96) active = el.getAttribute('data-section-id');
       else break;
     }
-    setActiveId(active);
-  }, [model]);
+    setActiveId((prev) => (prev === active ? prev : active));
+  }, []);
 
   useEffect(() => {
     setActiveId(model.sections[0]?.id ?? null);
@@ -119,78 +150,74 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
   }, [model, initialScrollTop, recomputeActive]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    recomputeActive();
     onScroll?.(e);
+    if (!ticking.current) {
+      ticking.current = true;
+      requestAnimationFrame(() => {
+        ticking.current = false;
+        recomputeActive();
+      });
+    }
   };
 
-  const visible = visibleBlocks(model, activeId);
-  const gmBlocks = visible.filter((b) => b.type === 'gm');
-  const actionBlocks = visible.filter((b) => b.type === 'accion');
+  const actReminders = model.actBlocks.filter((b) => b.type === 'gm');
+  const actionBlocks = visibleBlocks(model, activeId).filter((b) => b.type === 'accion');
   const actLeer = model.actBlocks.filter((b) => b.type === 'leer' || b.type === 'info');
   const activeSection = model.sections.find((s) => s.id === activeId);
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* LEFT RAIL — GM notes */}
+      {/* LEFT RAIL — persistent act-level reminders */}
       {leftOpen ? (
         <aside className="w-72 shrink-0 border-r bg-muted/20 flex flex-col">
           <div className="flex items-center justify-between px-3 py-2 border-b">
             <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-              <StickyNote className="h-4 w-4" /> Notas GM
+              <Pin className="h-4 w-4" /> Recordatorios del acto
             </div>
             <button onClick={() => setLeftOpen(false)} title="Colapsar" className="text-muted-foreground hover:text-foreground">
               <PanelLeftClose className="h-4 w-4" />
             </button>
           </div>
           <div className="overflow-y-auto p-3 space-y-3 text-sm">
-            {gmBlocks.length ? (
-              gmBlocks.map((b, i) => (
+            {actReminders.length ? (
+              actReminders.map((b, i) => (
                 <div key={i} className="rounded-md border bg-background/60 p-2.5">
                   <Md>{b.body}</Md>
                 </div>
               ))
             ) : (
-              <p className="text-muted-foreground text-xs">— sin notas para esta sección —</p>
+              <p className="text-muted-foreground text-xs">— sin recordatorios de acto —</p>
             )}
           </div>
         </aside>
       ) : (
         <button
           onClick={() => setLeftOpen(true)}
-          title="Notas GM"
+          title="Recordatorios del acto"
           className="w-9 shrink-0 border-r bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
         >
           <PanelLeftOpen className="h-4 w-4" />
         </button>
       )}
 
-      {/* CENTER — read-aloud */}
+      {/* CENTER — the scene flow: read-aloud + GM guidance inline, in order */}
       <div ref={centerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
         <div className="p-6 max-w-3xl mx-auto">
           <h1 className="text-2xl font-bold">{model.title}</h1>
           {model.subtitle && <p className="text-muted-foreground mt-1">{model.subtitle}</p>}
-          {model.preface && <Md className="mt-3">{model.preface}</Md>}
-          {actLeer.length > 0 && (
-            <div className="mt-4 space-y-3">
-              {actLeer.map((b, i) => (
-                <ReadAloud key={i} block={b} />
-              ))}
+          {model.preface && <Md className="mt-3 text-muted-foreground">{model.preface}</Md>}
+          {actLeer.map((b, i) => (
+            <div key={`al-${i}`} className="mt-3">
+              <ReadAloud block={b} />
             </div>
-          )}
+          ))}
 
           {model.sections.map((s) => {
             const resources = s.blocks.filter((b) => b.type === 'recurso');
-            const readables = s.blocks.filter((b) => b.type === 'leer' || b.type === 'info');
+            const flow = s.blocks.filter((b) => b.type !== 'recurso' && b.type !== 'accion');
+            const sectionActions = s.blocks.filter((b) => b.type === 'accion');
             return (
-              <section
-                key={s.id}
-                data-section-id={s.id}
-                ref={(el) => {
-                  if (el) sectionEls.current.set(s.id, el);
-                  else sectionEls.current.delete(s.id);
-                }}
-                className="mt-8 scroll-mt-4"
-              >
+              <section key={s.id} data-section-id={s.id} className="mt-8 scroll-mt-4">
                 <h2 className={s.level === 3 ? 'text-lg font-semibold text-muted-foreground' : 'text-xl font-bold border-b pb-1'}>
                   {s.title}
                 </h2>
@@ -203,10 +230,15 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
                 )}
                 {s.prose && <Md className="mt-2 text-muted-foreground">{s.prose}</Md>}
                 <div className="mt-3 space-y-3">
-                  {readables.map((b, i) => (
-                    <ReadAloud key={i} block={b} />
-                  ))}
+                  {flow.map((b, i) =>
+                    b.type === 'gm' ? <GmNote key={i} block={b} /> : <ReadAloud key={i} block={b} />
+                  )}
                 </div>
+                {sectionActions.length > 0 && (
+                  <p className="mt-2 text-xs text-muted-foreground italic flex items-center gap-1">
+                    <Dice5 className="h-3 w-3" /> {sectionActions.length} acción(es) en el panel derecho →
+                  </p>
+                )}
               </section>
             );
           })}
@@ -214,14 +246,14 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
         </div>
       </div>
 
-      {/* RIGHT RAIL — actions */}
+      {/* RIGHT RAIL — actions for the section in view (+ parents + act) */}
       {rightOpen ? (
         <aside className="w-80 shrink-0 border-l bg-muted/20 flex flex-col">
           <div className="flex items-center justify-between px-3 py-2 border-b">
-            <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-              <Dice5 className="h-4 w-4" /> Acciones{activeSection ? ` · ${activeSection.title}` : ''}
+            <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground truncate">
+              <Dice5 className="h-4 w-4 shrink-0" /> Acciones{activeSection ? ` · ${activeSection.title}` : ''}
             </div>
-            <button onClick={() => setRightOpen(false)} title="Colapsar" className="text-muted-foreground hover:text-foreground">
+            <button onClick={() => setRightOpen(false)} title="Colapsar" className="text-muted-foreground hover:text-foreground shrink-0">
               <PanelRightClose className="h-4 w-4" />
             </button>
           </div>
@@ -242,23 +274,6 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
           <PanelRightOpen className="h-4 w-4" />
         </button>
       )}
-    </div>
-  );
-}
-
-function ReadAloud({ block }: { block: ActBlock }) {
-  const isInfo = block.type === 'info';
-  return (
-    <div
-      className={`rounded-lg border-l-4 p-3 ${
-        isInfo ? 'border-l-muted-foreground/40 bg-muted/30' : 'border-l-primary bg-primary/5'
-      }`}
-    >
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
-        <ScrollText className="h-3 w-3" />
-        {isInfo ? 'Si preguntan' : 'Leer en voz alta'}
-      </div>
-      <Md>{block.body}</Md>
     </div>
   );
 }
