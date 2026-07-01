@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { parseAct, visibleBlocks, ActBlock } from '@/lib/actFormat';
+import { parseAct, visibleBlocks, sectionBlocks, ActBlock } from '@/lib/actFormat';
 import {
   ScrollText,
   StickyNote,
@@ -229,30 +229,43 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
           ))}
 
           {model.sections.map((s) => {
-            const resources = s.blocks.filter((b) => b.type === 'recurso');
-            const flow = s.blocks.filter((b) => b.type !== 'recurso' && b.type !== 'accion');
-            const sectionActions = s.blocks.filter((b) => b.type === 'accion');
+            const resources = sectionBlocks(s).filter((b) => b.type === 'recurso');
+            const actionCount = sectionBlocks(s).filter((b) => b.type === 'accion').length;
             return (
               <section key={s.id} data-section-id={s.id} className="mt-8 scroll-mt-4">
-                <h2 className={s.level === 3 ? 'text-lg font-semibold text-muted-foreground' : 'text-xl font-bold border-b pb-1'}>
+                <h2 className={s.isSection ? 'text-xl font-bold border-b pb-1' : 'text-lg font-semibold text-muted-foreground'}>
                   {s.title}
                 </h2>
                 {resources.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {resources.map((b, i) => (
-                      <ResourceChip key={i} block={b} />
+                      <ResourceChip key={`r-${i}`} block={b} />
                     ))}
                   </div>
                 )}
-                {s.prose && <Md className="mt-2 text-muted-foreground">{s.prose}</Md>}
                 <div className="mt-3 space-y-3">
-                  {flow.map((b, i) =>
-                    b.type === 'gm' ? <GmNote key={i} block={b} /> : <ReadAloud key={i} block={b} />
-                  )}
+                  {s.content.map((item, i) => {
+                    if (item.kind === 'heading')
+                      return (
+                        <h3 key={i} className={item.level === 2 ? 'text-lg font-bold pt-2' : 'text-base font-semibold pt-1'}>
+                          {item.text}
+                        </h3>
+                      );
+                    if (item.kind === 'prose')
+                      return (
+                        <Md key={i} className="text-muted-foreground">
+                          {item.text}
+                        </Md>
+                      );
+                    const b = item.block;
+                    if (b.type === 'recurso' || b.type === 'accion') return null;
+                    if (b.type === 'gm') return <GmNote key={i} block={b} />;
+                    return <ReadAloud key={i} block={b} />;
+                  })}
                 </div>
-                {sectionActions.length > 0 && (
+                {actionCount > 0 && (
                   <p className="mt-2 text-xs text-muted-foreground italic flex items-center gap-1">
-                    <Dice5 className="h-3 w-3" /> {sectionActions.length} acción(es) en el panel derecho →
+                    <Dice5 className="h-3 w-3" /> {actionCount} acción(es) en el panel derecho →
                   </p>
                 )}
               </section>
