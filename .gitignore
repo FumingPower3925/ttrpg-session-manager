@@ -41,3 +41,5 @@ yarn-error.log*
 next-env.d.ts
 
 test-results
+# machine-local preview seed (GM campaign content — never commit)
+public/__mundo_seed.json

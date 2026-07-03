@@ -1535,6 +1535,22 @@ export default function WorldPage() {
   }, []);
 
   // ── Fit-to-content viewport (per model AND per spatial tier) ─────────────
+  // The wrapper can transiently measure 0×0 (or a few px) while the first
+  // ready-render is still laying out — hydration timing, dev overlays, small
+  // embeds. If the fit bailed then, nothing re-ran it (deps only change with
+  // model/tier), leaving the map at the identity transform with every node
+  // off-screen. A ResizeObserver bumps `mapSizeRev` so the effect retries
+  // once the wrapper reaches a usable size; unusable sizes return WITHOUT
+  // marking fittedRef so the retry actually recomputes.
+  const [mapSizeRev, setMapSizeRev] = useState(0);
+  useEffect(() => {
+    const el = mapWrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setMapSizeRev((r) => r + 1));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [status, mapCollapsed]);
+
   useLayoutEffect(() => {
     if (status !== 'ready' || !model) return;
     // While collapsed the wrapper is the slim chip, not the map — defer the
@@ -1555,7 +1571,9 @@ export default function WorldPage() {
     if (!el) return;
     const width = el.clientWidth;
     const height = el.clientHeight;
-    if (width === 0 || height === 0) return;
+    // Below ~50px the layout hasn't settled — bail WITHOUT marking fitted so
+    // the ResizeObserver retry recomputes with real dimensions.
+    if (width < 50 || height < 50) return;
     fittedRef.current = { model, tier: activeTier, focus };
 
     if (activeTier === 'system' && focusSistema) {
@@ -1597,7 +1615,7 @@ export default function WorldPage() {
       y: height / 2 - ((minY + maxY) / 2) * k,
       k,
     });
-  }, [status, model, activeTier, focusSistema, systemChildren, deepSpace, mapCollapsed]);
+  }, [status, model, activeTier, focusSistema, systemChildren, deepSpace, mapCollapsed, mapSizeRev]);
 
   // ── Map breadcrumb (Sector / Sistema / Lugar) with clickable pops ────────
   const breadcrumb = useMemo<BreadcrumbItem[]>(() => {
