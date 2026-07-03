@@ -83,6 +83,49 @@ export function validateConfig(config: any): config is SessionConfig {
     }
   }
 
+  // Validate optional branching paths (backward-compatible: configs without these still pass)
+  if (config.paths !== undefined) {
+    if (!Array.isArray(config.paths)) {
+      return false;
+    }
+    for (const path of config.paths) {
+      if (!validatePathDef(path)) {
+        return false;
+      }
+    }
+  }
+
+  if (
+    config.activePathId !== undefined &&
+    config.activePathId !== null &&
+    typeof config.activePathId !== 'string'
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Validates a single PathDef
+ */
+function validatePathDef(path: any): boolean {
+  if (!path || typeof path !== 'object') {
+    return false;
+  }
+
+  if (
+    typeof path.id !== 'string' ||
+    typeof path.name !== 'string' ||
+    typeof path.branchAfterPartId !== 'string'
+  ) {
+    return false;
+  }
+
+  if (path.color !== undefined && typeof path.color !== 'string') {
+    return false;
+  }
+
   return true;
 }
 
@@ -115,6 +158,11 @@ function validatePart(part: any): boolean {
   }
 
   if (!Array.isArray(part.eventPlaylists) || !part.eventPlaylists.every(validateEventPlaylist)) {
+    return false;
+  }
+
+  // Optional branching path assignment (absent/null = trunk)
+  if (part.pathId !== undefined && part.pathId !== null && typeof part.pathId !== 'string') {
     return false;
   }
 

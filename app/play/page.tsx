@@ -9,6 +9,8 @@ import { SearchManager } from '@/lib/search';
 import { FloatingNav } from '@/components/play/FloatingNav';
 import { AudioControls } from '@/components/play/AudioControls';
 import { MarkdownViewer } from '@/components/play/MarkdownViewer';
+import { ActPanels } from '@/components/play/ActPanels';
+import { isActFormat } from '@/lib/actFormat';
 import { ImageViewer } from '@/components/play/ImageViewer';
 import { SplitView } from '@/components/play/SplitView';
 import { SearchDialog } from '@/components/play/SearchDialog';
@@ -27,6 +29,7 @@ export default function PlayPage() {
   const [audioManager, setAudioManager] = useState<AudioManager | null>(null);
   const [searchManager] = useState(() => new SearchManager());
   const [currentPartId, setCurrentPartId] = useState<string | null>(null);
+  const [activePathId, setActivePathId] = useState<string | null>(null);
   const [currentTab, setCurrentTab] = useState<string>('plan');
   const [previousTab, setPreviousTab] = useState<string>('plan');
   const [isLoading, setIsLoading] = useState(true);
@@ -42,6 +45,14 @@ export default function PlayPage() {
 
   const currentPart = config?.parts.find(p => p.id === currentPartId);
 
+  // Parts visible given the active path: trunk parts (no pathId) plus the active path's parts,
+  // preserving the original array order.
+  const visibleParts = (config?.parts ?? []).filter(
+    p => p.pathId == null || p.pathId === activePathId
+  );
+
+  const paths = config?.paths ?? [];
+
   const [needsFolderSelection, setNeedsFolderSelection] = useState(true);
 
   useEffect(() => {
@@ -56,6 +67,7 @@ export default function PlayPage() {
 
     const loadedConfig: SessionConfig = JSON.parse(configJson);
     setConfig(loadedConfig);
+    setActivePathId(loadedConfig.activePathId ?? null);
     setIsLoading(false);
   }, [router]);
 
@@ -96,13 +108,13 @@ export default function PlayPage() {
   };
 
   const loadAllMarkdownContent = async (config: SessionConfig) => {
-    const documents: Array<{ file: FileReference; content: string; partId: string; partName: string }> = [];
+    const documents: Array<{ file: FileReference; content: string; partId: string; partName: string; pathId?: string | null }> = [];
 
     for (const part of config.parts) {
       if (part.planFile) {
         try {
           const content = await fileSystemManager.readTextFile(part.planFile.path);
-          documents.push({ file: part.planFile, content, partId: part.id, partName: part.name });
+          documents.push({ file: part.planFile, content, partId: part.id, partName: part.name, pathId: part.pathId });
         } catch (err) {
           console.error(`Error loading plan for ${part.name}:`, err);
         }
@@ -111,7 +123,7 @@ export default function PlayPage() {
       for (const doc of part.supportDocs) {
         try {
           const content = await fileSystemManager.readTextFile(doc.path);
-          documents.push({ file: doc, content, partId: part.id, partName: part.name });
+          documents.push({ file: doc, content, partId: part.id, partName: part.name, pathId: part.pathId });
         } catch (err) {
           console.error(`Error loading doc ${doc.name}:`, err);
         }
@@ -227,6 +239,29 @@ export default function PlayPage() {
     setLastScrollY(0);
   }, []);
 
+  const handlePathChange = useCallback((newPathId: string | null) => {
+    setActivePathId(newPathId);
+
+    // Persist the choice back into the in-memory config object.
+    setConfig(prev => (prev ? { ...prev, activePathId: newPathId } : prev));
+
+    // If the current part belongs to a now-hidden path, move selection to a visible part.
+    if (!config) return;
+    const current = config.parts.find(p => p.id === currentPartId);
+    if (current && current.pathId != null && current.pathId !== newPathId) {
+      const path = config.paths?.find(pd => pd.id === newPathId);
+      const fallback =
+        (path && config.parts.find(p => p.id === path.branchAfterPartId)) ||
+        config.parts.find(p => p.pathId == null || p.pathId === newPathId);
+      if (fallback) {
+        setCurrentPartId(fallback.id);
+        setCurrentTab('plan');
+        setPreviousTab('plan');
+        setSplitViewEnabled(false);
+      }
+    }
+  }, [config, currentPartId]);
+
   const handleTabChange = useCallback((newTab: string) => {
     if (newTab.startsWith('image-')) {
       setPreviousTab(currentTab);
@@ -269,7 +304,16 @@ export default function PlayPage() {
 
   const handleSearchResultClick = (filePath: string) => {
     for (const part of config?.parts || []) {
+      // If the target part lives on a non-active path, activate that path so it becomes visible.
+      const activatePathForPart = () => {
+        if (part.pathId != null && part.pathId !== activePathId) {
+          setActivePathId(part.pathId);
+          setConfig(prev => (prev ? { ...prev, activePathId: part.pathId } : prev));
+        }
+      };
+
       if (part.planFile?.path === filePath) {
+        activatePathForPart();
         setCurrentPartId(part.id);
         setCurrentTab('plan');
         setPreviousTab('plan');
@@ -278,6 +322,7 @@ export default function PlayPage() {
 
       const docIndex = part.supportDocs.findIndex(doc => doc.path === filePath);
       if (docIndex !== -1) {
+        activatePathForPart();
         setCurrentPartId(part.id);
         setCurrentTab(`doc-${docIndex}`);
         setPreviousTab(`doc-${docIndex}`);
@@ -367,10 +412,13 @@ export default function PlayPage() {
       {/* Floating Navigation */}
       {currentTab !== 'image' && (
         <FloatingNav
-          parts={config.parts}
+          parts={visibleParts}
           currentPartId={currentPartId}
           onPartChange={handlePartChange}
           isCompact={isHeaderCompact}
+          paths={paths}
+          activePathId={activePathId}
+          onPathChange={handlePathChange}
         />
       )}
 
@@ -426,6 +474,7 @@ export default function PlayPage() {
                   onResultClick={handleSearchResultClick}
                   currentPartId={currentPartId}
                   currentPartName={currentPart?.name ?? null}
+                  activePathId={activePathId}
                 />
               </div>
 
@@ -576,6 +625,17 @@ function PlayContent({
       <div className="flex items-center justify-center h-full">
         <p className="text-muted-foreground">Loading...</p>
       </div>
+    );
+  }
+
+  // New standardized act format → render the 3-panel view (GM notes / read-aloud / actions).
+  if (isActFormat(content)) {
+    return (
+      <ActPanels
+        content={content}
+        initialScrollTop={getScrollPosition ? getScrollPosition(file.path) : 0}
+        onScroll={onScroll}
+      />
     );
   }
 

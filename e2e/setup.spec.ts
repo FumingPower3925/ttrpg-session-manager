@@ -156,3 +156,88 @@ test.describe('Setup Page - Browser Compatibility', () => {
         await expect(page.getByText(/Browser Not Supported/i)).toBeVisible();
     });
 });
+
+test.describe('Setup Page - Branching Paths Section', () => {
+    test('should display branching paths card', async ({ page }) => {
+        await page.goto('/');
+        await expect(page.getByText('Branching Paths')).toBeVisible();
+        await expect(page.getByText(/Optionally fork the session into alternative paths/i)).toBeVisible();
+    });
+
+    test('should disable add-path controls until a part exists', async ({ page }) => {
+        await page.goto('/');
+        // No parts yet: prompt to add a part, and the input/button are disabled.
+        await expect(page.getByText(/Add at least one part before creating paths/i)).toBeVisible();
+        const pathInput = page.getByPlaceholder(/Path name/i);
+        await expect(pathInput).toBeDisabled();
+        const addPathBtn = page.getByRole('button', { name: /add path/i });
+        await expect(addPathBtn).toBeDisabled();
+    });
+});
+
+// A config that exercises branching: trunk parts + two paths, one part assigned to each path,
+// plus a persisted activePathId. This is the exact shape exportConfig() serializes.
+const BRANCHED_CONFIG = {
+    folderName: 'branched-campaign',
+    parts: [
+        {
+            id: '1', name: 'Act 1 - Setup',
+            planFile: { path: 'plan/act1/intro.md', name: 'intro.md', type: 'markdown' },
+            images: [], supportDocs: [], bgmPlaylist: [], eventPlaylists: [],
+        },
+        {
+            id: '2', name: 'Act 2 - Fork',
+            planFile: { path: 'plan/act2/fork.md', name: 'fork.md', type: 'markdown' },
+            images: [], supportDocs: [], bgmPlaylist: [], eventPlaylists: [],
+        },
+        {
+            id: '3', name: 'Sneak In',
+            planFile: { path: 'plan/sneak/sneak.md', name: 'sneak.md', type: 'markdown' },
+            images: [], supportDocs: [], bgmPlaylist: [], eventPlaylists: [],
+            pathId: 'path-sneak',
+        },
+        {
+            id: '4', name: 'Fight Through',
+            planFile: { path: 'plan/fight/fight.md', name: 'fight.md', type: 'markdown' },
+            images: [], supportDocs: [], bgmPlaylist: [], eventPlaylists: [],
+            pathId: 'path-fight',
+        },
+    ],
+    playerCharacters: ['Rogue'],
+    pcStats: [],
+    paths: [
+        { id: 'path-sneak', name: 'Sneak In', branchAfterPartId: '2' },
+        { id: 'path-fight', name: 'Fight Through', branchAfterPartId: '2' },
+    ],
+    activePathId: null,
+};
+
+test.describe('Setup Page - Branched Config Import Round-trip', () => {
+    test('should import a branched config and surface per-part path selectors', async ({ page }) => {
+        await page.goto('/');
+
+        // The import flow creates a dynamic <input type=file> and clicks it; intercept the chooser.
+        page.on('dialog', (d) => d.accept()); // dismiss the "imported successfully" alert
+        const fileChooserPromise = page.waitForEvent('filechooser');
+        await page.getByRole('button', { name: /import config/i }).click();
+        const fileChooser = await fileChooserPromise;
+        await fileChooser.setFiles({
+            name: 'branched-config.json',
+            mimeType: 'application/json',
+            buffer: Buffer.from(JSON.stringify(BRANCHED_CONFIG)),
+        });
+
+        // Parts from the imported config should render.
+        await expect(page.getByRole('heading', { name: 'Act 2 - Fork' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Sneak In' })).toBeVisible();
+
+        // Paths exist, so each part card shows a "Path:" assignment select.
+        const pathLabels = page.getByText('Path:', { exact: true });
+        await expect(pathLabels.first()).toBeVisible();
+        // One per part (4 parts).
+        await expect(pathLabels).toHaveCount(4);
+
+        // The PathManager lists both defined paths (branch-after selects show them too).
+        await expect(page.getByText('Branch after:').first()).toBeVisible();
+    });
+});

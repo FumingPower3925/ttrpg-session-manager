@@ -2,11 +2,19 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { SessionConfig, Part } from '@/types';
+import { SessionConfig, Part, PathDef } from '@/types';
 import { FileSystemManager, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS } from '@/lib/fileSystem';
 import { exportConfig, importConfig, createEmptyConfig } from '@/lib/configManager';
 import { scanSessionFolder, getExpectedStructure } from '@/lib/sessionScanner';
 import { PartEditor } from '@/components/setup/PartEditor';
+import { PathManager } from '@/components/setup/PathManager';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -89,6 +97,27 @@ export default function SetupPage() {
         parts: [...config.parts, updatedPart],
       });
     }
+  };
+
+  const handleUpdatePaths = (paths: PathDef[]) => {
+    // When a path is removed, reset any parts that pointed to it back to trunk.
+    const validPathIds = new Set(paths.map(p => p.id));
+    setConfig({
+      ...config,
+      paths,
+      parts: config.parts.map(part =>
+        part.pathId && !validPathIds.has(part.pathId) ? { ...part, pathId: null } : part
+      ),
+    });
+  };
+
+  const handleAssignPartPath = (partId: string, pathId: string | null) => {
+    setConfig({
+      ...config,
+      parts: config.parts.map(part =>
+        part.id === partId ? { ...part, pathId } : part
+      ),
+    });
   };
 
   const handleExportConfig = () => {
@@ -301,6 +330,24 @@ export default function SetupPage() {
           </CardContent>
         </Card>
 
+        {/* Branching Paths */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Branching Paths</CardTitle>
+            <CardDescription>
+              Optionally fork the session into alternative paths. During play the GM picks a path
+              after the branch point, and only trunk parts plus the chosen path&apos;s parts are shown.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PathManager
+              parts={config.parts}
+              paths={config.paths ?? []}
+              onChange={handleUpdatePaths}
+            />
+          </CardContent>
+        </Card>
+
         {/* Parts List */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
@@ -343,6 +390,31 @@ export default function SetupPage() {
                               <Badge variant="outline">{part.eventPlaylists.length} event playlists</Badge>
                             )}
                           </div>
+                          {(config.paths?.length ?? 0) > 0 && (
+                            <div className="flex items-center gap-2 pt-1">
+                              <label className="text-sm text-muted-foreground whitespace-nowrap">
+                                Path:
+                              </label>
+                              <Select
+                                value={part.pathId ?? 'trunk'}
+                                onValueChange={(value) =>
+                                  handleAssignPartPath(part.id, value === 'trunk' ? null : value)
+                                }
+                              >
+                                <SelectTrigger className="w-[220px] h-8">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="trunk">Trunk (shared)</SelectItem>
+                                  {config.paths?.map((path) => (
+                                    <SelectItem key={path.id} value={path.id}>
+                                      {path.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          )}
                         </div>
                         <div className="flex gap-2">
                           <Button

@@ -8,17 +8,18 @@ export interface SearchResult {
   context: string; // snippet of text around the match
   partId: string;
   partName: string;
+  pathId?: string | null; // branching path the doc's part belongs to (null/undefined = trunk)
 }
 
 export class SearchManager {
   private index: lunr.Index | null = null;
-  private documents: Map<string, { name: string; content: string; partId: string; partName: string }> = new Map();
+  private documents: Map<string, { name: string; content: string; partId: string; partName: string; pathId?: string | null }> = new Map();
 
   /**
    * Indexes markdown documents for search
    */
   async indexDocuments(
-    documents: Array<{ file: FileReference; content: string; partId: string; partName: string }>
+    documents: Array<{ file: FileReference; content: string; partId: string; partName: string; pathId?: string | null }>
   ) {
     this.documents.clear();
 
@@ -28,6 +29,7 @@ export class SearchManager {
         content: doc.content,
         partId: doc.partId,
         partName: doc.partName,
+        pathId: doc.pathId,
       });
     });
 
@@ -47,9 +49,11 @@ export class SearchManager {
   }
 
   /**
-   * Searches the indexed documents, optionally filtered by part
+   * Searches the indexed documents, optionally filtered by part and/or path.
+   * When filterPathId is provided, only trunk docs (pathId null/undefined) and
+   * docs whose pathId equals filterPathId are included.
    */
-  search(query: string, maxResults: number = 10, filterPartId?: string): SearchResult[] {
+  search(query: string, maxResults: number = 10, filterPartId?: string, filterPathId?: string | null): SearchResult[] {
     if (!this.index || !query.trim()) {
       return [];
     }
@@ -58,10 +62,11 @@ export class SearchManager {
       const results = this.index.search(query);
 
       return results
-        .map(result => {
+        .map((result): SearchResult | null => {
           const doc = this.documents.get(result.ref);
           if (!doc) return null;
           if (filterPartId && doc.partId !== filterPartId) return null;
+          if (filterPathId && doc.pathId != null && doc.pathId !== filterPathId) return null;
 
           const context = this.extractContext(doc.content, query);
 
@@ -72,6 +77,7 @@ export class SearchManager {
             context,
             partId: doc.partId,
             partName: doc.partName,
+            pathId: doc.pathId,
           };
         })
         .filter((r): r is SearchResult => r !== null)

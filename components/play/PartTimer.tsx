@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Clock } from 'lucide-react';
+import { parseExpectedDuration } from '@/lib/duration';
 
 interface PartTimerProps {
   partId: string;
@@ -30,29 +31,9 @@ export function PartTimer({ partId, partName, planContent }: PartTimerProps) {
     previousPartIdRef.current = partId;
   }, [partId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Parse expected duration from plan content - supports patterns like:
-  // "## Duración: 15 minutos", "15-20 minutos", "Combate 5-10 minutos"
+  // Parse the act's expected duration from its plan markdown (see lib/duration).
   useEffect(() => {
-    if (!planContent) {
-      setExpectedMinutes(null);
-      return;
-    }
-
-    const headerDurationRegex = /##\s*Duración:\s*(\d+)(?:-(\d+))?\s*minutos?/i;
-    let match = planContent.match(headerDurationRegex);
-
-    if (!match) {
-      const generalDurationRegex = /(\d+)(?:-(\d+))?\s*minutos?/i;
-      match = planContent.match(generalDurationRegex);
-    }
-
-    if (match) {
-      const min = parseInt(match[1], 10);
-      const max = match[2] ? parseInt(match[2], 10) : undefined;
-      setExpectedMinutes({ min, max });
-    } else {
-      setExpectedMinutes(null);
-    }
+    setExpectedMinutes(parseExpectedDuration(planContent));
   }, [planContent]);
 
   // Timer tick
@@ -87,7 +68,10 @@ export function PartTimer({ partId, partName, planContent }: PartTimerProps) {
   const status = getTimeStatus();
 
   return (
-    <Card className="fixed bottom-4 right-4 z-40 shadow-lg">
+    <Card
+      className="fixed bottom-4 z-40 shadow-lg transition-[right] duration-200"
+      style={{ right: 'calc(1rem + var(--actions-rail-w, 0px))' }}
+    >
       <CardContent className="pt-4 pb-3 px-4 space-y-2">
         <div className="flex items-center gap-2">
           <Clock className={`h-4 w-4 ${status === 'over' ? 'text-destructive' :
