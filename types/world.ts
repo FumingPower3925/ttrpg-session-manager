@@ -118,6 +118,29 @@ export interface WorldManifest {
   regiones: string[];
 }
 
+/**
+ * Party state from `estado/grupo.md` (plan Part A): frontmatter is app-owned
+ * (written by the app during active sessions from M3 on), body is agent-owned
+ * prose and must be preserved byte-for-byte on every rewrite.
+ */
+export interface PartyState {
+  /** Session lock (`sesion_activa`): true while a live session holds the file. */
+  sesionActiva: boolean;
+  /** Canonical in-world time as integer day count; day 1 = epoch start. */
+  diaMundo: number;
+  /** Lugar/sistema id where the party is; null when unknown/not set. */
+  ubicacion: string | null;
+  /** In-transit heading (`rumbo`); null when the party is not travelling. */
+  rumbo: { destino: string; llegadaDia: number } | null;
+  creditos: number;
+  /** Gauge name -> value 0-5 (`medidores`), e.g. viveres/combustible/nave. */
+  medidores: Record<string, number>;
+  /** Agent-owned markdown body below the frontmatter, byte-for-byte. */
+  bodyMd: string;
+  /** Path relative to the campaign folder; null when estado/grupo.md is absent. */
+  filePath: string | null;
+}
+
 export interface ValidationIssue {
   nivel: 'error' | 'aviso';
   /** Path relative to the campaign folder. */
@@ -137,4 +160,6 @@ export interface WorldModel {
   problemas: ValidationIssue[];
   /** Parent id -> child entity ids (inverse of `en:`). */
   childrenOf: Map<string, string[]>;
+  /** Party state from `estado/grupo.md`; null when the file is absent. */
+  estadoGrupo: PartyState | null;
 }

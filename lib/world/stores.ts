@@ -94,6 +94,8 @@ export interface UiState {
     tier: MapTier;
     /** Sistema focused at the 'system' tier. */
     focusSystemId: string | null;
+    /** Lugar whose SiteList (non-spatial tier 3) is open; null = closed. */
+    siteListId: string | null;
     selectedEntityId: string | null;
     panelTab: PanelTab;
     mapCollapsed: boolean;
@@ -105,6 +107,9 @@ export interface UiState {
         focusSystem: (systemId: string) => void;
         /** Back out to the sector tier (keeps the last focus for re-entry). */
         backToSector: () => void;
+        /** Open the interior list of a lugar (tier stays where it is). */
+        openSiteList: (placeId: string) => void;
+        closeSiteList: () => void;
         selectEntity: (entityId: string | null) => void;
         setPanelTab: (tab: PanelTab) => void;
         setMapCollapsed: (collapsed: boolean) => void;
@@ -116,6 +121,7 @@ export interface UiState {
 const UI_INITIAL = {
     tier: 'sector' as MapTier,
     focusSystemId: null,
+    siteListId: null,
     selectedEntityId: null,
     panelTab: 'entidad' as PanelTab,
     mapCollapsed: false,
@@ -129,10 +135,16 @@ export const useUiStore = create<UiState>()((set) => ({
             set({ tier });
         },
         focusSystem(systemId: string) {
-            set({ tier: 'system', focusSystemId: systemId });
+            set({ tier: 'system', focusSystemId: systemId, siteListId: null });
         },
         backToSector() {
-            set({ tier: 'sector' });
+            set({ tier: 'sector', siteListId: null });
+        },
+        openSiteList(placeId: string) {
+            set({ siteListId: placeId });
+        },
+        closeSiteList() {
+            set({ siteListId: null });
         },
         selectEntity(entityId: string | null) {
             set({ selectedEntityId: entityId });

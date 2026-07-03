@@ -249,8 +249,9 @@ describe('scanWorldFolder — happy path', () => {
             calls.push([done, total]);
         });
 
-        // 1 manifest + 2 sistemas + 1 faccion + 1 pnj + 2 pistas + 1 trama + 3 lugares + 1 carpeta
-        const total = 12;
+        // 1 manifest + 1 estado/grupo.md + 2 sistemas + 1 faccion + 1 pnj + 2 pistas
+        // + 1 trama + 3 lugares + 1 carpeta
+        const total = 13;
         expect(calls.length).toBeGreaterThan(0);
         expect(calls[0]).toEqual([1, total]);
         expect(calls[calls.length - 1]).toEqual([total, total]);
@@ -395,9 +396,11 @@ describe('scanWorldFolder — validation', () => {
             })
         );
 
-        const avisos = model.problemas.filter((p) => p.nivel === 'aviso');
+        // Filtered by archivo: this tree has no estado/, whose absence adds its own aviso.
+        const avisos = model.problemas.filter(
+            (p) => p.nivel === 'aviso' && p.archivo === 'mundo/sistemas/fantasma.md'
+        );
         expect(avisos).toHaveLength(1);
-        expect(avisos[0].archivo).toBe('mundo/sistemas/fantasma.md');
         expect(avisos[0].mensaje).toContain('huérfana');
     });
 
@@ -481,6 +484,76 @@ describe('scanWorldFolder — accionable + manifest defaults', () => {
         expect(model.manifest.medidores).toEqual(['viveres', 'combustible', 'nave']);
         expect(model.manifest.regiones).toEqual([]);
         expect(model.manifest.calendario.diasPorMes).toBe(30);
+    });
+});
+
+// ── estado/grupo.md → model.estadoGrupo ─────────────────────────────────────
+
+describe('scanWorldFolder — estado del grupo', () => {
+    test('happy tree: estadoGrupo parsed with defaults for missing fields', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+
+        expect(model.estadoGrupo).not.toBeNull();
+        expect(model.estadoGrupo!.creditos).toBe(100);
+        expect(model.estadoGrupo!.filePath).toBe('mundo/estado/grupo.md');
+        expect(model.estadoGrupo!.sesionActiva).toBe(false);
+        expect(model.estadoGrupo!.diaMundo).toBe(1);
+        expect(model.estadoGrupo!.ubicacion).toBeNull();
+        expect(model.estadoGrupo!.medidores).toEqual({ viveres: 3, combustible: 3, nave: 3 });
+    });
+
+    test('missing estado/grupo.md: null model field + aviso', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', { mundo: { 'mundo.md': FULL_MANIFEST } })
+        );
+
+        expect(model.estadoGrupo).toBeNull();
+        const avisos = model.problemas.filter(
+            (p) => p.nivel === 'aviso' && p.archivo === 'mundo/estado/grupo.md'
+        );
+        expect(avisos).toHaveLength(1);
+        expect(avisos[0].mensaje).toContain('No se encontró');
+    });
+
+    test('dangling ubicacion and rumbo.destino: aviso each, refs kept', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    'mundo.md': FULL_MANIFEST,
+                    estado: {
+                        'grupo.md':
+                            '---\nubicacion: no_existe\nrumbo: {destino: tampoco, llegada_dia: 9}\n---\n',
+                    },
+                },
+            })
+        );
+
+        const avisos = model.problemas.filter(
+            (p) => p.nivel === 'aviso' && p.archivo === 'mundo/estado/grupo.md'
+        );
+        expect(avisos).toHaveLength(2);
+        expect(avisos[0].mensaje).toContain('"ubicacion"');
+        expect(avisos[0].mensaje).toContain('"no_existe"');
+        expect(avisos[1].mensaje).toContain('"rumbo.destino"');
+        expect(avisos[1].mensaje).toContain('"tampoco"');
+        // Degraded load: the refs stay readable for the UI even when dangling.
+        expect(model.estadoGrupo!.ubicacion).toBe('no_existe');
+        expect(model.estadoGrupo!.rumbo).toEqual({ destino: 'tampoco', llegadaDia: 9 });
+    });
+
+    test('resolving ubicacion/rumbo refs produces no avisos', async () => {
+        const tree = happyTree();
+        (tree.mundo as FileTree).estado = {
+            'grupo.md':
+                '---\nubicacion: porto_verne\nrumbo: {destino: sistema_kovar, llegada_dia: 12}\n---\n',
+        };
+        const model = await scanWorldFolder(makeHandle('campaign', tree));
+
+        expect(
+            model.problemas.some((p) => p.archivo === 'mundo/estado/grupo.md')
+        ).toBe(false);
+        expect(model.estadoGrupo!.ubicacion).toBe('porto_verne');
+        expect(model.estadoGrupo!.rumbo).toEqual({ destino: 'sistema_kovar', llegadaDia: 12 });
     });
 });
 

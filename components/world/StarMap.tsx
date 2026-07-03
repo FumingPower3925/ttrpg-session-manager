@@ -205,7 +205,12 @@ export function StarMap({
       const travelled = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
       if (travelled < DRAG_THRESHOLD_PX) return;
       // Capture only once panning starts, so plain clicks keep targeting nodes.
-      event.currentTarget.setPointerCapture(event.pointerId);
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already be gone (released mid-frame / synthetic
+        // event) — the pan continues for this gesture, only capture is lost.
+      }
       drag.active = true;
     }
     viewRef.current.x += event.clientX - drag.lastX;

@@ -48,6 +48,11 @@ interface EntityPanelProps {
   /** Display names of factions present at the entity, pre-resolved. */
   factionNames: string[];
   leads: EntityPanelLead[];
+  /**
+   * Pistas at DESCENDANT places (for containers: sistemas / places with
+   * children) — matches the map badge, which also counts the interior.
+   */
+  interiorLeads?: EntityPanelLead[];
   onDrillIn?: () => void;
   onClose: () => void;
   /** Page-provided action buttons (Viajar / Entrar / Jugar). */
@@ -59,6 +64,7 @@ export function EntityPanel({
   childNames,
   factionNames,
   leads,
+  interiorLeads = [],
   onDrillIn,
   onClose,
   actions,
@@ -138,28 +144,13 @@ export function EntityPanel({
 
           {leads.length > 0 && (
             <Section title="Pistas">
-              <ul className="flex flex-col gap-1.5">
-                {leads.map((lead) => (
-                  <li key={lead.id} className="flex items-center gap-2 text-sm">
-                    {lead.accionable === true && (
-                      <Star
-                        className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
-                        aria-label="Accionable"
-                      />
-                    )}
-                    <span className="min-w-0 truncate">{lead.nombre}</span>
-                    <Badge
-                      variant={lead.estadoPista === 'fallida' ? 'destructive' : 'outline'}
-                      className="ml-auto shrink-0"
-                    >
-                      {ESTADO_PISTA_LABEL[lead.estadoPista]}
-                    </Badge>
-                    {lead.accionable === 'manual' && (
-                      <span className="shrink-0 text-xs text-muted-foreground">según GM</span>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <LeadList leads={leads} />
+            </Section>
+          )}
+
+          {interiorLeads.length > 0 && (
+            <Section title="Pistas en el interior">
+              <LeadList leads={interiorLeads} />
             </Section>
           )}
 
@@ -189,6 +180,33 @@ export function EntityPanel({
         </div>
       )}
     </Card>
+  );
+}
+
+function LeadList({ leads }: { leads: EntityPanelLead[] }) {
+  return (
+    <ul className="flex flex-col gap-1.5">
+      {leads.map((lead) => (
+        <li key={lead.id} className="flex items-center gap-2 text-sm">
+          {lead.accionable === true && (
+            <Star
+              className="size-3.5 shrink-0 fill-amber-400 text-amber-500"
+              aria-label="Accionable"
+            />
+          )}
+          <span className="min-w-0 truncate">{lead.nombre}</span>
+          <Badge
+            variant={lead.estadoPista === 'fallida' ? 'destructive' : 'outline'}
+            className="ml-auto shrink-0"
+          >
+            {ESTADO_PISTA_LABEL[lead.estadoPista]}
+          </Badge>
+          {lead.accionable === 'manual' && (
+            <span className="shrink-0 text-xs text-muted-foreground">según GM</span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 

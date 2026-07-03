@@ -14,6 +14,8 @@ interface SectorNode {
   conocimiento: Conocimiento;
   x: number;
   y: number;
+  /** `acceso: portal` (deep-space lugares only) renders the bracket glyph. */
+  portal?: boolean;
 }
 
 interface SectorViewProps {
@@ -63,6 +65,7 @@ export function SectorView({
               conocimiento: lugar.conocimiento,
               x: lugar.coordenadas.x * WORLD_SCALE,
               y: lugar.coordenadas.y * WORLD_SCALE,
+              portal: lugar.acceso === 'portal',
             },
           ]
         : []
@@ -96,6 +99,8 @@ export function SectorView({
           onDrillIn={onDrillIn}
           x={node.x}
           y={node.y}
+          shape={node.portal ? 'diamond' : undefined}
+          portal={node.portal}
         />
       ))}
     </>

@@ -12,6 +12,7 @@ import {
     FactionPresence,
     Lead,
     NpcEntity,
+    PartyState,
     PlaceEntity,
     SystemEntity,
     Trama,
@@ -22,6 +23,7 @@ import {
 } from '@/types/world';
 import { scanSessionFolder } from '@/lib/sessionScanner';
 import { fileNameToDisplayName, getSubdirectory, readFileContent } from '@/lib/fsScanUtils';
+import { parsePartyState } from './partyState';
 import {
     asCoords,
     asNumber,
@@ -42,6 +44,7 @@ import {
     MANIFEST_DEFAULTS,
     MANIFEST_FILE,
     NIVELES_PRESENCIA,
+    PARTY_STATE_FILE,
     PLACE_FOLDER_FILE,
     ROLES_PNJ,
     ROLES_TRAMA,
@@ -58,6 +61,8 @@ export type ScanProgressCallback = (done: number, total: number) => void;
 const READ_BATCH_SIZE = 25;
 
 const MANIFEST_PATH = `${WORLD_DIR}/${MANIFEST_FILE}`;
+
+const PARTY_STATE_PATH = `${WORLD_DIR}/${ENTITY_DIRS.estado}/${PARTY_STATE_FILE}`;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -92,12 +97,12 @@ export async function scanWorldFolder(
             mensaje: `No se encontró la carpeta "${WORLD_DIR}/" en la carpeta de campaña`,
         });
         onProgress?.(1, 1);
-        return assembleModel(defaultManifest(), [], problemas);
+        return assembleModel(defaultManifest(), [], problemas, null);
     }
 
     // Enumerate first (cheap directory listings), then read contents in batches.
     const tasks = await collectTasks(mundoDir);
-    const totalReads = 1 + tasks.length; // +1 = the manifest itself
+    const totalReads = 2 + tasks.length; // +2 = manifest + estado/grupo.md
     let done = 0;
 
     // Manifest read
@@ -109,6 +114,11 @@ export async function scanWorldFolder(
         manifestContent = null;
     }
     done = 1;
+    onProgress?.(done, totalReads);
+
+    // Party state read (estado/grupo.md)
+    const estadoGrupo = await readPartyState(mundoDir, problemas);
+    done = 2;
     onProgress?.(done, totalReads);
 
     // Entity reads, batched
@@ -125,7 +135,40 @@ export async function scanWorldFolder(
     }
 
     const manifest = parseManifest(manifestContent, problemas);
-    return assembleModel(manifest, records, problemas);
+    return assembleModel(manifest, records, problemas, estadoGrupo);
+}
+
+/**
+ * Reads + parses `estado/grupo.md`. An absent file (or absent `estado/` dir)
+ * is a normal pre-M6 world: null model field plus an aviso, never an error.
+ */
+async function readPartyState(
+    mundoDir: FileSystemDirectoryHandle,
+    problemas: ValidationIssue[]
+): Promise<PartyState | null> {
+    let content: string | null = null;
+    const estadoDir = await getSubdirectory(mundoDir, ENTITY_DIRS.estado);
+    if (estadoDir) {
+        try {
+            const fileHandle = await estadoDir.getFileHandle(PARTY_STATE_FILE);
+            content = await readFileContent(fileHandle);
+        } catch {
+            content = null;
+        }
+    }
+
+    if (content === null) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: PARTY_STATE_PATH,
+            mensaje: `No se encontró ${ENTITY_DIRS.estado}/${PARTY_STATE_FILE} — no hay estado del grupo`,
+        });
+        return null;
+    }
+
+    const { state, issues } = parsePartyState(content, PARTY_STATE_PATH);
+    problemas.push(...issues);
+    return state;
 }
 
 // ── Enumeration + batched reads ─────────────────────────────────────────────
@@ -150,7 +193,10 @@ interface TaskResult {
 
 type ScanTask = () => Promise<TaskResult>;
 
-/** Flat entity dirs scanned as `*.md` files. eventos/estado/diario are skipped in M1. */
+/**
+ * Flat entity dirs scanned as `*.md` files. eventos/ and diario/ are still
+ * skipped (M4/M3); estado/grupo.md is read separately via readPartyState.
+ */
 const FLAT_KIND_DIRS: ReadonlyArray<{ kind: EntityKind; dir: string }> = [
     { kind: 'sistema', dir: ENTITY_DIRS.sistemas },
     { kind: 'faccion', dir: ENTITY_DIRS.facciones },
@@ -671,7 +717,8 @@ function buildTrama(
 function assembleModel(
     manifest: WorldManifest,
     records: RawEntityFile[],
-    problemas: ValidationIssue[]
+    problemas: ValidationIssue[],
+    estadoGrupo: PartyState | null
 ): WorldModel {
     const entidades = new Map<string, WorldEntityBase>();
     const sistemas: SystemEntity[] = [];
@@ -738,6 +785,7 @@ function assembleModel(
     }
 
     checkDanglingRefs(entidades, lugares, pnjs, pistas, problemas);
+    checkPartyStateRefs(entidades, estadoGrupo, problemas);
     warnOrphans(entidades, sistemas, lugares, facciones, pnjs, pistas, tramas, problemas);
 
     const childrenOf = deriveChildrenOf(entidades, sistemas, lugares);
@@ -756,7 +804,36 @@ function assembleModel(
         tramas,
         problemas,
         childrenOf,
+        estadoGrupo,
     };
+}
+
+/**
+ * Party-state refs pointing at entities that don't exist are AVISOS (not
+ * errors): grupo.md is app/agent-written state, and a half-built world must
+ * still load with its party readout intact.
+ */
+function checkPartyStateRefs(
+    entidades: Map<string, WorldEntityBase>,
+    estadoGrupo: PartyState | null,
+    problemas: ValidationIssue[]
+): void {
+    if (!estadoGrupo || estadoGrupo.filePath === null) return;
+
+    const dangling = (campo: string, target: string) => {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: estadoGrupo.filePath!,
+            mensaje: `Referencia colgante en "${campo}": "${target}" no existe`,
+        });
+    };
+
+    if (estadoGrupo.ubicacion !== null && !entidades.has(estadoGrupo.ubicacion)) {
+        dangling('ubicacion', estadoGrupo.ubicacion);
+    }
+    if (estadoGrupo.rumbo !== null && !entidades.has(estadoGrupo.rumbo.destino)) {
+        dangling('rumbo.destino', estadoGrupo.rumbo.destino);
+    }
 }
 
 function checkDanglingRefs(

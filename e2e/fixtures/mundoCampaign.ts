@@ -10,6 +10,10 @@
  *   - porto_verne/ is a PLAYABLE place folder (lugar.md + plan/characters/music).
  *   - PLANTILLAS/pista.md and lugares/_borrador.md must be IGNORED by the scanner.
  *   - lugares/roto.md has invalid YAML -> degraded load + Diagnostico entry.
+ *   - estado/ exists but is EMPTY -> the party bar renders the absent-estado hint.
+ *
+ * MUNDO_CAMPAIGN_CON_ESTADO adds estado/grupo.md (party at porto_verne) for the
+ * M2 party-readout tests: PartyStatusBar values + marker roll-up across tiers.
  */
 
 export type FileTree = { [name: string]: string | FileTree };
@@ -316,3 +320,35 @@ Plantilla: el escaner debe ignorar este archivo (carpeta en MAYUSCULAS).
         },
     },
 };
+
+/**
+ * estado/grupo.md for the party-readout variant (plan Part A frontmatter:
+ * app-owned header, agent-owned body). dia_mundo 4127 renders as
+ * "17 de Cenit, 356 dG" under the fixture calendar (4 meses x 30 dias).
+ */
+const GRUPO_MD = `---
+tipo: estado_grupo
+sesion_activa: false
+dia_mundo: 4127
+ubicacion: porto_verne
+rumbo: null
+creditos: 1240
+medidores:
+  viveres: 3
+  combustible: 2
+  nave: 2
+---
+## Inventario
+
+- Paquete sellado de Kael (entregar en el punto de intercambio).
+- 2 cargas de repuestos para la nave.
+`;
+
+/** Same campaign, plus estado/grupo.md — the party is docked at porto_verne. */
+export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
+    // FileTree is JSON-safe (plain strings/objects), so a JSON round-trip clones it.
+    const clone = JSON.parse(JSON.stringify(MUNDO_CAMPAIGN)) as FileTree;
+    const mundo = clone.mundo as FileTree;
+    (mundo.estado as FileTree)['grupo.md'] = GRUPO_MD;
+    return clone;
+})();

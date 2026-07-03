@@ -44,6 +44,9 @@ export const ENTITY_DIRS = {
 /** File inside a playable place folder `lugares/<id>/` that holds the entity. */
 export const PLACE_FOLDER_FILE = 'lugar.md';
 
+/** Party-state file inside `mundo/estado/`. */
+export const PARTY_STATE_FILE = 'grupo.md';
+
 // ── Scanner ignore rules ────────────────────────────────────────────────────
 
 /** Dirs written in ALL-CAPS (e.g. PLANTILLAS) are ignored by the scanner. */
@@ -145,6 +148,13 @@ export const ACCESOS: readonly PlaceEntity['acceso'][] = [
 export const DEFAULT_CONOCIMIENTO: Conocimiento = 'desconocido';
 
 export const DEFAULT_ACCESO: PlaceEntity['acceso'] = 'normal';
+
+/** Gauge defaults when estado/grupo.md omits `medidores` (or single entries). */
+export const DEFAULT_MEDIDORES: Readonly<Record<string, number>> = {
+    viveres: 3,
+    combustible: 3,
+    nave: 3,
+};
 
 /** Fallbacks when mundo.md omits travel constants or gauges. */
 export const MANIFEST_DEFAULTS: {

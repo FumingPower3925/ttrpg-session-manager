@@ -9,6 +9,27 @@ const NODE_RADIUS = 10;
 
 const DIAMOND_PATH = `M 0 ${-NODE_RADIUS} L ${NODE_RADIUS} 0 L 0 ${NODE_RADIUS} L ${-NODE_RADIUS} 0 Z`;
 
+/** Radius of the portal bracket arcs (between the faction ring and the selection ring). */
+const PORTAL_RADIUS = NODE_RADIUS + 6;
+
+function portalArc(startDeg: number, endDeg: number): string {
+  const point = (deg: number) => {
+    const rad = (deg * Math.PI) / 180;
+    const x = (PORTAL_RADIUS * Math.cos(rad)).toFixed(2);
+    const y = (PORTAL_RADIUS * Math.sin(rad)).toFixed(2);
+    return `${x} ${y}`;
+  };
+  // Spans stay under 180°, so large-arc is always 0; sweep 1 follows increasing angle.
+  return `M ${point(startDeg)} A ${PORTAL_RADIUS} ${PORTAL_RADIUS} 0 0 1 ${point(endDeg)}`;
+}
+
+/**
+ * Portal glyph (`acceso: portal`): two bracket arcs framing the node, with
+ * ring gaps at the top and bottom — reads as "step through here", and the
+ * gaps keep it distinct from the (closed) faction and selection rings.
+ */
+const PORTAL_ARCS = [portalArc(115, 245), portalArc(-65, 65)];
+
 /**
  * Knowledge visual encoding (plan Part B):
  * desconocido = 15%-opacity ghost, outline only · rumoreado = dashed, no fill,
@@ -44,6 +65,8 @@ interface EntityNodeProps {
   y: number;
   /** Defaults to diamond for tipo nodo/bolsillo, circle otherwise. */
   shape?: 'circle' | 'diamond';
+  /** `acceso: portal` marker: bracket arcs overlay around the node. */
+  portal?: boolean;
 }
 
 export function EntityNode({
@@ -59,6 +82,7 @@ export function EntityNode({
   x,
   y,
   shape,
+  portal,
 }: EntityNodeProps) {
   const k = useMapScale();
   const resolvedShape = shape ?? (tipo === 'nodo' || tipo === 'bolsillo' ? 'diamond' : 'circle');
@@ -107,6 +131,21 @@ export function EntityNode({
           strokeWidth={2}
           vectorEffect="non-scaling-stroke"
         />
+      )}
+      {portal && (
+        <g data-portal="true">
+          {PORTAL_ARCS.map((d) => (
+            <path
+              key={d}
+              d={d}
+              className="fill-none stroke-foreground"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+              opacity={0.85}
+            />
+          ))}
+        </g>
       )}
       {resolvedShape === 'circle' ? (
         <circle
