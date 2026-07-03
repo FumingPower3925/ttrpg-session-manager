@@ -1,0 +1,4 @@
+# Bun config — keep `bun test` scoped to unit tests.
+# The e2e/ specs are Playwright tests and must run via `bun run test:e2e`.
+[test]
+root = "lib"
