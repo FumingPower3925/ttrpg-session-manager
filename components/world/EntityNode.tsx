@@ -115,6 +115,16 @@ export function EntityNode({
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
+      {/*
+       * Invisible screen-size hit disk (M3): at low zoom the painted glyph
+       * shrinks to a few pixels while the (pointer-events-none) label keeps
+       * its screen size, leaving a dead gap between them where clicks fall
+       * through to the map. This keeps the whole glyph+label block one big
+       * (~48px) tap target — plan Part B target-size requirement.
+       */}
+      <g transform={`scale(${1 / k})`}>
+        <circle r={Math.max(24, labelY)} className="fill-transparent" stroke="none" />
+      </g>
       {selected && (
         <circle
           r={NODE_RADIUS + 8}

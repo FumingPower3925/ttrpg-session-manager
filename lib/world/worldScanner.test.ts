@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { test, expect, describe, beforeEach } from 'bun:test';
-import { makeHandle, FileTree } from '@/lib/testUtils/mockFs';
+import { makeHandle, FileTree, MockDirectoryHandle } from '@/lib/testUtils/mockFs';
 import { hasWorld, scanWorldFolder } from './worldScanner';
 import { useWorldStore, useUiStore } from './stores';
 import { Lead, PlaceEntity, Trama } from '@/types/world';
@@ -250,8 +250,8 @@ describe('scanWorldFolder — happy path', () => {
         });
 
         // 1 manifest + 1 estado/grupo.md + 2 sistemas + 1 faccion + 1 pnj + 2 pistas
-        // + 1 trama + 3 lugares + 1 carpeta
-        const total = 13;
+        // + 1 trama + 3 lugares + 1 carpeta + 1 diario
+        const total = 14;
         expect(calls.length).toBeGreaterThan(0);
         expect(calls[0]).toEqual([1, total]);
         expect(calls[calls.length - 1]).toEqual([total, total]);
@@ -554,6 +554,245 @@ describe('scanWorldFolder — estado del grupo', () => {
         ).toBe(false);
         expect(model.estadoGrupo!.ubicacion).toBe('porto_verne');
         expect(model.estadoGrupo!.rumbo).toEqual({ destino: 'sistema_kovar', llegadaDia: 12 });
+    });
+
+    test('read failure on an existing grupo.md is an error with the cause, not absence', async () => {
+        const handle = makeHandle('campaign', {
+            mundo: {
+                'mundo.md': FULL_MANIFEST,
+                estado: { 'grupo.md': '---\ncreditos: 5\n---\n' },
+            },
+        });
+        const root = handle as unknown as MockDirectoryHandle;
+        const mundo = await root.getDirectoryHandle('mundo');
+        const estado = await mundo.getDirectoryHandle('estado');
+        const grupo = await estado.getFileHandle('grupo.md');
+        grupo.getFile = async () => {
+            throw new Error('NotReadableError: fallo de disco');
+        };
+
+        const model = await scanWorldFolder(handle);
+
+        expect(model.estadoGrupo).toBeNull();
+        const issues = model.problemas.filter((p) => p.archivo === 'mundo/estado/grupo.md');
+        expect(issues).toHaveLength(1);
+        expect(issues[0].nivel).toBe('error');
+        expect(issues[0].mensaje).toContain('No se pudo leer');
+        expect(issues[0].mensaje).toContain('NotReadableError: fallo de disco');
+    });
+});
+
+// ── diario/ → model.diario + journal overlay (M3) ───────────────────────────
+
+describe('scanWorldFolder — diario', () => {
+    const DIARIO_BASE = {
+        'mundo.md': FULL_MANIFEST,
+        sistemas: {
+            'sys.md': '---\ncoordenadas: {x: 0, y: 0}\nconocimiento: visitado\n---\n',
+        },
+        lugares: {
+            'planeta_x.md': '---\nen: sys\nconocimiento: desconocido\n---\n',
+            'base_y.md': '---\nen: planeta_x\nconocimiento: desconocido\n---\n',
+        },
+    };
+
+    function journalFile(fields: {
+        sesion: number;
+        fecha: string;
+        procesado: boolean;
+        lines?: string[];
+    }): string {
+        const body = (fields.lines ?? []).join('\n');
+        return `---\ntipo: diario\nsesion: ${fields.sesion}\nfecha_real: ${fields.fecha}\ndia_inicio: 1\ndia_fin: null\nprocesado: ${fields.procesado}\n---\n\n${body}\n`;
+    }
+
+    test('parses diario files into model.diario sorted by fecha/sesion', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    diario: {
+                        // Names deliberately out of chronological order.
+                        'a_2026-07-10_s02.md': journalFile({
+                            sesion: 2,
+                            fecha: '2026-07-10',
+                            procesado: true,
+                            lines: ['- [20:00] gasto: 100 | taxi orbital'],
+                        }),
+                        'z_2026-07-01_s01.md': journalFile({
+                            sesion: 1,
+                            fecha: '2026-07-01',
+                            procesado: true,
+                        }),
+                    },
+                },
+            })
+        );
+
+        expect(model.diario.map((d) => d.sesion)).toEqual([1, 2]);
+        expect(model.diario[1].fechaReal).toBe('2026-07-10');
+        expect(model.diario[1].procesado).toBe(true);
+        expect(model.diario[1].entradas).toEqual([
+            { hora: '20:00', tipo: 'gasto', payload: '100', comentario: 'taxi orbital' },
+        ]);
+        // journals never become entities
+        expect(model.entidades.size).toBe(3);
+    });
+
+    test('unprocessed sabe bumps knowledge, never lowers it', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    diario: {
+                        '2026-07-01_s01.md': journalFile({
+                            sesion: 1,
+                            fecha: '2026-07-01',
+                            procesado: false,
+                            lines: [
+                                '- [20:00] sabe: planeta_x desconocido->rumoreado',
+                                '- [20:05] sabe: sys visitado->conocido',
+                                '- [20:10] sabe: no_existe desconocido->conocido',
+                                '- [20:15] sabe: base_y basura',
+                            ],
+                        }),
+                    },
+                },
+            })
+        );
+
+        expect(model.entidades.get('planeta_x')!.conocimiento).toBe('rumoreado');
+        // never lowered: sys stays visitado despite the logged ->conocido
+        expect(model.entidades.get('sys')!.conocimiento).toBe('visitado');
+        // unknown ids and bad payloads are skipped silently
+        expect(model.entidades.get('base_y')!.conocimiento).toBe('desconocido');
+    });
+
+    test('procesado: true journals do NOT overlay', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    diario: {
+                        '2026-07-01_s01.md': journalFile({
+                            sesion: 1,
+                            fecha: '2026-07-01',
+                            procesado: true,
+                            lines: ['- [20:00] sabe: planeta_x desconocido->rumoreado'],
+                        }),
+                    },
+                },
+            })
+        );
+
+        expect(model.entidades.get('planeta_x')!.conocimiento).toBe('desconocido');
+    });
+
+    test('unprocessed llegada: destination visitado, ancestors at least conocido', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    diario: {
+                        '2026-07-01_s01.md': journalFile({
+                            sesion: 1,
+                            fecha: '2026-07-01',
+                            procesado: false,
+                            lines: ['- [21:00] llegada: base_y | dia 5'],
+                        }),
+                    },
+                },
+            })
+        );
+
+        expect(model.entidades.get('base_y')!.conocimiento).toBe('visitado');
+        expect(model.entidades.get('planeta_x')!.conocimiento).toBe('conocido');
+        // already above conocido — never lowered
+        expect(model.entidades.get('sys')!.conocimiento).toBe('visitado');
+    });
+
+    test('overlay runs before accionable derivation and orphan avisos', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    pistas: {
+                        'p_x.md': '---\nestado: activa\ndonde: planeta_x\n---\n',
+                    },
+                    diario: {
+                        '2026-07-01_s01.md': journalFile({
+                            sesion: 1,
+                            fecha: '2026-07-01',
+                            procesado: false,
+                            lines: ['- [21:00] llegada: base_y | dia 5'],
+                        }),
+                    },
+                },
+            })
+        );
+
+        // planeta_x became conocido via the journal, so the lead is actionable
+        expect((model.entidades.get('p_x') as Lead).accionable).toBe(true);
+        expect(
+            model.problemas.some((p) => p.mensaje.includes('lugar desconocido'))
+        ).toBe(false);
+        // and base_y (now visitado) is no longer an orphan candidate
+        expect(
+            model.problemas.some((p) => p.archivo === 'mundo/lugares/base_y.md')
+        ).toBe(false);
+    });
+
+    test('stale aviso: unprocessed diario older than the newest one', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    diario: {
+                        '2026-07-01_s01.md': journalFile({
+                            sesion: 1,
+                            fecha: '2026-07-01',
+                            procesado: false,
+                        }),
+                        '2026-07-10_s02.md': journalFile({
+                            sesion: 2,
+                            fecha: '2026-07-10',
+                            procesado: false,
+                        }),
+                    },
+                },
+            })
+        );
+
+        const stale = model.problemas.filter((p) =>
+            p.mensaje.includes('Diario sin procesar')
+        );
+        // only the OLD unprocessed journal warns; the newest one is the
+        // normal "last session awaiting maintenance" state
+        expect(stale).toHaveLength(1);
+        expect(stale[0].nivel).toBe('aviso');
+        expect(stale[0].archivo).toBe('mundo/diario/2026-07-01_s01.md');
+    });
+
+    test('tolerant parsing: missing frontmatter falls back to the filename', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    ...DIARIO_BASE,
+                    diario: {
+                        '2026-07-12_s08.md': '- [18:02] inicio: dia 4128 @ base_y\ngarbage line\n',
+                    },
+                },
+            })
+        );
+
+        expect(model.diario).toHaveLength(1);
+        const day = model.diario[0];
+        expect(day.sesion).toBe(8);
+        expect(day.fechaReal).toBe('2026-07-12');
+        expect(day.procesado).toBe(false);
+        expect(day.diaInicio).toBeNull();
+        expect(day.entradas).toHaveLength(1);
+        expect(day.entradas[0].tipo).toBe('inicio');
     });
 });
 

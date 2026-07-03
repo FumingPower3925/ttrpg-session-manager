@@ -42,6 +42,7 @@ function makeModel(entities: WorldEntityBase[]): WorldModel {
         problemas: [],
         childrenOf: new Map(),
         estadoGrupo: null,
+        diario: [],
     };
 }
 

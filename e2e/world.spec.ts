@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { MUNDO_CAMPAIGN, MUNDO_CAMPAIGN_CON_ESTADO } from './fixtures/mundoCampaign';
-import { materializeIntoOPFS, openWorldViaOPFS } from './helpers/opfs';
+import type { FileTree } from './fixtures/mundoCampaign';
+import { listOPFSDir, materializeIntoOPFS, openWorldViaOPFS, readOPFSFile } from './helpers/opfs';
 
 // World mode loads the mundoCampaign fixture through the OPFS seam
 // (see e2e/helpers/opfs.ts for the app-side contract these tests rely on).
@@ -198,5 +199,139 @@ test.describe('World Mode - Party readout', () => {
         await expect(page.locator('[data-tier="system"]')).toBeAttached();
         await expect(marker).toBeAttached();
         await expect(marker).not.toHaveAttribute('transform', 'translate(0 0)');
+    });
+});
+
+// ── M3: session recorder (write path via OPFS — no permission prompts) ──────
+//
+// NOTE (h): the permission-DENIED path cannot be exercised through OPFS —
+// its handles always report/grant readwrite without prompting, so there is no
+// way to make requestPermission return 'denied' from Playwright. That branch
+// is covered by unit tests instead: JournalWriter denied/retryNow/flush-reject
+// (lib/world/journalWriter.test.ts) and the failed-close + retryWrites cases
+// (lib/world/partyStore.test.ts).
+
+/** Body of estado/grupo.md (everything after the closing frontmatter fence). */
+function frontmatterBody(fileText: string): string {
+    return fileText.slice(fileText.indexOf('\n---\n', 3) + '\n---\n'.length);
+}
+
+test.describe('World Mode - Session recorder', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+    });
+
+    test('quick-log is disabled until a session starts', async ({ page }) => {
+        await expect(page.locator('[data-quicklog-bar]')).toBeVisible();
+        await expect(page.locator('[data-quicklog="creditos"]')).toBeDisabled();
+        await expect(page.locator('[data-quicklog="mover"]')).toBeDisabled();
+        await expect(page.locator('[data-session-start]')).toBeEnabled();
+    });
+
+    test('full recorder loop: start, quick-logs, mover, undo, end', async ({ page }) => {
+        // (a) Iniciar sesión -> diario file with sesion: 1 + inicio line.
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        expect(journalName).toMatch(/^\d{4}-\d{2}-\d{2}_s01\.md$/);
+        const journalPath = `mundo/diario/${journalName}`;
+
+        const initial = await readOPFSFile(page, journalPath);
+        expect(initial).toContain('tipo: diario');
+        expect(initial).toContain('sesion: 1');
+        expect(initial).toContain('dia_inicio: 4127');
+        expect(initial).toContain('dia_fin: null');
+        expect(initial).toContain('procesado: false');
+        expect(initial).toMatch(/- \[\d{2}:\d{2}\] inicio: dia 4127 @ porto_verne/);
+
+        // (b) gasto 100 via the créditos popover -> toast + journal line + bar.
+        await page.locator('[data-quicklog="creditos"]').click();
+        await page.locator('[data-quicklog-delta="-100"]').click();
+        await expect(page.getByText('-100 créditos anotados')).toBeVisible();
+        await expect(page.locator('[data-party-bar] [data-creditos="1140"]')).toBeVisible();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] gasto: 100/);
+
+        // (c) medidor combustible 2 -> 4 via the pips popover.
+        await page.locator('[data-quicklog="combustible"]').click();
+        await page
+            .locator('[data-quicklog-pips="combustible"] [data-quicklog-pip="4"]')
+            .click();
+        await expect(
+            page.locator('[data-party-bar] [data-medidor="combustible"][data-valor="4"]')
+        ).toBeAttached();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] medidor: combustible 2->4/);
+
+        // (d) nota via the "n" keyboard shortcut.
+        await page.keyboard.press('n');
+        const notaInput = page.locator('[data-quicklog-nota-input]');
+        await expect(notaInput).toBeFocused();
+        await notaInput.fill('los PJ preguntan por Kael');
+        await notaInput.press('Enter');
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] nota: los PJ preguntan por Kael/);
+
+        // (e) Mover to kovar_iii -> llegada line, marker moved, knowledge bump.
+        await page.locator('[data-quicklog="mover"]').click();
+        await page.locator('[data-mover-id="kovar_iii"]').click();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] llegada: kovar_iii \| dia 4127/);
+
+        const bar = page.locator('[data-party-bar]');
+        await expect(bar.getByRole('navigation', { name: 'Ubicación' })).toContainText('Kovar III');
+        // navigateToEntity landed on the system tier; the marker sits on
+        // kovar_iii's own node there, not on the star at (0,0).
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+        const marker = page.locator('[data-party-marker]');
+        await expect(marker).toBeAttached();
+        await expect(marker).not.toHaveAttribute('transform', 'translate(0 0)');
+        await expect(page.locator('[data-entity-id="kovar_iii"]')).toHaveAttribute(
+            'data-knowledge',
+            'visitado'
+        );
+
+        // (f) Deshacer última: the llegada line leaves the file and the UI reverts.
+        await page.locator('[data-panel-tab="diario"]').click();
+        await page.locator('[data-journal-undo]').click();
+        await expect.poll(() => readOPFSFile(page, journalPath)).not.toMatch(/llegada: kovar_iii/);
+        await expect(bar.getByRole('navigation', { name: 'Ubicación' })).toContainText(
+            'Porto Verne'
+        );
+
+        // (g) Terminar sesión -> fin line + dia_fin + estado frontmatter updated
+        // with the agent-owned body preserved byte-for-byte.
+        await page.locator('[data-session-end]').click();
+        await page.locator('[data-session-end-confirm-button]').click();
+        await expect(page.locator('[data-session-start]')).toBeVisible();
+
+        const journalFinal = await readOPFSFile(page, journalPath);
+        expect(journalFinal).toMatch(/- \[\d{2}:\d{2}\] fin: dia 4127 @ porto_verne/);
+        expect(journalFinal).toContain('dia_fin: 4127');
+        expect(journalFinal).toContain('procesado: false');
+        expect(journalFinal).not.toContain('llegada: kovar_iii');
+
+        await expect
+            .poll(() => readOPFSFile(page, 'mundo/estado/grupo.md'))
+            .toContain('sesion_activa: false');
+        const estadoFinal = await readOPFSFile(page, 'mundo/estado/grupo.md');
+        expect(estadoFinal).toContain('tipo: estado_grupo');
+        expect(estadoFinal).toContain('creditos: 1140');
+        expect(estadoFinal).toContain('combustible: 4');
+        expect(estadoFinal).toContain('ubicacion: porto_verne');
+
+        const mundoFixture = MUNDO_CAMPAIGN_CON_ESTADO.mundo as FileTree;
+        const grupoFixture = (mundoFixture.estado as FileTree)['grupo.md'] as string;
+        expect(frontmatterBody(estadoFinal)).toBe(frontmatterBody(grupoFixture));
     });
 });

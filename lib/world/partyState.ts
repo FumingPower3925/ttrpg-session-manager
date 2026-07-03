@@ -10,6 +10,7 @@
  * Pure functions: no filesystem, no store access.
  */
 
+import { stringify as stringifyYaml } from 'yaml';
 import { PartyState, ValidationIssue, WorldManifest } from '@/types/world';
 import { DEFAULT_MEDIDORES } from './constants';
 import { asNumber, asString, normalizeKeys, parseFrontmatter } from './frontmatter';
@@ -146,6 +147,69 @@ export function parsePartyState(content: string, filePath: string): ParsePartySt
     }
 
     return { state, issues };
+}
+
+// ── Serialization (M3 write path) ───────────────────────────────────────────
+
+/**
+ * Dumps a scalar through the yaml package so quoting is always safe; strings
+ * whose dump would span lines (embedded newlines → block scalars) fall back
+ * to JSON quoting, which is valid YAML and keeps the frontmatter line-based.
+ */
+function yamlScalar(value: string | number | boolean): string {
+    const dumped = stringifyYaml(value).trimEnd();
+    return typeof value === 'string' && dumped.includes('\n')
+        ? JSON.stringify(value)
+        : dumped;
+}
+
+/**
+ * Serializes a PartyState back to `estado/grupo.md` text. The app rewrites
+ * ONLY the frontmatter; `bodyMd` is appended EXACTLY as parsed (byte-for-byte
+ * — when bodyMd is empty the output is just the frontmatter block ending in a
+ * newline). Round-trip guarantee: parsePartyState(serializePartyState(s, iso))
+ * reproduces every frontmatter field and bodyMd of `s` (medidores overlay the
+ * three defaults, so an *empty* medidores map parses back as the defaults).
+ *
+ * Frontmatter key order (stable, human-friendly — documented contract):
+ *   tipo, actualizado, sesion_activa, dia_mundo, ubicacion,
+ *   rumbo (nested destino / llegada_dia, or null), creditos, medidores.
+ *
+ * `actualizado` is write-time metadata (ISO timestamp) — parsePartyState
+ * ignores it by design.
+ */
+export function serializePartyState(state: PartyState, nowIso: string): string {
+    const lines: string[] = [
+        '---',
+        'tipo: estado_grupo',
+        `actualizado: ${yamlScalar(nowIso)}`,
+        `sesion_activa: ${state.sesionActiva}`,
+        `dia_mundo: ${yamlScalar(state.diaMundo)}`,
+        `ubicacion: ${state.ubicacion === null ? 'null' : yamlScalar(state.ubicacion)}`,
+    ];
+
+    if (state.rumbo === null) {
+        lines.push('rumbo: null');
+    } else {
+        lines.push('rumbo:');
+        lines.push(`  destino: ${yamlScalar(state.rumbo.destino)}`);
+        lines.push(`  llegada_dia: ${yamlScalar(state.rumbo.llegadaDia)}`);
+    }
+
+    lines.push(`creditos: ${yamlScalar(state.creditos)}`);
+
+    const medidores = Object.entries(state.medidores);
+    if (medidores.length === 0) {
+        lines.push('medidores: {}');
+    } else {
+        lines.push('medidores:');
+        for (const [nombre, valor] of medidores) {
+            lines.push(`  ${yamlScalar(nombre)}: ${yamlScalar(valor)}`);
+        }
+    }
+
+    lines.push('---');
+    return lines.join('\n') + '\n' + state.bodyMd;
 }
 
 // ── In-world date rendering ─────────────────────────────────────────────────

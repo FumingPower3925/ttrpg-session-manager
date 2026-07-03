@@ -1,22 +1,55 @@
 'use client';
 
 /**
- * PartyStatusBar — top cockpit band over the world view. READ-ONLY in M2:
- * the layout already reserves every interaction slot (breadcrumb taps work;
- * credits popover, gauge taps and the session button arrive in M3, which
- * only swaps handlers in — no re-layout).
+ * PartyStatusBar — top cockpit band over the world view. M3 upgrade over the
+ * M2 read-only layout (markup + data-attributes preserved): gauges are now
+ * manifest-driven, and the right edge hosts the live session controls —
+ * Iniciar/Terminar sesión (with confirm popover), elapsed timer, write-status
+ * dot and the Reintentar chip on permission loss. Gauges stay read-only here;
+ * edits happen in the QuickLogBar.
+ *
+ * All M3 props are optional with idle defaults so the component keeps
+ * rendering (button disabled) until the page wires the session store in.
  */
 
-import { Fragment } from 'react';
-import { PartyState } from '@/types/world';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { PartyState, SessionRuntime } from '@/types/world';
 import { Button } from '@/components/ui/button';
-import { CalendarDays, ChevronRight, Coins, MapPin, Play } from 'lucide-react';
+import { CalendarDays, ChevronRight, Coins, MapPin, Play, RotateCw, Square, Timer } from 'lucide-react';
 
-const GAUGES: { key: string; label: string }[] = [
-  { key: 'viveres', label: 'Víveres' },
-  { key: 'combustible', label: 'Combustible' },
-  { key: 'nave', label: 'Nave' },
-];
+const DEFAULT_MEDIDOR_NAMES = ['viveres', 'combustible', 'nave'];
+
+const MEDIDOR_LABELS: Record<string, string> = {
+  viveres: 'Víveres',
+  combustible: 'Combustible',
+  nave: 'Nave',
+};
+
+function medidorLabel(nombre: string): string {
+  return MEDIDOR_LABELS[nombre] ?? nombre.charAt(0).toUpperCase() + nombre.slice(1);
+}
+
+const WRITE_STATUS_TITLES: Record<SessionRuntime['writeStatus'], string> = {
+  ok: 'Escritura al día',
+  pending: 'Guardando cambios…',
+  denied: 'Permisos de escritura perdidos',
+};
+
+const WRITE_STATUS_DOT: Record<SessionRuntime['writeStatus'], string> = {
+  ok: 'bg-emerald-500',
+  pending: 'bg-amber-500',
+  denied: 'bg-destructive',
+};
+
+/** mm:ss under an hour, h:mm from there on. */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}`;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
 
 interface PartyStatusBarProps {
   /** Party state from estado/grupo.md; null renders the slim hint bar. */
@@ -28,8 +61,22 @@ interface PartyStatusBarProps {
   /** Breadcrumb chain root -> current; each crumb taps through to the map. */
   locationPath: { id: string; label: string }[];
   onLocationClick: (id: string) => void;
+  /** Gauge names from the world manifest (order preserved). */
+  medidorNames?: string[];
   /** Pips per gauge row. */
   medidoresMax?: number;
+  /** True while a session records; flips the button to Terminar sesión. */
+  sessionActive?: boolean;
+  /** Missing handler keeps the Iniciar button disabled (unwired page). */
+  onStartSession?: () => void;
+  onEndSession?: () => void;
+  /** Elapsed session time; the page owns the ticking interval. */
+  sessionElapsedMs?: number;
+  writeStatus?: SessionRuntime['writeStatus'];
+  /** Re-request write permission; rendered as the red Reintentar chip when denied. */
+  onRetryWrites?: () => void;
+  /** Summary counts shown inside the Terminar confirm popover. */
+  endSummaryPreview?: string;
 }
 
 export function PartyStatusBar({
@@ -38,7 +85,15 @@ export function PartyStatusBar({
   locationName,
   locationPath,
   onLocationClick,
+  medidorNames = DEFAULT_MEDIDOR_NAMES,
   medidoresMax = 5,
+  sessionActive = false,
+  onStartSession,
+  onEndSession,
+  sessionElapsedMs = 0,
+  writeStatus = 'ok',
+  onRetryWrites,
+  endSummaryPreview,
 }: PartyStatusBarProps) {
   if (!estado) {
     return (
@@ -109,26 +164,144 @@ export function PartyStatusBar({
         <span className="text-xs text-muted-foreground">cr</span>
       </div>
 
-      {/* Medidores */}
+      {/* Medidores (read-only; edits live in the QuickLogBar) */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {GAUGES.map((gauge) => (
+        {medidorNames.map((nombre) => (
           <GaugeRow
-            key={gauge.key}
-            name={gauge.key}
-            label={gauge.label}
-            value={estado.medidores[gauge.key] ?? 0}
+            key={nombre}
+            name={nombre}
+            label={medidorLabel(nombre)}
+            value={estado.medidores[nombre] ?? 0}
             max={medidoresMax}
           />
         ))}
       </div>
 
-      {/* M3 slot: Iniciar/Terminar sesión + timer + write-status dot. */}
-      <span className="ml-auto" title="Disponible en M3">
-        <Button variant="outline" size="sm" disabled>
-          <Play />
-          Iniciar sesión
-        </Button>
-      </span>
+      {/* Session controls */}
+      <div className="ml-auto flex items-center gap-2">
+        {sessionActive ? (
+          <>
+            <span
+              data-session-timer
+              className="flex items-center gap-1 text-sm tabular-nums text-muted-foreground"
+              title="Tiempo de sesión"
+            >
+              <Timer className="size-4" aria-hidden />
+              {formatElapsed(sessionElapsedMs)}
+            </span>
+            <span
+              data-write-status={writeStatus}
+              role="status"
+              title={WRITE_STATUS_TITLES[writeStatus]}
+              className={`size-2 shrink-0 rounded-full ${WRITE_STATUS_DOT[writeStatus]}`}
+            />
+            {writeStatus === 'denied' && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-session-retry
+                onClick={onRetryWrites}
+                className="h-6 gap-1 border-destructive/40 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <RotateCw className="size-3" aria-hidden />
+                Reintentar
+              </Button>
+            )}
+            <EndSessionButton onEndSession={onEndSession} endSummaryPreview={endSummaryPreview} />
+          </>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            data-session-start
+            disabled={!onStartSession}
+            onClick={onStartSession}
+          >
+            <Play />
+            Iniciar sesión
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface EndSessionButtonProps {
+  onEndSession?: () => void;
+  endSummaryPreview?: string;
+}
+
+/** "Terminar sesión" with an upward confirm popover (summary + Terminar/Cancelar). */
+function EndSessionButton({ onEndSession, endSummaryPreview }: EndSessionButtonProps) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setConfirmOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setConfirmOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [confirmOpen]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        data-session-end
+        aria-expanded={confirmOpen}
+        onClick={() => setConfirmOpen((open) => !open)}
+        className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+      >
+        <Square />
+        Terminar sesión
+      </Button>
+      {confirmOpen && (
+        <div
+          data-session-end-confirm
+          className="absolute right-0 top-full z-50 mt-2 w-64 rounded-md border bg-popover p-3 text-popover-foreground shadow-md"
+        >
+          <p className="text-sm font-medium">¿Terminar la sesión?</p>
+          {endSummaryPreview && (
+            <p className="mt-1 text-xs text-muted-foreground">{endSummaryPreview}</p>
+          )}
+          <div className="mt-3 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              data-session-end-confirm-button
+              onClick={() => {
+                setConfirmOpen(false);
+                onEndSession?.();
+              }}
+            >
+              Terminar
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

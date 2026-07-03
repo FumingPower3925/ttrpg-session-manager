@@ -2,15 +2,30 @@
  * World-mode zustand stores (plan Part B).
  *
  * worldStore — immutable-after-scan world model + scan lifecycle.
+ * partyStore — live file-backed party state + session recorder (M3).
  * uiStore — map tier/focus/selection/panel UI state.
  *
- * Headless on purpose: no React imports, so both stores are bun-testable via
- * useXxxStore.getState() without a DOM.
+ * Headless on purpose: no React imports, so all stores are bun-testable via
+ * useXxxStore.getState() without a DOM. The partyStore additionally takes its
+ * side effects (estado write, journal writer, clock, mirror storage) as
+ * injected deps — the page provides bound closures; tests provide fakes.
  */
 
 import { create } from 'zustand';
-import { WorldModel } from '@/types/world';
+import {
+    JournalDay,
+    JournalEntry,
+    JournalEntryType,
+    PartySnapshot,
+    PartyState,
+    SessionRuntime,
+    WorldModel,
+} from '@/types/world';
 import { FileSystemManager } from '@/lib/fileSystem';
+import { ENTITY_DIRS, WORLD_DIR } from './constants';
+import { applyEntryToSnapshot, makeEntry, serializeJournal } from './logEntries';
+import { nextJournalFile } from './journalWriter';
+import { defaultPartyState, serializePartyState } from './partyState';
 import { scanWorldFolder } from './worldScanner';
 
 // ── worldStore ──────────────────────────────────────────────────────────────
@@ -83,6 +98,653 @@ export const useWorldStore = create<WorldState>()((set, get) => ({
         },
     },
 }));
+
+// ── partyStore ──────────────────────────────────────────────────────────────
+
+export type WriteStatus = SessionRuntime['writeStatus'];
+
+/**
+ * Journal writer surface the store depends on — matches the JournalWriter
+ * class in lib/world/journalWriter.ts one-to-one (the page passes the
+ * instance or bound closures). Full-rewrite semantics: `rewrite` replaces the
+ * whole file (append == undo == same path) through the writer's own
+ * serialized queue. NOTE: `flush` follows the JournalWriter contract — it
+ * resolves (never rejects) even when a write was denied; the outcome is
+ * observed through `onStatus`.
+ */
+export interface PartyStoreJournal {
+    /** Claim/create the session's journal file and write its initial full text. */
+    open: (filePath: string, text: string) => void;
+    /** Queue a full rewrite of the journal with the given text. */
+    rewrite: (text: string) => void;
+    /** Resolves when the write queue is idle (persisted OR stalled denied). */
+    flush: () => Promise<void>;
+    /** Retry after a denied write (permission regained). */
+    retryNow: () => void;
+    /** Optional status feed; the store subscribes on setDeps. */
+    onStatus?: (cb: (status: WriteStatus) => void) => void;
+}
+
+/** Minimal Storage surface for the crash mirror (injectable for bun tests). */
+export type MirrorStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+export interface PartyStoreDeps {
+    /**
+     * Bound closure that writes `mundo/estado/grupo.md` (the binding side —
+     * worldWriter — enforces the diario/+estado/ write surface).
+     */
+    writeEstado: (text: string) => Promise<void>;
+    journal: PartyStoreJournal;
+    now: () => Date;
+    /** Estado write debounce in ms; default DEFAULT_ESTADO_DEBOUNCE_MS. */
+    debounceMs?: number;
+    /** Crash-mirror storage; defaults to window.sessionStorage (no-op when absent). */
+    mirrorStorage?: MirrorStorage;
+}
+
+export const DEFAULT_ESTADO_DEBOUNCE_MS = 2000;
+
+/**
+ * Crash mirror persisted to sessionStorage on every session mutation.
+ *
+ * DECISION (M3 reconciliation): the mirror carries the session-start
+ * `snapshot` IN the mirror itself — recovery replays `entries` over
+ * `snapshot`, NOT over the estado file (which may hold a newer
+ * debounce-written mid-session state, so replaying over it would
+ * double-apply entries). This is THE canonical crash mirror (key
+ * `world.session.mirror.v1`); the snapshot-less helpers that briefly lived
+ * in lib/world/journalWriter.ts were deleted — the journal writer mirrors
+ * nothing.
+ */
+export interface SessionMirror {
+    version: 1;
+    journalPath: string;
+    sesion: number;
+    fechaReal: string;
+    diaInicio: number | null;
+    /** Epoch ms when the session started. */
+    startedAt: number;
+    /** Party state at session start — the replay base. */
+    snapshot: PartySnapshot;
+    entries: JournalEntry[];
+}
+
+export const SESSION_MIRROR_KEY = 'world.session.mirror.v1';
+
+function defaultMirrorStorage(): MirrorStorage | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.sessionStorage;
+    } catch {
+        return null; // storage blocked (e.g. privacy mode) — mirror disabled
+    }
+}
+
+/** Reads (and validates) the crash mirror; null when absent/corrupt/SSR. */
+export function readSessionMirror(storage?: MirrorStorage | null): SessionMirror | null {
+    const st = storage ?? defaultMirrorStorage();
+    if (!st) return null;
+    try {
+        const raw = st.getItem(SESSION_MIRROR_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as SessionMirror;
+        if (
+            parsed === null ||
+            typeof parsed !== 'object' ||
+            parsed.version !== 1 ||
+            typeof parsed.journalPath !== 'string' ||
+            typeof parsed.startedAt !== 'number' ||
+            typeof parsed.snapshot !== 'object' ||
+            parsed.snapshot === null ||
+            !Array.isArray(parsed.entries)
+        ) {
+            return null;
+        }
+        // A journalPath outside the app's write surface is a corrupt/hostile
+        // mirror: recovering it would make JournalWriter.open() throw AFTER
+        // the session flipped active. Treat it as no mirror.
+        if (!parsed.journalPath.startsWith(`${WORLD_DIR}/${ENTITY_DIRS.diario}/`)) {
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+export function clearSessionMirror(storage?: MirrorStorage | null): void {
+    const st = storage ?? defaultMirrorStorage();
+    if (!st) return;
+    try {
+        st.removeItem(SESSION_MIRROR_KEY);
+    } catch {
+        // best effort
+    }
+}
+
+/** End-of-session recap returned by endSession() for the closing toast. */
+export interface SessionSummary {
+    durationMs: number;
+    counts: Partial<Record<JournalEntryType, number>>;
+    /** Sum of ganancia minus gasto payloads over the whole session. */
+    netCreditos: number;
+}
+
+export interface PartyStoreState {
+    // Live party fields (PartySnapshot shape, mutated only through log/undo/replay)
+    diaMundo: number;
+    ubicacion: string | null;
+    rumbo: { destino: string; llegadaDia: number } | null;
+    creditos: number;
+    medidores: Record<string, number>;
+    /** Agent-owned estado body, preserved byte-for-byte on every write. */
+    bodyMd: string;
+    /** Path of estado/grupo.md relative to the campaign folder (bookkeeping). */
+    estadoFilePath: string | null;
+    session: SessionRuntime;
+    actions: {
+        /** Injects side-effect deps (page: bound closures; tests: fakes). */
+        setDeps: (deps: PartyStoreDeps) => void;
+        /** Loads estadoGrupo (or defaults) into the live fields. No-op mid-session. */
+        hydrate: (model: WorldModel) => void;
+        /**
+         * Opens a session: next journal file from `diario` + `today`
+         * (YYYY-MM-DD), inicio entry, snapshot, journal open, mirror,
+         * debounced estado write with sesion_activa true. Returns the new
+         * JournalDay (null when already active / deps missing).
+         */
+        startSession: (diario: JournalDay[], today: string) => JournalDay | null;
+        /**
+         * THE single mutation entry point: applies the entry to the live
+         * fields, appends it, rewrites the journal, refreshes the mirror and
+         * schedules the debounced estado write. Returns the entry for the
+         * toast; null (+console.warn) when no session is active.
+         */
+        log: (entry: JournalEntry) => JournalEntry | null;
+        /**
+         * Drops the last entry (never the inicio) and recomputes the live
+         * fields by replaying the remaining entries over the session-start
+         * snapshot. Returns the removed entry, or null when nothing undoable.
+         */
+        undoLast: () => JournalEntry | null;
+        /**
+         * Appends fin, sets dia_fin, flushes the journal, forces the estado
+         * write with sesion_activa false, clears the mirror and deactivates.
+         * If the journal flush fails the session STAYS active (writeStatus
+         * denied, mirror kept) and null is returned — retry after retryWrites.
+         */
+        endSession: () => Promise<SessionSummary | null>;
+        /**
+         * Rebuilds an active session from a crash mirror: live fields =
+         * mirror.entries replayed over mirror.snapshot (see SessionMirror
+         * doc); estado body/path re-taken from the fresh model; journal
+         * reopened with the full serialized content.
+         */
+        recoverSession: (mirror: SessionMirror, model: WorldModel) => void;
+        /** Forces any pending debounced estado write now; resolves when settled. */
+        flushEstado: () => Promise<void>;
+        /**
+         * Registers pagehide/visibilitychange listeners that flush the
+         * debounced estado write; returns the cleanup. SSR-safe no-op.
+         */
+        bindLifecycleFlush: () => () => void;
+        /** Feed for the journal writer's status (page binds this as onStatus). */
+        setJournalStatus: (status: WriteStatus) => void;
+        /** Retries denied writes: journal retryNow + estado re-write. */
+        retryWrites: () => void;
+        reset: () => void;
+    };
+}
+
+const SESSION_INITIAL: SessionRuntime = {
+    active: false,
+    journalPath: null,
+    startedAt: null,
+    entries: [],
+    snapshot: null,
+    writeStatus: 'ok',
+};
+
+function partyInitial() {
+    const defaults = defaultPartyState();
+    return {
+        diaMundo: defaults.diaMundo,
+        ubicacion: defaults.ubicacion,
+        rumbo: defaults.rumbo,
+        creditos: defaults.creditos,
+        medidores: defaults.medidores,
+        bodyMd: defaults.bodyMd,
+        estadoFilePath: null as string | null,
+        session: { ...SESSION_INITIAL, entries: [] as JournalEntry[] },
+    };
+}
+
+function cloneSnapshot(snapshot: PartySnapshot): PartySnapshot {
+    return {
+        diaMundo: snapshot.diaMundo,
+        ubicacion: snapshot.ubicacion,
+        rumbo: snapshot.rumbo === null ? null : { ...snapshot.rumbo },
+        creditos: snapshot.creditos,
+        medidores: { ...snapshot.medidores },
+    };
+}
+
+function summarize(entries: JournalEntry[], durationMs: number): SessionSummary {
+    const counts: Partial<Record<JournalEntryType, number>> = {};
+    let netCreditos = 0;
+    for (const entry of entries) {
+        counts[entry.tipo] = (counts[entry.tipo] ?? 0) + 1;
+        const cantidad = Number(entry.payload.trim());
+        if (!Number.isFinite(cantidad)) continue;
+        if (entry.tipo === 'ganancia') netCreditos += cantidad;
+        if (entry.tipo === 'gasto') netCreditos -= cantidad;
+    }
+    return { durationMs: Math.max(0, durationMs), counts, netCreditos };
+}
+
+export const usePartyStore = create<PartyStoreState>()((set, get) => {
+    // Non-reactive session machinery lives in the closure, not in state.
+    let deps: PartyStoreDeps | null = null;
+    let journalDay: JournalDay | null = null;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let journalStatus: WriteStatus = 'ok';
+    let estadoStatus: WriteStatus = 'ok';
+    /** Serializes estado writes; never left rejected. */
+    let estadoChain: Promise<void> = Promise.resolve();
+
+    function combineStatus(a: WriteStatus, b: WriteStatus): WriteStatus {
+        if (a === 'denied' || b === 'denied') return 'denied'; // denied wins over pending
+        if (a === 'pending' || b === 'pending') return 'pending';
+        return 'ok';
+    }
+
+    function pushStatus() {
+        const writeStatus = combineStatus(journalStatus, estadoStatus);
+        const { session } = get();
+        if (session.writeStatus === writeStatus) return;
+        set({ session: { ...session, writeStatus } });
+    }
+
+    function liveSnapshot(): PartySnapshot {
+        const s = get();
+        return cloneSnapshot({
+            diaMundo: s.diaMundo,
+            ubicacion: s.ubicacion,
+            rumbo: s.rumbo,
+            creditos: s.creditos,
+            medidores: s.medidores,
+        });
+    }
+
+    function snapshotToFields(snapshot: PartySnapshot) {
+        const copy = cloneSnapshot(snapshot);
+        return {
+            diaMundo: copy.diaMundo,
+            ubicacion: copy.ubicacion,
+            rumbo: copy.rumbo,
+            creditos: copy.creditos,
+            medidores: copy.medidores,
+        };
+    }
+
+    function currentPartyState(): PartyState {
+        const s = get();
+        return {
+            sesionActiva: s.session.active,
+            diaMundo: s.diaMundo,
+            ubicacion: s.ubicacion,
+            rumbo: s.rumbo === null ? null : { ...s.rumbo },
+            creditos: s.creditos,
+            medidores: { ...s.medidores },
+            bodyMd: s.bodyMd,
+            filePath: s.estadoFilePath,
+        };
+    }
+
+    // ── Crash mirror ────────────────────────────────────────────────────
+
+    function mirrorStorage(): MirrorStorage | null {
+        return deps?.mirrorStorage ?? defaultMirrorStorage();
+    }
+
+    function writeMirror() {
+        const storage = mirrorStorage();
+        if (!storage || journalDay === null) return;
+        const { session } = get();
+        if (!session.active || session.snapshot === null || session.startedAt === null) return;
+        const mirror: SessionMirror = {
+            version: 1,
+            journalPath: journalDay.filePath,
+            sesion: journalDay.sesion,
+            fechaReal: journalDay.fechaReal,
+            diaInicio: journalDay.diaInicio,
+            startedAt: session.startedAt,
+            snapshot: session.snapshot,
+            entries: session.entries,
+        };
+        try {
+            storage.setItem(SESSION_MIRROR_KEY, JSON.stringify(mirror));
+        } catch (error) {
+            console.warn('[world] no se pudo escribir el espejo de sesión', error);
+        }
+    }
+
+    // ── Debounced estado write ──────────────────────────────────────────
+
+    function performEstadoWrite(): Promise<void> {
+        const d = deps;
+        if (d === null) return Promise.resolve();
+        estadoStatus = 'pending';
+        pushStatus();
+        estadoChain = estadoChain
+            .then(() => d.writeEstado(serializePartyState(currentPartyState(), d.now().toISOString())))
+            .then(
+                () => {
+                    estadoStatus = 'ok';
+                    pushStatus();
+                },
+                (error) => {
+                    console.warn('[world] fallo al escribir estado/grupo.md', error);
+                    estadoStatus = 'denied';
+                    pushStatus();
+                }
+            );
+        return estadoChain;
+    }
+
+    function scheduleEstadoWrite() {
+        const d = deps;
+        if (d === null) return;
+        if (debounceTimer !== null) clearTimeout(debounceTimer);
+        estadoStatus = 'pending';
+        pushStatus();
+        debounceTimer = setTimeout(() => {
+            debounceTimer = null;
+            void performEstadoWrite();
+        }, d.debounceMs ?? DEFAULT_ESTADO_DEBOUNCE_MS);
+    }
+
+    function flushEstadoNow(): Promise<void> {
+        if (debounceTimer !== null) {
+            clearTimeout(debounceTimer);
+            debounceTimer = null;
+            return performEstadoWrite();
+        }
+        return estadoChain;
+    }
+
+    return {
+        ...partyInitial(),
+        actions: {
+            setDeps(next: PartyStoreDeps) {
+                deps = next;
+                next.journal.onStatus?.((status) => {
+                    journalStatus = status;
+                    pushStatus();
+                });
+            },
+
+            hydrate(model: WorldModel) {
+                if (get().session.active) {
+                    console.warn('[world] hydrate ignorado: hay una sesión activa');
+                    return;
+                }
+                const estado = model.estadoGrupo ?? defaultPartyState();
+                set({
+                    diaMundo: estado.diaMundo,
+                    ubicacion: estado.ubicacion,
+                    rumbo: estado.rumbo === null ? null : { ...estado.rumbo },
+                    creditos: estado.creditos,
+                    medidores: { ...estado.medidores },
+                    bodyMd: estado.bodyMd,
+                    estadoFilePath: estado.filePath,
+                });
+            },
+
+            startSession(diario: JournalDay[], today: string): JournalDay | null {
+                const s = get();
+                if (s.session.active) {
+                    console.warn('[world] startSession ignorado: ya hay una sesión activa');
+                    return null;
+                }
+                if (deps === null) {
+                    console.warn('[world] startSession ignorado: faltan las dependencias (setDeps)');
+                    return null;
+                }
+                const inicio = makeEntry.inicio(s.diaMundo, s.ubicacion, deps.now);
+                const snapshot = liveSnapshot();
+                const { fileName, sesion } = nextJournalFile(diario, today);
+                journalDay = {
+                    filePath: `${WORLD_DIR}/${ENTITY_DIRS.diario}/${fileName}`,
+                    sesion,
+                    fechaReal: today,
+                    diaInicio: s.diaMundo,
+                    diaFin: null,
+                    procesado: false,
+                    entradas: [inicio],
+                };
+                journalStatus = 'ok';
+                estadoStatus = 'ok';
+                set({
+                    session: {
+                        active: true,
+                        journalPath: journalDay.filePath,
+                        startedAt: deps.now().getTime(),
+                        entries: [inicio],
+                        snapshot,
+                        writeStatus: 'ok',
+                    },
+                });
+                writeMirror();
+                deps.journal.open(journalDay.filePath, serializeJournal(journalDay, journalDay.entradas));
+                scheduleEstadoWrite(); // sesion_activa: true reaches disk within the debounce
+                return journalDay;
+            },
+
+            log(entry: JournalEntry): JournalEntry | null {
+                const s = get();
+                if (!s.session.active || deps === null || journalDay === null) {
+                    console.warn('[world] log ignorado: no hay sesión activa');
+                    return null;
+                }
+                const next = applyEntryToSnapshot(liveSnapshot(), entry);
+                const entries = [...s.session.entries, entry];
+                journalDay = { ...journalDay, entradas: entries };
+                set({
+                    ...snapshotToFields(next),
+                    session: { ...s.session, entries },
+                });
+                writeMirror();
+                deps.journal.rewrite(serializeJournal(journalDay, journalDay.entradas));
+                scheduleEstadoWrite();
+                return entry;
+            },
+
+            undoLast(): JournalEntry | null {
+                const s = get();
+                if (!s.session.active || deps === null || journalDay === null) {
+                    console.warn('[world] undo ignorado: no hay sesión activa');
+                    return null;
+                }
+                if (s.session.entries.length <= 1) {
+                    console.warn('[world] undo ignorado: la entrada de inicio no se puede deshacer');
+                    return null;
+                }
+                const removed = s.session.entries[s.session.entries.length - 1];
+                const entries = s.session.entries.slice(0, -1);
+                let snapshot = cloneSnapshot(s.session.snapshot!);
+                for (const past of entries) {
+                    snapshot = applyEntryToSnapshot(snapshot, past);
+                }
+                journalDay = { ...journalDay, entradas: entries };
+                set({
+                    ...snapshotToFields(snapshot),
+                    session: { ...s.session, entries },
+                });
+                writeMirror();
+                deps.journal.rewrite(serializeJournal(journalDay, journalDay.entradas));
+                scheduleEstadoWrite();
+                return removed;
+            },
+
+            async endSession(): Promise<SessionSummary | null> {
+                const s = get();
+                if (!s.session.active || deps === null || journalDay === null) {
+                    console.warn('[world] endSession ignorado: no hay sesión activa');
+                    return null;
+                }
+                const d = deps;
+                // Reuse the fin from a previous failed close instead of duplicating it.
+                // If the GM logged more entries after a failed close, the old fin is
+                // stranded mid-journal — drop it: a fin must only ever be the final entry.
+                let entries = s.session.entries;
+                if (entries[entries.length - 1]?.tipo !== 'fin') {
+                    entries = [
+                        ...entries.filter((e) => e.tipo !== 'fin'),
+                        makeEntry.fin(s.diaMundo, s.ubicacion, d.now),
+                    ];
+                }
+                journalDay = { ...journalDay, diaFin: s.diaMundo, entradas: entries };
+                set({ session: { ...s.session, entries } });
+                writeMirror();
+                d.journal.rewrite(serializeJournal(journalDay, journalDay.entradas));
+                try {
+                    await d.journal.flush();
+                } catch (error) {
+                    // Defensive: JournalWriter.flush never rejects, but a
+                    // custom binding might.
+                    console.warn('[world] no se pudo confirmar el diario al cerrar la sesión', error);
+                    journalStatus = 'denied';
+                    pushStatus();
+                    return null;
+                }
+                if (journalStatus === 'denied') {
+                    // JournalWriter.flush resolves even on denial (status via
+                    // onStatus). Journal is the recovery log: without it on
+                    // disk we neither deactivate nor drop the mirror. The GM
+                    // retries via retryWrites and closes again.
+                    console.warn('[world] cierre pospuesto: el diario no se pudo escribir');
+                    return null;
+                }
+                const startedAt = s.session.startedAt ?? d.now().getTime();
+                const summary = summarize(entries, d.now().getTime() - startedAt);
+                if (debounceTimer !== null) {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = null;
+                }
+                // Deactivate BEFORE the forced write so sesion_activa: false lands.
+                set({
+                    session: {
+                        active: false,
+                        journalPath: null,
+                        startedAt: null,
+                        entries: [],
+                        snapshot: null,
+                        writeStatus: combineStatus(journalStatus, estadoStatus),
+                    },
+                });
+                // Even if this write is denied the journal is safe on disk; the
+                // stale sesion_activa lock is flagged to the GM by PROTOCOLO.
+                await performEstadoWrite();
+                clearSessionMirror(mirrorStorage());
+                journalDay = null;
+                return summary;
+            },
+
+            recoverSession(mirror: SessionMirror, model: WorldModel) {
+                if (get().session.active) {
+                    console.warn('[world] recoverSession ignorado: ya hay una sesión activa');
+                    return;
+                }
+                if (deps === null) {
+                    console.warn('[world] recoverSession ignorado: faltan las dependencias (setDeps)');
+                    return;
+                }
+                const estado = model.estadoGrupo;
+                let snapshot = cloneSnapshot(mirror.snapshot);
+                for (const entry of mirror.entries) {
+                    snapshot = applyEntryToSnapshot(snapshot, entry);
+                }
+                journalDay = {
+                    filePath: mirror.journalPath,
+                    sesion: mirror.sesion,
+                    fechaReal: mirror.fechaReal,
+                    diaInicio: mirror.diaInicio,
+                    diaFin: null,
+                    procesado: false,
+                    entradas: [...mirror.entries],
+                };
+                journalStatus = 'ok';
+                estadoStatus = 'ok';
+                set({
+                    ...snapshotToFields(snapshot),
+                    bodyMd: estado?.bodyMd ?? '',
+                    estadoFilePath: estado?.filePath ?? null,
+                    session: {
+                        active: true,
+                        journalPath: mirror.journalPath,
+                        startedAt: mirror.startedAt,
+                        entries: [...mirror.entries],
+                        snapshot: cloneSnapshot(mirror.snapshot),
+                        writeStatus: 'ok',
+                    },
+                });
+                writeMirror();
+                // Reopen + resync: the file content is rewritten to match memory.
+                deps.journal.open(journalDay.filePath, serializeJournal(journalDay, journalDay.entradas));
+                scheduleEstadoWrite();
+            },
+
+            flushEstado(): Promise<void> {
+                return flushEstadoNow();
+            },
+
+            bindLifecycleFlush(): () => void {
+                if (typeof window === 'undefined' || typeof document === 'undefined') {
+                    return () => {};
+                }
+                const onPageHide = () => {
+                    void flushEstadoNow();
+                };
+                const onVisibilityChange = () => {
+                    if (document.visibilityState === 'hidden') void flushEstadoNow();
+                };
+                window.addEventListener('pagehide', onPageHide);
+                document.addEventListener('visibilitychange', onVisibilityChange);
+                return () => {
+                    window.removeEventListener('pagehide', onPageHide);
+                    document.removeEventListener('visibilitychange', onVisibilityChange);
+                };
+            },
+
+            setJournalStatus(status: WriteStatus) {
+                journalStatus = status;
+                pushStatus();
+            },
+
+            retryWrites() {
+                deps?.journal.retryNow();
+                if (estadoStatus === 'denied') void performEstadoWrite();
+            },
+
+            reset() {
+                if (debounceTimer !== null) {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = null;
+                }
+                // NOTE: the crash mirror is intentionally NOT cleared — reset
+                // simulates/handles an in-app teardown, and the mirror must
+                // survive until endSession or an explicit clearSessionMirror.
+                deps = null;
+                journalDay = null;
+                journalStatus = 'ok';
+                estadoStatus = 'ok';
+                estadoChain = Promise.resolve();
+                set({ ...partyInitial() });
+            },
+        },
+    };
+});
 
 // ── uiStore ─────────────────────────────────────────────────────────────────
 

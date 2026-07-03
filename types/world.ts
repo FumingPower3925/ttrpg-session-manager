@@ -141,6 +141,74 @@ export interface PartyState {
   filePath: string | null;
 }
 
+/**
+ * Journal entry types (M3, plan Part A). One per quick-log action; `nota` is
+ * freeform (payload empty, text in `comentario`). Line grammar per type lives
+ * in the plan table and lib/world/logEntries.ts.
+ */
+export type JournalEntryType =
+  | 'inicio'
+  | 'fin'
+  | 'rumbo'
+  | 'llegada'
+  | 'gasto'
+  | 'ganancia'
+  | 'medidor'
+  | 'pista'
+  | 'sabe'
+  | 'evento'
+  | 'descanso'
+  | 'dia'
+  | 'nota';
+
+/** One journal line: `- [HH:MM] tipo: payload | comentario` (comentario optional). */
+export interface JournalEntry {
+  /** Wall-clock time of the entry, HH:MM. */
+  hora: string;
+  tipo: JournalEntryType;
+  /** Strict machine-parseable payload per the plan's per-type grammar. */
+  payload: string;
+  /** Freeform GM comment after the `|` separator. */
+  comentario?: string;
+}
+
+/** A parsed `diario/AAAA-MM-DD_sNN.md` file. */
+export interface JournalDay {
+  /** Path relative to the campaign folder. */
+  filePath: string;
+  sesion: number;
+  /** Real-world session date, YYYY-MM-DD. */
+  fechaReal: string;
+  diaInicio: number | null;
+  /** Null until the session closes. */
+  diaFin: number | null;
+  /** Agent flips to true after the maintenance loop. */
+  procesado: boolean;
+  entradas: JournalEntry[];
+}
+
+/** Point-in-time copy of the mutable party fields, taken at session start (undo replays over it). */
+export type PartySnapshot = {
+  diaMundo: number;
+  ubicacion: string | null;
+  rumbo: { destino: string; llegadaDia: number } | null;
+  creditos: number;
+  medidores: Record<string, number>;
+};
+
+/** Live session bookkeeping held by the party store (never persisted as-is). */
+export interface SessionRuntime {
+  active: boolean;
+  /** Path of the journal being written, relative to the campaign folder. */
+  journalPath: string | null;
+  /** Epoch ms when the session started. */
+  startedAt: number | null;
+  entries: JournalEntry[];
+  /** Party state at session start; base for replay-undo. */
+  snapshot: PartySnapshot | null;
+  writeStatus: 'ok' | 'pending' | 'denied';
+}
+
 export interface ValidationIssue {
   nivel: 'error' | 'aviso';
   /** Path relative to the campaign folder. */
@@ -162,4 +230,6 @@ export interface WorldModel {
   childrenOf: Map<string, string[]>;
   /** Party state from `estado/grupo.md`; null when the file is absent. */
   estadoGrupo: PartyState | null;
+  /** Parsed journals from `diario/` (M3); unprocessed ones re-overlay state at scan. */
+  diario: JournalDay[];
 }

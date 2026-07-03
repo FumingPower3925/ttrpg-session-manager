@@ -81,6 +81,55 @@ export async function materializeIntoOPFS(page: Page, tree: FileTree): Promise<v
 }
 
 /**
+ * Reads a file back from OPFS by campaign-relative path — the M3 journal /
+ * estado assertions verify what the app actually wrote to "disk".
+ *
+ * Chromium's createWritable() swaps the file atomically on close(), which can
+ * make the entry vanish for an instant while the app is mid-rewrite — the
+ * read retries briefly on NotFoundError instead of failing the poll.
+ */
+export async function readOPFSFile(page: Page, path: string): Promise<string> {
+    return await page.evaluate(async (relativePath: string) => {
+        const parts = relativePath.split('/').filter(Boolean);
+        const readOnce = async (): Promise<string> => {
+            let dir = await navigator.storage.getDirectory();
+            for (let i = 0; i < parts.length - 1; i++) {
+                dir = await dir.getDirectoryHandle(parts[i]);
+            }
+            const fileHandle = await dir.getFileHandle(parts[parts.length - 1]);
+            const file = await fileHandle.getFile();
+            return await file.text();
+        };
+        let lastError: unknown = null;
+        for (let attempt = 0; attempt < 10; attempt++) {
+            try {
+                return await readOnce();
+            } catch (error) {
+                lastError = error;
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+        }
+        throw lastError;
+    }, path);
+}
+
+/** Lists the entry names of an OPFS directory (sorted). */
+export async function listOPFSDir(page: Page, path: string): Promise<string[]> {
+    return await page.evaluate(async (relativePath: string) => {
+        const parts = relativePath.split('/').filter(Boolean);
+        let dir = await navigator.storage.getDirectory();
+        for (const part of parts) {
+            dir = await dir.getDirectoryHandle(part);
+        }
+        const names: string[] = [];
+        for await (const name of dir.keys()) {
+            names.push(name);
+        }
+        return names.sort();
+    }, path);
+}
+
+/**
  * Opens the world from OPFS via the app's test hook and waits until the
  * world model is loaded and rendered (`[data-world-status="ready"]`).
  */

@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * /world — world viewer (M1) + drill-in, party readout, search & deep link (M2).
+ * /world — world viewer (M1) + drill-in, party readout, search & deep link
+ * (M2) + session recorder cockpit (M3).
  *
  * Folder entry paths (all end in the same open-and-scan path):
  *   - stored handle still granted  -> scan immediately on mount
@@ -15,19 +16,60 @@
  * M2 tier wiring:
  *   - sector -> system: dblclick a sistema node (or Entrar in its panel).
  *   - system -> SiteList: dblclick a place with children (or Entrar). The
- *     SiteList renders as a right-panel card next to the EntityPanel (like
- *     DiagnosticsPanel) while the map stays on its spatial tier behind it —
- *     tier 3 is non-spatial by design (plan Part B), so an SVG takeover
- *     would only hide context. Back pops SiteList -> system -> sector.
+ *     SiteList renders as a right-panel card next to the EntityPanel while
+ *     the map stays on its spatial tier behind it — tier 3 is non-spatial by
+ *     design (plan Part B). Back pops SiteList -> system -> sector.
  *   - Search (Cmd/Ctrl+K) and ?e= deep links navigate via tierTargetFor().
  *   - Tier changes recompute a fit-to-content viewport (instant, no tween).
+ *
+ * M3 recorder wiring (plan Part B "Write path" + "Cockpit"):
+ *   - "Iniciar sesión" requests readwrite on the mundo/ handle (one prompt,
+ *     gesture-scoped), builds the JournalWriter (write surface enforced in
+ *     the writer: mundo/diario/ + mundo/estado/ only) and arms partyStore.
+ *   - partyStore.log() is the single mutation entry point; every quick-log
+ *     action here builds the entry via makeEntry and fires a sonner toast.
+ *   - Live in-session world changes (llegada knowledge bumps, pista estado)
+ *     mutate the scanned model IN MEMORY via the scanner's own helpers
+ *     (applyLlegadaConocimiento / deriveLeadActionability) and re-render
+ *     through the `modelRev` counter — knowledge never lowers, so an undone
+ *     llegada keeps its bump (same semantics as the scan-time journal
+ *     overlay); an undone pista transition IS reverted. Files re-derive from
+ *     the unprocessed journal on reload.
+ *   - Crash mirror: partyStore's SessionMirror (sessionStorage) -> recovery
+ *     banner; `sesion_activa: true` without a mirror -> stale-lock notice
+ *     (plan Part A anti-conflict protocol).
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Toaster, toast } from 'sonner';
 import { FileSystemManager } from '@/lib/fileSystem';
 import { loadStoredDirHandle, reconnectDirHandle, rememberDirHandle } from '@/lib/dirHandle';
-import { useUiStore, useWorldStore } from '@/lib/world/stores';
-import { formatFecha } from '@/lib/world/partyState';
+import {
+  clearSessionMirror,
+  readSessionMirror,
+  usePartyStore,
+  useUiStore,
+  useWorldStore,
+} from '@/lib/world/stores';
+import type { SessionMirror } from '@/lib/world/stores';
+import { formatFecha, serializePartyState } from '@/lib/world/partyState';
+import { JournalWriter } from '@/lib/world/journalWriter';
+import {
+  makeEntry,
+  parseInicioFinPayload,
+  parseLlegadaPayload,
+  parsePistaPayload,
+} from '@/lib/world/logEntries';
+import {
+  applyLlegadaConocimiento,
+  deriveLeadActionability,
+} from '@/lib/world/worldScanner';
+import {
+  ENTITY_DIRS,
+  ESTADOS_PISTA,
+  PARTY_STATE_FILE,
+  WORLD_DIR,
+} from '@/lib/world/constants';
 import { buildWorldSearchIndex } from '@/lib/world/worldSearch';
 import { readEntityFromUrl, writeEntityToUrl } from '@/lib/world/deepLink';
 import {
@@ -46,17 +88,25 @@ import { EntityPanel } from '@/components/world/EntityPanel';
 import type { EntityPanelEntity, EntityPanelLead } from '@/components/world/EntityPanel';
 import { DiagnosticsPanel } from '@/components/world/DiagnosticsPanel';
 import { WorldSearchDialog } from '@/components/world/WorldSearchDialog';
+import { QuickLogBar } from '@/components/world/QuickLogBar';
+import { MoverDialog } from '@/components/world/MoverDialog';
+import type { MoverDialogLugar } from '@/components/world/MoverDialog';
+import { JournalPanel } from '@/components/world/JournalPanel';
+import { SessionRecoveryBanner } from '@/components/world/SessionRecoveryBanner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import type {
   FactionPresence,
+  JournalDay,
   Lead,
+  PartyState,
   PlaceEntity,
   SystemEntity,
   WorldEntityBase,
   WorldModel,
 } from '@/types/world';
-import { FolderOpen, Globe, RefreshCw, TriangleAlert } from 'lucide-react';
+import { FolderOpen, Globe, Lock, RefreshCw, Star, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -66,6 +116,9 @@ type WorldTestWindow = Window & { __ttrpgWorldTest?: TtrpgWorldTestHook };
 
 /** How the page lets the user open a folder while no world is loaded. */
 type EntryMode = 'checking' | 'select' | 'reconnect';
+
+/** The only estado path the app ever writes (inside the allowed surface). */
+const ESTADO_PATH = `${WORLD_DIR}/${ENTITY_DIRS.estado}/${PARTY_STATE_FILE}`;
 
 /** Small stable palette for faction rings, picked by hashing the faction id. */
 const FACTION_PALETTE = [
@@ -83,6 +136,24 @@ const NIVEL_RANK: Record<FactionPresence['nivel'], number> = {
   presente: 1,
   encubierta: 0,
 };
+
+const MEDIDOR_LABELS: Record<string, string> = {
+  viveres: 'Víveres',
+  combustible: 'Combustible',
+  nave: 'Nave',
+};
+
+function medidorLabel(nombre: string): string {
+  return MEDIDOR_LABELS[nombre] ?? nombre.charAt(0).toUpperCase() + nombre.slice(1);
+}
+
+/** Local YYYY-MM-DD (journal fecha_real is the GM's wall-clock day). */
+function localToday(now = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 function hashString(value: string): number {
   let hash = 0;
@@ -118,7 +189,16 @@ export default function WorldPage() {
   const selectedEntityId = useUiStore((s) => s.selectedEntityId);
   const showUnknown = useUiStore((s) => s.showUnknown);
   const mapCollapsed = useUiStore((s) => s.mapCollapsed);
+  const panelTab = useUiStore((s) => s.panelTab);
   const uiActions = useUiStore((s) => s.actions);
+
+  // Live party fields — hydrated from estado/grupo.md, mutated only via log().
+  const diaMundo = usePartyStore((s) => s.diaMundo);
+  const ubicacion = usePartyStore((s) => s.ubicacion);
+  const rumbo = usePartyStore((s) => s.rumbo);
+  const creditos = usePartyStore((s) => s.creditos);
+  const medidores = usePartyStore((s) => s.medidores);
+  const session = usePartyStore((s) => s.session);
 
   const [entry, setEntry] = useState<EntryMode>('checking');
   const [pendingHandle, setPendingHandle] = useState<FileSystemDirectoryHandle | null>(null);
@@ -127,6 +207,17 @@ export default function WorldPage() {
   // ?e= read once at first render, BEFORE the URL-writing effect can clear it.
   const [initialDeepLink] = useState(() => readEntityFromUrl());
 
+  // M3 cockpit state.
+  const [moverOpen, setMoverOpen] = useState(false);
+  const [pendingMirror, setPendingMirror] = useState<SessionMirror | null>(null);
+  const [lockDismissed, setLockDismissed] = useState(false);
+  const [sesionNum, setSesionNum] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  // The scanned model is mutated in place for live overlays (knowledge bumps,
+  // pista transitions); bumping this counter re-renders the derived views.
+  const [modelRev, setModelRev] = useState(0);
+  const touchModel = useCallback(() => setModelRev((rev) => rev + 1), []);
+
   const mapWrapRef = useRef<HTMLDivElement>(null);
   const fittedRef = useRef<{
     model: WorldModel | null;
@@ -134,10 +225,16 @@ export default function WorldPage() {
     focus: string | null;
   }>({ model: null, tier: 'sector', focus: null });
   const deepLinkDoneRef = useRef(false);
+  const journalWriterRef = useRef<JournalWriter | null>(null);
+  /** Journals created in THIS app lifetime (model.diario is scan-frozen) — keeps sesion numbering fresh. */
+  const extraDiarioRef = useRef<JournalDay[]>([]);
 
   /** The single open-and-scan path: picker, reconnect and the OPFS test hook all land here. */
   const openWorld = useCallback(async (handle: FileSystemDirectoryHandle) => {
     await useWorldStore.getState().actions.scan(handle);
+    const scanned = useWorldStore.getState().model;
+    // Hydrate the live party fields from estado/grupo.md (no-op mid-session).
+    if (scanned) usePartyStore.getState().actions.hydrate(scanned);
   }, []);
 
   // Stored-handle bootstrap: granted -> scan now; prompt -> offer reconnect.
@@ -208,6 +305,7 @@ export default function WorldPage() {
     const actions = useUiStore.getState().actions;
     if (!currentModel || !currentModel.entidades.has(id)) return;
     actions.selectEntity(id);
+    actions.setPanelTab('entidad');
     const target = tierTargetFor(currentModel, id);
     if (!target) return; // non-spatial entity — selection is enough
     if (target.tier === 'system' && target.focusSystemId) {
@@ -226,6 +324,7 @@ export default function WorldPage() {
     const entity = currentModel.entidades.get(id);
     if (!entity) return;
     actions.selectEntity(id);
+    actions.setPanelTab('entidad');
     if (entity.tipo === 'sistema') {
       actions.focusSystem(id);
       return;
@@ -241,6 +340,293 @@ export default function WorldPage() {
       actions.openSiteList(id);
     }
   }, []);
+
+  /** Plain selection (map/list click): also brings the Entidad tab forward. */
+  const selectEntity = useCallback(
+    (id: string | null) => {
+      uiActions.selectEntity(id);
+      if (id !== null) uiActions.setPanelTab('entidad');
+    },
+    [uiActions]
+  );
+
+  // ── M3: session lifecycle ─────────────────────────────────────────────────
+
+  /**
+   * Readwrite on the mundo/ handle, requested from a user gesture (one
+   * prompt). OPFS handles report 'granted' from queryPermission, so e2e never
+   * prompts.
+   */
+  const ensureWriteAccess = useCallback(async (): Promise<boolean> => {
+    const fsm = useWorldStore.getState().fs;
+    const root = fsm?.getDirectoryHandle();
+    if (!fsm || !root) return false;
+    try {
+      const mundoHandle = await root.getDirectoryHandle(WORLD_DIR);
+      // Handles without the permission API (e.g. OPFS on some engines) are
+      // always writable — Chromium's OPFS reports 'granted' anyway.
+      if (typeof mundoHandle.queryPermission !== 'function') return true;
+      if ((await fsm.queryWritePermission(mundoHandle)) === 'granted') return true;
+      return (await fsm.requestWritePermission(mundoHandle)) === 'granted';
+    } catch (error) {
+      console.error('No se pudo obtener permiso de escritura sobre mundo/:', error);
+      return false;
+    }
+  }, []);
+
+  /**
+   * Wires the partyStore deps ONCE per page lifetime: a JournalWriter over
+   * fs.writeTextFile (surface-checked inside the writer) plus the estado
+   * closure bound to the constant ESTADO_PATH — the app writes nowhere else.
+   * The fs manager is resolved at call time so a re-scan never leaves the
+   * writer holding a stale handle.
+   */
+  const wireSessionDeps = useCallback((): JournalWriter => {
+    if (!journalWriterRef.current) {
+      const writeFile = (path: string, content: string): Promise<void> => {
+        const fsm = useWorldStore.getState().fs;
+        if (!fsm) return Promise.reject(new Error('No hay carpeta de campaña abierta'));
+        return fsm.writeTextFile(path, content);
+      };
+      const writer = new JournalWriter({ writeFile });
+      journalWriterRef.current = writer;
+      usePartyStore.getState().actions.setDeps({
+        writeEstado: (text) => writeFile(ESTADO_PATH, text),
+        journal: writer,
+        now: () => new Date(),
+      });
+    }
+    return journalWriterRef.current;
+  }, []);
+
+  const handleStartSession = useCallback(async () => {
+    const currentModel = useWorldStore.getState().model;
+    if (!currentModel) return;
+    if (!(await ensureWriteAccess())) {
+      toast.error('Permisos de escritura denegados — no se pudo iniciar la sesión');
+      return;
+    }
+    wireSessionDeps();
+    const day = usePartyStore
+      .getState()
+      .actions.startSession([...currentModel.diario, ...extraDiarioRef.current], localToday());
+    if (!day) {
+      toast.error('No se pudo iniciar la sesión');
+      return;
+    }
+    extraDiarioRef.current.push(day);
+    setSesionNum(day.sesion);
+    toast.success(`Sesión ${day.sesion} iniciada`);
+  }, [ensureWriteAccess, wireSessionDeps]);
+
+  const handleEndSession = useCallback(async () => {
+    const summary = await usePartyStore.getState().actions.endSession();
+    if (!summary) {
+      toast.error('No se pudo cerrar la sesión — revisa los permisos de escritura y reintenta');
+      return;
+    }
+    // Keep the scanned estado coherent with the closed session (in memory:
+    // the forced estado write already persisted sesion_activa: false).
+    const currentModel = useWorldStore.getState().model;
+    if (currentModel?.estadoGrupo) currentModel.estadoGrupo.sesionActiva = false;
+    const totalMin = Math.floor(summary.durationMs / 60000);
+    const viajes = summary.counts.llegada ?? 0;
+    const pistasCount = summary.counts.pista ?? 0;
+    const net = summary.netCreditos;
+    toast.success(
+      `Sesión ${sesionNum ?? '—'} terminada — ${Math.floor(totalMin / 60)}h ${totalMin % 60}m · ` +
+        `${viajes} ${viajes === 1 ? 'viaje' : 'viajes'} · ${net >= 0 ? '+' : ''}${net} cr · ` +
+        `${pistasCount} ${pistasCount === 1 ? 'pista' : 'pistas'}`
+    );
+  }, [sesionNum]);
+
+  /** Denied writes need a fresh gesture-scoped permission before retrying. */
+  const handleRetryWrites = useCallback(async () => {
+    if (!(await ensureWriteAccess())) {
+      toast.error('Permisos de escritura denegados');
+      return;
+    }
+    usePartyStore.getState().actions.retryWrites();
+  }, [ensureWriteAccess]);
+
+  // Elapsed-session ticker: 1s interval only while a session runs.
+  useEffect(() => {
+    if (!session.active) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [session.active]);
+
+  const sessionElapsedMs =
+    session.active && session.startedAt !== null ? Math.max(0, nowMs - session.startedAt) : 0;
+
+  // Flush the debounced estado write on pagehide/tab-hide while ready.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    return usePartyStore.getState().actions.bindLifecycleFlush();
+  }, [status]);
+
+  // ── M3: crash recovery + stale estado lock ────────────────────────────────
+
+  useEffect(() => {
+    if (status !== 'ready' || !model) return;
+    if (usePartyStore.getState().session.active) return;
+    setPendingMirror(readSessionMirror());
+    setLockDismissed(false);
+  }, [status, model]);
+
+  // A live session owns (and keeps refreshing) the mirror — no banner then,
+  // and none after the session ends (endSession clears the mirror).
+  useEffect(() => {
+    if (session.active) setPendingMirror(null);
+  }, [session.active]);
+
+  const handleRecoverSession = useCallback(async () => {
+    const mirror = pendingMirror;
+    const currentModel = useWorldStore.getState().model;
+    if (!mirror || !currentModel) return;
+    if (!(await ensureWriteAccess())) {
+      toast.error('Permisos de escritura denegados — no se pudo recuperar la sesión');
+      return;
+    }
+    wireSessionDeps();
+    usePartyStore.getState().actions.recoverSession(mirror, currentModel);
+    setSesionNum(mirror.sesion);
+    setPendingMirror(null);
+    toast.success(`Sesión ${mirror.sesion} recuperada`);
+  }, [pendingMirror, ensureWriteAccess, wireSessionDeps]);
+
+  const handleDiscardMirror = useCallback(() => {
+    clearSessionMirror();
+    setPendingMirror(null);
+  }, []);
+
+  /**
+   * Plan Part A anti-conflict protocol: `sesion_activa: true` on disk with no
+   * mirror = a crashed session on another device (or an unflushed lock) — the
+   * agent refuses maintenance until the GM clears it.
+   */
+  const staleLockVisible =
+    status === 'ready' &&
+    !!model?.estadoGrupo?.sesionActiva &&
+    !session.active &&
+    pendingMirror === null &&
+    !lockDismissed;
+
+  const handleMarkLockClosed = useCallback(async () => {
+    const currentModel = useWorldStore.getState().model;
+    const fsm = useWorldStore.getState().fs;
+    const estado = currentModel?.estadoGrupo;
+    if (!estado || !fsm) return;
+    if (!(await ensureWriteAccess())) {
+      toast.error('Permisos de escritura denegados');
+      return;
+    }
+    try {
+      await fsm.writeTextFile(
+        ESTADO_PATH,
+        serializePartyState({ ...estado, sesionActiva: false }, new Date().toISOString())
+      );
+      estado.sesionActiva = false;
+      setLockDismissed(true);
+      toast.success('Sesión marcada como cerrada en estado/grupo.md');
+    } catch (error) {
+      console.error('No se pudo cerrar el bloqueo de sesión:', error);
+      toast.error('No se pudo escribir estado/grupo.md');
+    }
+  }, [ensureWriteAccess]);
+
+  // ── M3: quick-log actions (partyStore.log is the single mutation point) ───
+
+  const handleCreditos = useCallback((delta: number) => {
+    if (delta === 0) return;
+    const logged = usePartyStore
+      .getState()
+      .actions.log(delta < 0 ? makeEntry.gasto(-delta) : makeEntry.ganancia(delta));
+    if (!logged) return;
+    toast.success(`${delta > 0 ? '+' : ''}${delta} créditos anotados`);
+  }, []);
+
+  const handleMedidor = useCallback((nombre: string, to: number) => {
+    const store = usePartyStore.getState();
+    const from = store.medidores[nombre] ?? 0;
+    if (from === to) return;
+    if (!store.actions.log(makeEntry.medidor(nombre, from, to))) return;
+    toast.success(`${medidorLabel(nombre)} ${from} → ${to}`);
+  }, []);
+
+  const handleNota = useCallback((text: string) => {
+    if (!usePartyStore.getState().actions.log(makeEntry.nota(text))) return;
+    toast.success('Nota registrada');
+  }, []);
+
+  const handleMove = useCallback(
+    (id: string) => {
+      const currentModel = useWorldStore.getState().model;
+      const store = usePartyStore.getState();
+      if (!currentModel) return;
+      if (!store.actions.log(makeEntry.llegada(id, store.diaMundo))) return;
+      // In-memory knowledge bump — reuses the scanner's journal-overlay rule
+      // (applyLlegadaConocimiento): destination ≥ visitado, `en:` ancestors
+      // ≥ conocido. The files are updated later by the agent from the journal.
+      applyLlegadaConocimiento(currentModel, id);
+      touchModel();
+      navigateToEntity(id);
+      toast.success(`Llegada: ${currentModel.entidades.get(id)?.nombre ?? id}`);
+    },
+    [navigateToEntity, touchModel]
+  );
+
+  const handlePistaTransition = useCallback(
+    (pista: Lead, to: Lead['estadoPista']) => {
+      const currentModel = useWorldStore.getState().model;
+      if (!currentModel) return;
+      const from = pista.estadoPista;
+      if (!usePartyStore.getState().actions.log(makeEntry.pista(pista.id, from, to))) return;
+      pista.estadoPista = to;
+      deriveLeadActionability(currentModel.entidades, [pista], []);
+      touchModel();
+      toast.success(`Pista «${pista.nombre}»: ${from.replace('_', ' ')} → ${to.replace('_', ' ')}`);
+    },
+    [touchModel]
+  );
+
+  const handleUndo = useCallback(() => {
+    const currentModel = useWorldStore.getState().model;
+    const removed = usePartyStore.getState().actions.undoLast();
+    if (!removed) return;
+    // Party fields revert via snapshot replay inside the store. The pista
+    // overlay is reverted here; knowledge bumps from an undone llegada stay
+    // raised on purpose (knowledge never lowers — scanner semantics).
+    if (removed.tipo === 'pista' && currentModel) {
+      const parsed = parsePistaPayload(removed.payload);
+      const pista = parsed ? currentModel.pistas.find((p) => p.id === parsed.id) : undefined;
+      if (
+        pista &&
+        parsed &&
+        (ESTADOS_PISTA as readonly string[]).includes(parsed.from)
+      ) {
+        pista.estadoPista = parsed.from as Lead['estadoPista'];
+        deriveLeadActionability(currentModel.entidades, [pista], []);
+        touchModel();
+      }
+    }
+    toast.success(`Última entrada deshecha (${removed.tipo})`);
+  }, [touchModel]);
+
+  const endSummaryPreview = useMemo(() => {
+    if (!session.active) return undefined;
+    let viajes = 0;
+    let pistasCount = 0;
+    let net = 0;
+    for (const e of session.entries) {
+      if (e.tipo === 'llegada') viajes++;
+      else if (e.tipo === 'pista') pistasCount++;
+      else if (e.tipo === 'gasto') net -= Number(e.payload) || 0;
+      else if (e.tipo === 'ganancia') net += Number(e.payload) || 0;
+    }
+    return `${session.entries.length} registros · ${viajes} viajes · ${net >= 0 ? '+' : ''}${net} cr · ${pistasCount} pistas`;
+  }, [session]);
 
   // ── Derived map data ──────────────────────────────────────────────────────
 
@@ -273,6 +659,7 @@ export default function WorldPage() {
    * roots) surface leads that live at their inner places.
    */
   const leadsBadgeCounts = useMemo(() => {
+    void modelRev; // live pista transitions mutate accionable in place
     const counts = new Map<string, number>();
     if (!model) return counts;
     for (const pista of model.pistas) {
@@ -282,7 +669,7 @@ export default function WorldPage() {
       }
     }
     return counts;
-  }, [model]);
+  }, [model, modelRev]);
 
   /**
    * Strongest faction presence per node. Presence lives on places; it also
@@ -314,14 +701,26 @@ export default function WorldPage() {
     [dominantFactionByNode]
   );
 
-  // ── Party readout ─────────────────────────────────────────────────────────
+  // ── Party readout (live store fields; hydrate seeds them from the file) ──
 
-  const estadoGrupo = model?.estadoGrupo ?? null;
-  const ubicacion = estadoGrupo?.ubicacion ?? null;
+  /** Live PartyState view for the status bar; null keeps the M2 absent-file hint. */
+  const estadoBar = useMemo<PartyState | null>(() => {
+    if (!model?.estadoGrupo) return null;
+    return {
+      sesionActiva: session.active,
+      diaMundo,
+      ubicacion,
+      rumbo,
+      creditos,
+      medidores,
+      bodyMd: '',
+      filePath: model.estadoGrupo.filePath,
+    };
+  }, [model, session.active, diaMundo, ubicacion, rumbo, creditos, medidores]);
 
   const fecha = useMemo(
-    () => (model ? formatFecha(estadoGrupo?.diaMundo ?? 1, model.manifest) : ''),
-    [model, estadoGrupo]
+    () => (model ? formatFecha(diaMundo, model.manifest) : ''),
+    [model, diaMundo]
   );
 
   /** Root -> current breadcrumb chain for the party bar (dangling ids keep their raw id as label). */
@@ -345,6 +744,29 @@ export default function WorldPage() {
     return sectorNodeFor(model, ubicacion);
   }, [model, ubicacion, activeTier, focusSistema]);
 
+  // ── M3: Mover candidates + recents ────────────────────────────────────────
+
+  const moverLugares = useMemo<MoverDialogLugar[]>(() => {
+    void modelRev; // llegada bumps conocimiento in place
+    if (!model) return [];
+    return [...model.sistemas, ...model.lugares]
+      .filter((e) => e.conocimiento !== 'desconocido')
+      .map((e) => ({ id: e.id, nombre: e.nombre, tipo: e.tipo, conocimiento: e.conocimiento }));
+  }, [model, modelRev]);
+
+  /** Most-recent-first destination ids from this session's llegada/inicio entries. */
+  const recentMoveIds = useMemo(() => {
+    const ids: string[] = [];
+    for (let i = session.entries.length - 1; i >= 0; i--) {
+      const e = session.entries[i];
+      let id: string | null = null;
+      if (e.tipo === 'llegada') id = parseLlegadaPayload(e.payload)?.lugarId ?? null;
+      else if (e.tipo === 'inicio') id = parseInicioFinPayload(e.payload)?.lugarId ?? null;
+      if (id && id !== 'desconocida' && !ids.includes(id)) ids.push(id);
+    }
+    return ids;
+  }, [session.entries]);
+
   // ── SiteList (non-spatial tier 3) ─────────────────────────────────────────
 
   const siteListPlace = useMemo(() => {
@@ -366,6 +788,7 @@ export default function WorldPage() {
    * nearest listed site so the star lands on a visible row.
    */
   const siteListLeads = useMemo(() => {
+    void modelRev;
     if (!model || !siteListPlace) return [];
     const siteIds = new Set(siteListSites.map((site) => site.id));
     return model.pistas.flatMap((pista) => {
@@ -374,7 +797,7 @@ export default function WorldPage() {
       const rolledUp = childNodeWithin(model, pista.donde, siteListPlace.id);
       return rolledUp && rolledUp !== siteListPlace.id ? [{ ...pista, donde: rolledUp }] : [];
     });
-  }, [model, siteListPlace, siteListSites]);
+  }, [model, siteListPlace, siteListSites, modelRev]);
 
   const siteListPartyId = useMemo(() => {
     if (!model || !ubicacion || !siteListPlace) return null;
@@ -410,14 +833,16 @@ export default function WorldPage() {
   }, [model, selectedEntity]);
 
   const panelLeads = useMemo<EntityPanelLead[]>(() => {
+    void modelRev;
     if (!model || !selectedEntity) return [];
     return model.pistas
       .filter((pista) => pista.donde === selectedEntity.id)
       .map(toPanelLead);
-  }, [model, selectedEntity]);
+  }, [model, selectedEntity, modelRev]);
 
   /** Descendant pistas for containers — the panel-side match of the map badge roll-up. */
   const interiorLeads = useMemo<EntityPanelLead[]>(() => {
+    void modelRev;
     if (!model || !selectedEntity || !selectedIsContainer) return [];
     return model.pistas
       .filter(
@@ -427,7 +852,7 @@ export default function WorldPage() {
           ancestryChain(model, pista.donde).includes(selectedEntity.id)
       )
       .map(toPanelLead);
-  }, [model, selectedEntity, selectedIsContainer]);
+  }, [model, selectedEntity, selectedIsContainer, modelRev]);
 
   // ── Search & deep link ────────────────────────────────────────────────────
 
@@ -546,8 +971,11 @@ export default function WorldPage() {
 
   const erroresCount = model?.problemas.filter((p) => p.nivel === 'error').length ?? 0;
 
+  const canUndo = session.active && session.entries.length > 1;
+
   return (
     <div data-world-status={status} className="flex h-screen flex-col bg-background">
+      <Toaster position="top-center" richColors />
       {status === 'ready' && model ? (
         <>
           <header className="flex items-center gap-3 border-b px-4 py-2">
@@ -579,12 +1007,51 @@ export default function WorldPage() {
           </header>
 
           <PartyStatusBar
-            estado={estadoGrupo}
+            estado={estadoBar}
             fecha={fecha}
             locationName={ubicacion}
             locationPath={locationPath}
             onLocationClick={navigateToEntity}
+            medidorNames={model.manifest.medidores}
+            sessionActive={session.active}
+            onStartSession={handleStartSession}
+            onEndSession={handleEndSession}
+            sessionElapsedMs={sessionElapsedMs}
+            writeStatus={session.writeStatus}
+            onRetryWrites={handleRetryWrites}
+            endSummaryPreview={endSummaryPreview}
           />
+
+          <SessionRecoveryBanner
+            visible={pendingMirror !== null && !session.active}
+            journalName={pendingMirror?.journalPath.split('/').pop() ?? ''}
+            onRecover={handleRecoverSession}
+            onDiscard={handleDiscardMirror}
+          />
+
+          {staleLockVisible && (
+            <div
+              data-session-lock
+              role="alert"
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-amber-500/40 bg-amber-500/15 px-3 py-2"
+            >
+              <Lock className="size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+              <p className="min-w-0 flex-1 text-sm">
+                Bloqueo de sesión: <code className="rounded bg-muted px-1">estado/grupo.md</code>{' '}
+                tiene <code className="rounded bg-muted px-1">sesion_activa: true</code> sin sesión
+                en curso (posible cierre inesperado en otro dispositivo).
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-session-lock-close
+                onClick={handleMarkLockClosed}
+              >
+                Marcar como cerrada
+              </Button>
+            </div>
+          )}
 
           <main className="flex min-h-0 flex-1 gap-3 p-3">
             <div
@@ -609,7 +1076,7 @@ export default function WorldPage() {
                     leadsBadgeCounts={leadsBadgeCounts}
                     factionColor={factionColor}
                     showUnknown={showUnknown}
-                    onSelect={(id) => uiActions.selectEntity(id)}
+                    onSelect={selectEntity}
                     onDrillIn={enterEntity}
                     onBack={() => uiActions.backToSector()}
                   />
@@ -622,50 +1089,132 @@ export default function WorldPage() {
                     leadsBadgeCounts={leadsBadgeCounts}
                     factionColor={factionColor}
                     showUnknown={showUnknown}
-                    onSelect={(id) => uiActions.selectEntity(id)}
+                    onSelect={selectEntity}
                     onDrillIn={enterEntity}
                   />
                 )}
               </StarMap>
             </div>
 
-            {(diagnosticsOpen || selectedEntity || siteListPlace) && (
-              <aside className="flex min-h-0 w-96 shrink-0 flex-col gap-3">
-                {diagnosticsOpen && (
-                  <div className="min-h-0 flex-1">
-                    <DiagnosticsPanel problemas={model.problemas} onCopyReport={handleCopyReport} />
-                  </div>
-                )}
-                {siteListPlace && (
-                  <div className="min-h-0 flex-1">
-                    <SiteList
-                      lugar={siteListPlace}
-                      sites={siteListSites}
-                      leads={siteListLeads}
-                      partyLocationId={siteListPartyId}
-                      onSelect={(id) => uiActions.selectEntity(id)}
-                      onBack={() => uiActions.closeSiteList()}
-                    />
-                  </div>
-                )}
-                {selectedEntity && (
-                  <div className="min-h-0 flex-1">
-                    <EntityPanel
-                      entity={selectedEntity as EntityPanelEntity}
-                      childNames={childNames}
-                      factionNames={factionNames}
-                      leads={panelLeads}
-                      interiorLeads={interiorLeads}
-                      onDrillIn={
-                        selectedIsContainer ? () => enterEntity(selectedEntity.id) : undefined
-                      }
-                      onClose={() => uiActions.selectEntity(null)}
-                    />
-                  </div>
-                )}
-              </aside>
-            )}
+            <aside className="flex min-h-0 w-96 shrink-0 flex-col gap-2">
+              {diagnosticsOpen && (
+                <div className="min-h-0 flex-1">
+                  <DiagnosticsPanel problemas={model.problemas} onCopyReport={handleCopyReport} />
+                </div>
+              )}
+
+              {/* Right-panel tabs: Entidad / Pistas / Diario (plan Part B cockpit). */}
+              <div role="tablist" aria-label="Panel lateral" className="flex shrink-0 gap-1 rounded-lg border bg-muted/40 p-1">
+                {(
+                  [
+                    ['entidad', 'Entidad'],
+                    ['pistas', 'Pistas'],
+                    ['diario', 'Diario'],
+                  ] as const
+                ).map(([tab, label]) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    data-panel-tab={tab}
+                    aria-selected={panelTab === tab}
+                    onClick={() => uiActions.setPanelTab(tab)}
+                    className={`flex-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                      panelTab === tab
+                        ? 'bg-background font-medium shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {panelTab === 'entidad' && (
+                <>
+                  {siteListPlace && (
+                    <div className="min-h-0 flex-1">
+                      <SiteList
+                        lugar={siteListPlace}
+                        sites={siteListSites}
+                        leads={siteListLeads}
+                        partyLocationId={siteListPartyId}
+                        onSelect={selectEntity}
+                        onBack={() => uiActions.closeSiteList()}
+                      />
+                    </div>
+                  )}
+                  {selectedEntity && (
+                    <div className="min-h-0 flex-1">
+                      <EntityPanel
+                        entity={selectedEntity as EntityPanelEntity}
+                        childNames={childNames}
+                        factionNames={factionNames}
+                        leads={panelLeads}
+                        interiorLeads={interiorLeads}
+                        onDrillIn={
+                          selectedIsContainer ? () => enterEntity(selectedEntity.id) : undefined
+                        }
+                        onClose={() => uiActions.selectEntity(null)}
+                      />
+                    </div>
+                  )}
+                  {!siteListPlace && !selectedEntity && (
+                    <Card className="flex flex-1 items-center justify-center py-8">
+                      <p className="px-4 text-center text-sm text-muted-foreground">
+                        Selecciona una entidad en el mapa o con la búsqueda.
+                      </p>
+                    </Card>
+                  )}
+                </>
+              )}
+
+              {panelTab === 'pistas' && (
+                <div className="min-h-0 flex-1">
+                  <LeadsListCard
+                    pistas={model.pistas}
+                    modelRev={modelRev}
+                    sessionActive={session.active}
+                    onTransition={handlePistaTransition}
+                    onNavigate={navigateToEntity}
+                  />
+                </div>
+              )}
+
+              {panelTab === 'diario' && (
+                <Card className="min-h-0 flex-1 gap-0 overflow-hidden py-0">
+                  <JournalPanel
+                    entries={session.entries}
+                    canUndo={canUndo}
+                    onUndo={handleUndo}
+                    sessionActive={session.active}
+                    startedAt={session.startedAt}
+                  />
+                </Card>
+              )}
+            </aside>
           </main>
+
+          <QuickLogBar
+            enabled={session.active}
+            creditos={creditos}
+            medidores={medidores}
+            medidorNames={model.manifest.medidores}
+            onMover={() => setMoverOpen(true)}
+            onCreditos={handleCreditos}
+            onMedidor={handleMedidor}
+            onPista={() => uiActions.setPanelTab('pistas')}
+            onNota={handleNota}
+          />
+
+          <MoverDialog
+            open={moverOpen}
+            onOpenChange={setMoverOpen}
+            lugares={moverLugares}
+            recentIds={recentMoveIds}
+            currentId={ubicacion}
+            onMove={handleMove}
+          />
         </>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
@@ -730,5 +1279,136 @@ export default function WorldPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Pistas tab (M3 placeholder — the full LeadsBoard arrives in M4) ─────────
+
+/** Allowed one-tap estado transitions per current estado (plan Part A workflow). */
+const PISTA_TRANSITIONS: Record<Lead['estadoPista'], Lead['estadoPista'][]> = {
+  rumor: ['activa'],
+  activa: ['en_curso', 'fallida'],
+  en_curso: ['resuelta', 'fallida'],
+  resuelta: [],
+  fallida: [],
+};
+
+const PISTA_ESTADO_LABEL: Record<Lead['estadoPista'], string> = {
+  rumor: 'Rumor',
+  activa: 'Activa',
+  en_curso: 'En curso',
+  resuelta: 'Resuelta',
+  fallida: 'Fallida',
+};
+
+const PISTA_ESTADO_ORDER: Record<Lead['estadoPista'], number> = {
+  activa: 0,
+  en_curso: 1,
+  rumor: 2,
+  resuelta: 3,
+  fallida: 4,
+};
+
+interface LeadsListCardProps {
+  pistas: Lead[];
+  /** Re-render key: pista estado/accionable are mutated in place on the model. */
+  modelRev: number;
+  sessionActive: boolean;
+  onTransition: (pista: Lead, to: Lead['estadoPista']) => void;
+  onNavigate: (id: string) => void;
+}
+
+function LeadsListCard({ pistas, modelRev, sessionActive, onTransition, onNavigate }: LeadsListCardProps) {
+  const sorted = useMemo(() => {
+    void modelRev;
+    return [...pistas].sort((a, b) => {
+      const accA = a.accionable === true ? 0 : 1;
+      const accB = b.accionable === true ? 0 : 1;
+      if (accA !== accB) return accA - accB;
+      const orderDelta = PISTA_ESTADO_ORDER[a.estadoPista] - PISTA_ESTADO_ORDER[b.estadoPista];
+      if (orderDelta !== 0) return orderDelta;
+      return a.nombre.localeCompare(b.nombre, 'es');
+    });
+  }, [pistas, modelRev]);
+
+  return (
+    <Card className="flex h-full flex-col gap-0 overflow-hidden py-0" data-leads-panel>
+      <div className="border-b px-3 py-2">
+        <p className="text-sm font-medium">Pistas</p>
+        <p className="text-xs text-muted-foreground">Tablero completo en M4</p>
+      </div>
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+        {sorted.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">Sin pistas.</p>
+        ) : (
+          sorted.map((pista) => (
+            <div
+              key={pista.id}
+              data-lead-id={pista.id}
+              data-lead-estado={pista.estadoPista}
+              className="rounded-md border px-3 py-2"
+            >
+              <div className="flex items-start gap-2">
+                {pista.accionable === true && (
+                  <Star
+                    className="mt-0.5 size-4 shrink-0 fill-amber-400 text-amber-400"
+                    aria-label="Accionable"
+                  />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="break-words text-sm font-medium">{pista.nombre}</p>
+                  {pista.donde && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate(pista.donde!)}
+                      className="text-xs text-muted-foreground hover:underline"
+                    >
+                      @ {pista.donde}
+                    </button>
+                  )}
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <Badge
+                    variant={
+                      pista.estadoPista === 'resuelta' || pista.estadoPista === 'fallida'
+                        ? 'outline'
+                        : 'secondary'
+                    }
+                  >
+                    {PISTA_ESTADO_LABEL[pista.estadoPista]}
+                  </Badge>
+                  {pista.accionable === 'manual' && (
+                    <Badge variant="outline" className="text-muted-foreground">
+                      según GM
+                    </Badge>
+                  )}
+                </div>
+              </div>
+              {PISTA_TRANSITIONS[pista.estadoPista].length > 0 && (
+                <div className="mt-1.5 flex flex-wrap justify-end gap-1">
+                  {PISTA_TRANSITIONS[pista.estadoPista].map((to) => (
+                    <Button
+                      key={to}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-lead-transition={to}
+                      disabled={!sessionActive}
+                      title={sessionActive ? undefined : 'Inicia sesión para registrar'}
+                      onClick={() => onTransition(pista, to)}
+                      className={`h-6 px-2 text-xs ${
+                        to === 'fallida' ? 'border-destructive/40 text-destructive' : ''
+                      }`}
+                    >
+                      {PISTA_ESTADO_LABEL[to]}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
   );
 }

@@ -8,8 +8,10 @@
 
 import { FileReference, SessionConfig } from '@/types';
 import {
+    Conocimiento,
     FactionEntity,
     FactionPresence,
+    JournalDay,
     Lead,
     NpcEntity,
     PartyState,
@@ -23,6 +25,8 @@ import {
 } from '@/types/world';
 import { scanSessionFolder } from '@/lib/sessionScanner';
 import { fileNameToDisplayName, getSubdirectory, readFileContent } from '@/lib/fsScanUtils';
+import { parseJournal, parseLlegadaPayload, parseSabePayload } from './logEntries';
+import { ancestryChain } from './worldNav';
 import { parsePartyState } from './partyState';
 import {
     asCoords,
@@ -138,22 +142,54 @@ export async function scanWorldFolder(
     return assembleModel(manifest, records, problemas, estadoGrupo);
 }
 
+/** NotFoundError as thrown by the real FS Access API (DOMException) or the test mock. */
+function isNotFoundError(error: unknown): boolean {
+    if (typeof error === 'object' && error !== null && 'name' in error) {
+        if ((error as { name: unknown }).name === 'NotFoundError') return true;
+    }
+    return error instanceof Error && error.message.startsWith('NotFoundError');
+}
+
 /**
  * Reads + parses `estado/grupo.md`. An absent file (or absent `estado/` dir)
  * is a normal pre-M6 world: null model field plus an aviso, never an error.
+ * A file that EXISTS but cannot be read is a real error-level issue carrying
+ * the underlying message — never conflated with absence.
  */
 async function readPartyState(
     mundoDir: FileSystemDirectoryHandle,
     problemas: ValidationIssue[]
 ): Promise<PartyState | null> {
+    const readError = (error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        problemas.push({
+            nivel: 'error',
+            archivo: PARTY_STATE_PATH,
+            mensaje: `No se pudo leer ${ENTITY_DIRS.estado}/${PARTY_STATE_FILE}: ${detail}`,
+        });
+    };
+
     let content: string | null = null;
     const estadoDir = await getSubdirectory(mundoDir, ENTITY_DIRS.estado);
     if (estadoDir) {
+        let fileHandle: FileSystemFileHandle | null = null;
         try {
-            const fileHandle = await estadoDir.getFileHandle(PARTY_STATE_FILE);
-            content = await readFileContent(fileHandle);
-        } catch {
-            content = null;
+            fileHandle = await estadoDir.getFileHandle(PARTY_STATE_FILE);
+        } catch (error) {
+            if (!isNotFoundError(error)) {
+                readError(error);
+                return null;
+            }
+        }
+        if (fileHandle) {
+            // NOT readFileContent(): that helper swallows read failures as ''.
+            try {
+                const file = await fileHandle.getFile();
+                content = await file.text();
+            } catch (error) {
+                readError(error);
+                return null;
+            }
         }
     }
 
@@ -176,7 +212,8 @@ async function readPartyState(
 type EntityKind = 'sistema' | 'lugar' | 'faccion' | 'pnj' | 'pista' | 'trama';
 
 interface RawEntityFile {
-    kind: EntityKind;
+    /** 'diario' records become JournalDays, never entities. */
+    kind: EntityKind | 'diario';
     /** filename minus .md, or the folder name for playable place folders. */
     id: string;
     /** Path relative to the campaign folder. */
@@ -194,8 +231,9 @@ interface TaskResult {
 type ScanTask = () => Promise<TaskResult>;
 
 /**
- * Flat entity dirs scanned as `*.md` files. eventos/ and diario/ are still
- * skipped (M4/M3); estado/grupo.md is read separately via readPartyState.
+ * Flat entity dirs scanned as `*.md` files. eventos/ is still skipped (M4);
+ * diario/ is scanned separately below (journals, not entities) and
+ * estado/grupo.md is read via readPartyState.
  */
 const FLAT_KIND_DIRS: ReadonlyArray<{ kind: EntityKind; dir: string }> = [
     { kind: 'sistema', dir: ENTITY_DIRS.sistemas },
@@ -276,6 +314,24 @@ async function collectTasks(mundoDir: FileSystemDirectoryHandle): Promise<ScanTa
         }
         for (const dir of dirs) {
             tasks.push(() => scanPlaceFolder(dir.name, dir.handle));
+        }
+    }
+
+    // diario/: session journals (M3) — parsed into model.diario, not entities.
+    const diarioDir = await getSubdirectory(mundoDir, ENTITY_DIRS.diario);
+    if (diarioDir) {
+        const { files } = await listEntries(diarioDir);
+        for (const file of files) {
+            const filePath = `${WORLD_DIR}/${ENTITY_DIRS.diario}/${file.name}`;
+            tasks.push(async () => ({
+                record: {
+                    kind: 'diario',
+                    id: stripMd(file.name),
+                    filePath,
+                    content: await readFileContent(file.handle),
+                },
+                issues: [],
+            }));
         }
     }
 
@@ -727,8 +783,15 @@ function assembleModel(
     const pnjs: NpcEntity[] = [];
     const pistas: Lead[] = [];
     const tramas: Trama[] = [];
+    const diario: JournalDay[] = [];
 
     for (const record of records) {
+        // Journals are not entities: no id dedupe, own tolerant parser.
+        if (record.kind === 'diario') {
+            diario.push(parseJournal(record.content, record.filePath));
+            continue;
+        }
+
         const parsed = parseFrontmatter(record.content, record.filePath);
         if (parsed.issue) problemas.push(parsed.issue);
         const data = normalizeKeys(parsed.data);
@@ -784,16 +847,16 @@ function assembleModel(
         }
     }
 
+    sortDiario(diario);
+    warnStaleDiario(diario, problemas);
+
     checkDanglingRefs(entidades, lugares, pnjs, pistas, problemas);
     checkPartyStateRefs(entidades, estadoGrupo, problemas);
-    warnOrphans(entidades, sistemas, lugares, facciones, pnjs, pistas, tramas, problemas);
 
     const childrenOf = deriveChildrenOf(entidades, sistemas, lugares);
     deriveRegionInheritance(entidades, lugares);
-    deriveLeadActionability(entidades, pistas, problemas);
-    groupTramaPistas(tramas, pistas);
 
-    return {
+    const model: WorldModel = {
         manifest,
         entidades,
         sistemas,
@@ -805,7 +868,107 @@ function assembleModel(
         problemas,
         childrenOf,
         estadoGrupo,
+        diario,
     };
+
+    // Unprocessed journals re-overlay in-session knowledge BEFORE the
+    // knowledge-dependent derivations (orphans, accionable) run, so the GM
+    // sees the post-session world even before the agent maintenance loop.
+    overlayUnprocessedJournals(model);
+    warnOrphans(entidades, sistemas, lugares, facciones, pnjs, pistas, tramas, problemas);
+    deriveLeadActionability(entidades, pistas, problemas);
+    groupTramaPistas(tramas, pistas);
+
+    return model;
+}
+
+// ── Journal overlay (M3) ────────────────────────────────────────────────────
+
+/** Chronological: fecha_real (ISO strings sort lexically), then sesion. */
+function sortDiario(diario: JournalDay[]): void {
+    diario.sort((a, b) => {
+        if (a.fechaReal !== b.fechaReal) return a.fechaReal.localeCompare(b.fechaReal);
+        if (a.sesion !== b.sesion) return a.sesion - b.sesion;
+        return a.filePath.localeCompare(b.filePath);
+    });
+}
+
+/**
+ * An unprocessed journal older than the newest one means the agent
+ * maintenance loop was skipped after some earlier session.
+ */
+function warnStaleDiario(diario: JournalDay[], problemas: ValidationIssue[]): void {
+    let newest = '';
+    for (const day of diario) {
+        if (day.fechaReal > newest) newest = day.fechaReal;
+    }
+    for (const day of diario) {
+        if (!day.procesado && day.fechaReal < newest) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: day.filePath,
+                mensaje:
+                    'Diario sin procesar de una sesión anterior — falta el mantenimiento del agente',
+            });
+        }
+    }
+}
+
+const CONOCIMIENTO_RANK = new Map<Conocimiento, number>(
+    CONOCIMIENTOS.map((nivel, index) => [nivel, index])
+);
+
+/** Raises an entity's conocimiento to at least `minimo` — never lowers it. */
+function bumpConocimiento(
+    entidades: Map<string, WorldEntityBase>,
+    id: string,
+    minimo: Conocimiento
+): void {
+    const entity = entidades.get(id);
+    if (!entity) return;
+    const actual = CONOCIMIENTO_RANK.get(entity.conocimiento) ?? 0;
+    const objetivo = CONOCIMIENTO_RANK.get(minimo) ?? 0;
+    if (objetivo > actual) entity.conocimiento = minimo;
+}
+
+/**
+ * In-memory knowledge effect of arriving at a place: the destination is
+ * raised to at least `visitado` and every `en:` ancestor to at least
+ * `conocido` (knowledge never lowers). Shared by the journal overlay below
+ * and the live "Mover" action on /world (M3) — persistence to entity files
+ * remains the agent's job.
+ */
+export function applyLlegadaConocimiento(model: WorldModel, lugarId: string): void {
+    bumpConocimiento(model.entidades, lugarId, 'visitado');
+    for (const ancestorId of ancestryChain(model, lugarId).slice(1)) {
+        bumpConocimiento(model.entidades, ancestorId, 'conocido');
+    }
+}
+
+/**
+ * Re-derives the in-memory effects of journals the agent has not processed
+ * yet (procesado: false), in chronological order:
+ *   - sabe    -> raise the entity's conocimiento to the logged target level
+ *   - llegada -> destination at least visitado; `en:` ancestors at least
+ *                conocido (same ancestry logic as worldNav)
+ * Unknown ids and unparseable payloads are silently skipped — the journal is
+ * a log, not a validated source, and the agent will reconcile it later.
+ */
+function overlayUnprocessedJournals(model: WorldModel): void {
+    for (const day of model.diario) {
+        if (day.procesado) continue;
+        for (const entrada of day.entradas) {
+            if (entrada.tipo === 'sabe') {
+                const sabe = parseSabePayload(entrada.payload);
+                if (sabe && (CONOCIMIENTOS as readonly string[]).includes(sabe.to)) {
+                    bumpConocimiento(model.entidades, sabe.id, sabe.to as Conocimiento);
+                }
+            } else if (entrada.tipo === 'llegada') {
+                const llegada = parseLlegadaPayload(entrada.payload);
+                if (llegada) applyLlegadaConocimiento(model, llegada.lugarId);
+            }
+        }
+    }
 }
 
 /**
@@ -994,8 +1157,11 @@ function deriveRegionInheritance(
  * is absent-or-conocido/visitado. Any requisitos entry degrades the result to
  * 'manual' ("según GM") — evalCondition() arrives in M4; until then the app
  * cannot check condition strings against PartyState.
+ *
+ * Exported for /world (M3): live pista transitions re-run it on the touched
+ * lead (with a throwaway issues array) so `accionable` stays coherent.
  */
-function deriveLeadActionability(
+export function deriveLeadActionability(
     entidades: Map<string, WorldEntityBase>,
     pistas: Lead[],
     problemas: ValidationIssue[]
