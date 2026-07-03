@@ -388,7 +388,8 @@ function CreditosPanel({ onDelta }: { onDelta: (delta: number) => void }) {
             size="sm"
             data-quicklog-delta={delta}
             onClick={() => onDelta(delta)}
-            className={`tabular-nums ${delta < 0 ? 'text-destructive' : ''}`}
+            // h-11 = 44px tap target (M5 sweep).
+            className={`h-11 tabular-nums ${delta < 0 ? 'text-destructive' : ''}`}
           >
             {delta > 0 ? `+${delta}` : delta}
           </Button>
@@ -430,7 +431,8 @@ function PipRow({ nombre, current, onPick }: PipRowProps) {
           data-quicklog-pip={value}
           aria-pressed={value === current}
           onClick={() => onPick(value)}
-          className={`flex size-9 items-center justify-center rounded-full border text-sm tabular-nums transition-colors hover:bg-accent hover:text-accent-foreground ${
+          // size-11 = 44px tap target (M5 sweep).
+          className={`flex size-11 items-center justify-center rounded-full border text-sm tabular-nums transition-colors hover:bg-accent hover:text-accent-foreground ${
             value === current
               ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground'
               : value < current

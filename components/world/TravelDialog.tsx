@@ -176,7 +176,12 @@ export function TravelDialog({
         )}
 
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            className="min-h-11"
+          >
             Cancelar
           </Button>
           <Button
@@ -185,6 +190,7 @@ export function TravelDialog({
             disabled={plan === null}
             variant={plan && plan.warnings.length > 0 ? 'destructive' : 'default'}
             onClick={handleConfirm}
+            className="min-h-11"
           >
             {confirmLabel}
           </Button>

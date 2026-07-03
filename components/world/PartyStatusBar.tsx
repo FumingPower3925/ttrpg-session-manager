@@ -128,7 +128,9 @@ export function PartyStatusBar({
                 <button
                   type="button"
                   onClick={() => onLocationClick(crumb.id)}
-                  className={`max-w-44 truncate text-sm hover:underline ${
+                  // before: pseudo extends the tap area to ~44px without
+                  // growing the compact bar (M5 tap-target sweep).
+                  className={`relative max-w-44 truncate text-sm before:absolute before:-inset-x-1 before:-inset-y-3 before:content-[''] hover:underline ${
                     index === locationPath.length - 1
                       ? 'font-medium'
                       : 'text-muted-foreground'
@@ -202,7 +204,8 @@ export function PartyStatusBar({
                 size="sm"
                 data-session-retry
                 onClick={onRetryWrites}
-                className="h-6 gap-1 border-destructive/40 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                // min-h-11 = 44px tap target (M5 sweep) — recovery must be easy.
+                className="min-h-11 gap-1 border-destructive/40 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
               >
                 <RotateCw className="size-3" aria-hidden />
                 Reintentar
@@ -217,6 +220,7 @@ export function PartyStatusBar({
             data-session-start
             disabled={!onStartSession}
             onClick={onStartSession}
+            className="min-h-11"
           >
             <Play />
             Iniciar sesión
@@ -264,7 +268,7 @@ function EndSessionButton({ onEndSession, endSummaryPreview }: EndSessionButtonP
         data-session-end
         aria-expanded={confirmOpen}
         onClick={() => setConfirmOpen((open) => !open)}
-        className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+        className="min-h-11 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
       >
         <Square />
         Terminar sesión
@@ -284,6 +288,7 @@ function EndSessionButton({ onEndSession, endSummaryPreview }: EndSessionButtonP
               variant="outline"
               size="sm"
               onClick={() => setConfirmOpen(false)}
+              className="min-h-11"
             >
               Cancelar
             </Button>
@@ -296,6 +301,7 @@ function EndSessionButton({ onEndSession, endSummaryPreview }: EndSessionButtonP
                 setConfirmOpen(false);
                 onEndSession?.();
               }}
+              className="min-h-11"
             >
               Terminar
             </Button>

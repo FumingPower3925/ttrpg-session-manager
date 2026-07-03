@@ -92,7 +92,7 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-2" aria-label="Buscar en el mundo">
+        <Button variant="outline" size="sm" className="min-h-11 gap-2" aria-label="Buscar en el mundo">
           <Search className="h-4 w-4" />
           Buscar
           <kbd className="pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">

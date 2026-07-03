@@ -185,7 +185,7 @@ export function LeadsBoard({
             data-leads-tab={f.id}
             aria-selected={filter === f.id}
             onClick={() => setFilter(f.id)}
-            className={`flex flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-xs transition-colors ${
+            className={`flex min-h-11 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1.5 text-xs transition-colors ${
               filter === f.id
                 ? 'bg-background font-medium shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
@@ -269,7 +269,9 @@ function LeadRow({
                 type="button"
                 data-lead-donde={pista.donde}
                 onClick={() => onSelectPlace(pista.donde!)}
-                className="inline-flex max-w-full items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                // before: pseudo extends the tap area to ~44px without inflating
+                // the chip visually (M5 tap-target sweep).
+                className="relative inline-flex max-w-full items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground transition-colors before:absolute before:-inset-x-1 before:-inset-y-2.5 before:content-[''] hover:bg-accent hover:text-foreground"
               >
                 <MapPin className="size-3 shrink-0" aria-hidden />
                 <span className="truncate">{placeNombre?.(pista.donde) ?? pista.donde}</span>
@@ -313,7 +315,9 @@ function LeadRow({
               disabled={!sessionActive}
               title={sessionActive ? undefined : 'Inicia sesión para registrar'}
               onClick={() => onTransition(pista.id, pista.estadoPista, to)}
-              className={`h-6 px-2 text-xs ${
+              // min-h-11 = 44px tap target (M5 sweep) — these are the one-tap
+              // transitions the GM hits mid-session on a tablet.
+              className={`min-h-11 px-3 text-xs ${
                 to === 'fallida' ? 'border-destructive/40 text-destructive' : ''
               }`}
             >

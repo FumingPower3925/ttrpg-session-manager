@@ -310,7 +310,12 @@ export function EventDrawer({
               Sin tablas de eventos aplicables aquí.
             </p>
             <div className="flex justify-end">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                className="min-h-11"
+              >
                 Cerrar
               </Button>
             </div>
@@ -335,7 +340,9 @@ export function EventDrawer({
                     type="button"
                     data-event-redraw
                     onClick={onRedraw}
-                    className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    // before: pseudo extends the tap area to ~44px without
+                    // moving the header layout (M5 tap-target sweep).
+                    className="relative mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3.5 before:content-[''] hover:text-foreground hover:underline"
                   >
                     <Dices className="size-3.5" aria-hidden />
                     Otra tirada
@@ -348,7 +355,8 @@ export function EventDrawer({
                 size="icon"
                 aria-label="Cerrar evento"
                 onClick={() => onOpenChange(false)}
-                className="shrink-0"
+                // size-11 = 44px tap target (M5 sweep).
+                className="size-11 shrink-0"
               >
                 <X />
               </Button>
@@ -377,6 +385,8 @@ export function EventDrawer({
                           data-event-effect={index}
                           {...{ [`data-event-effect-${index}`]: 'true' }}
                           onClick={() => onApplyEffect(efecto)}
+                          // min-h-11 = 44px tap target (M5 sweep).
+                          className="min-h-11"
                         >
                           {applied && <Check className="text-emerald-600 dark:text-emerald-400" />}
                           {effectLabel(efecto)}
@@ -389,11 +399,13 @@ export function EventDrawer({
             </div>
 
             <footer className="border-t px-4 py-3">
+              {/* min-h-11 = 44px tap targets on the outcome row (M5 sweep). */}
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button
                   type="button"
                   data-event-outcome="resuelto"
                   onClick={() => resolve('resuelto')}
+                  className="min-h-11"
                 >
                   Resuelto
                 </Button>
@@ -402,6 +414,7 @@ export function EventDrawer({
                   variant="outline"
                   data-event-outcome="ignorado"
                   onClick={() => resolve('ignorado')}
+                  className="min-h-11"
                 >
                   Ignorado
                 </Button>
@@ -411,7 +424,7 @@ export function EventDrawer({
                   data-event-outcome="complicacion"
                   aria-expanded={complicacionOpen}
                   onClick={() => setComplicacionOpen((prev) => !prev)}
-                  className="border-amber-500/40 text-amber-700 dark:text-amber-400"
+                  className="min-h-11 border-amber-500/40 text-amber-700 dark:text-amber-400"
                 >
                   <TriangleAlert aria-hidden />
                   Complicación
@@ -438,7 +451,7 @@ export function EventDrawer({
                     variant="outline"
                     data-event-outcome-confirm="complicacion"
                     onClick={() => resolve('complicacion', nota.trim() || undefined)}
-                    className="shrink-0"
+                    className="min-h-11 shrink-0"
                   >
                     Confirmar
                   </Button>

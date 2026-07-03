@@ -343,6 +343,7 @@ paga inmediata y sin papeleo.
 
 :::efecto
 - ganancia: 200 | turnos de descarga
+- medidor: oxigeno -1 | fuga en el sello de carga (medidor NO manifestado)
 :::
 `,
         },

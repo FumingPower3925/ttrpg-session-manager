@@ -27,7 +27,7 @@ export function DiagnosticsPanel({ problemas, onCopyReport }: DiagnosticsPanelPr
             : `${errores.length} ${errores.length === 1 ? 'error' : 'errores'} · ${avisos.length} ${avisos.length === 1 ? 'aviso' : 'avisos'}`}
         </div>
         <CardAction>
-          <Button variant="outline" size="sm" onClick={onCopyReport}>
+          <Button variant="outline" size="sm" onClick={onCopyReport} className="min-h-11">
             <Copy />
             Copiar informe
           </Button>

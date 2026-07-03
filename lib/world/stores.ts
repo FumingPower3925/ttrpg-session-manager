@@ -751,18 +751,38 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
 export type MapTier = 'sector' | 'system';
 export type PanelTab = 'entidad' | 'pistas' | 'diario';
 
-export interface UiState {
-    /** Starmap semantic-zoom tier. */
+/** Map viewport transform — structurally identical to StarMap's MapViewport. */
+export interface UiViewport {
+    x: number;
+    y: number;
+    k: number;
+}
+
+/**
+ * The persisted subset of UiState (everything except actions). M5 polish:
+ * mirrored to sessionStorage on every change so a reload lands where the GM
+ * was. Stale ids after a re-scan degrade exactly like stale store ids do
+ * (invalid focus -> sector tier, missing selection -> empty panel), so no
+ * model-side validation is needed here.
+ */
+export interface UiSlice {
     tier: MapTier;
-    /** Sistema focused at the 'system' tier. */
     focusSystemId: string | null;
-    /** Lugar whose SiteList (non-spatial tier 3) is open; null = closed. */
     siteListId: string | null;
     selectedEntityId: string | null;
     panelTab: PanelTab;
     mapCollapsed: boolean;
-    /** Show desconocido entities as ghosts (toggle off for screen-share). */
     showUnknown: boolean;
+    /**
+     * Last gesture-committed map viewport per tier key ('sector' or
+     * 'system:<sistemaId>'). Only gesture ENDS land here (StarMap emits
+     * onViewportChange once per finished gesture); mid-gesture transforms
+     * stay in StarMap's refs and are ephemeral by design.
+     */
+    viewports: Record<string, UiViewport>;
+}
+
+export interface UiState extends UiSlice {
     actions: {
         setTier: (tier: MapTier) => void;
         /** Drill into a sistema: sets the focus AND switches to the 'system' tier. */
@@ -776,22 +796,115 @@ export interface UiState {
         setPanelTab: (tab: PanelTab) => void;
         setMapCollapsed: (collapsed: boolean) => void;
         setShowUnknown: (show: boolean) => void;
+        /** Remembers a gesture-committed viewport under its tier key. */
+        rememberViewport: (key: string, viewport: UiViewport) => void;
         reset: () => void;
     };
 }
 
-const UI_INITIAL = {
-    tier: 'sector' as MapTier,
+const UI_INITIAL: UiSlice = {
+    tier: 'sector',
     focusSystemId: null,
     siteListId: null,
     selectedEntityId: null,
-    panelTab: 'entidad' as PanelTab,
+    panelTab: 'entidad',
     mapCollapsed: false,
     showUnknown: true,
+    viewports: {},
 };
+
+/** sessionStorage key of the persisted UI slice. */
+export const UI_PERSIST_KEY = 'world.ui.v1';
+
+/** Minimal Storage surface the persistence needs (injectable for bun tests). */
+export type UiStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
+function sessionStorageOrNull(): UiStorage | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.sessionStorage;
+    } catch {
+        return null; // storage blocked (e.g. privacy mode) — persistence disabled
+    }
+}
+
+function isUiViewport(value: unknown): value is UiViewport {
+    if (value === null || typeof value !== 'object') return false;
+    const v = value as Record<string, unknown>;
+    return (
+        typeof v.x === 'number' &&
+        Number.isFinite(v.x) &&
+        typeof v.y === 'number' &&
+        Number.isFinite(v.y) &&
+        typeof v.k === 'number' &&
+        Number.isFinite(v.k) &&
+        v.k > 0
+    );
+}
+
+/**
+ * Reads the persisted UI slice, validating FIELD BY FIELD: a corrupt or
+ * out-of-vocabulary field falls back to its default while the valid ones
+ * still restore (same degrade-don't-fail stance as the world scanner).
+ * Returns {} when absent/corrupt/SSR.
+ */
+export function readPersistedUi(storage: UiStorage | null = sessionStorageOrNull()): Partial<UiSlice> {
+    if (!storage) return {};
+    let parsed: unknown;
+    try {
+        const raw = storage.getItem(UI_PERSIST_KEY);
+        if (!raw) return {};
+        parsed = JSON.parse(raw);
+    } catch {
+        return {};
+    }
+    if (parsed === null || typeof parsed !== 'object') return {};
+    const p = parsed as Record<string, unknown>;
+    const out: Partial<UiSlice> = {};
+    if (p.tier === 'sector' || p.tier === 'system') out.tier = p.tier;
+    for (const key of ['focusSystemId', 'siteListId', 'selectedEntityId'] as const) {
+        const value = p[key];
+        if (typeof value === 'string' || value === null) out[key] = value;
+    }
+    if (p.panelTab === 'entidad' || p.panelTab === 'pistas' || p.panelTab === 'diario') {
+        out.panelTab = p.panelTab;
+    }
+    if (typeof p.mapCollapsed === 'boolean') out.mapCollapsed = p.mapCollapsed;
+    if (typeof p.showUnknown === 'boolean') out.showUnknown = p.showUnknown;
+    if (p.viewports !== null && typeof p.viewports === 'object') {
+        const viewports: Record<string, UiViewport> = {};
+        for (const [key, value] of Object.entries(p.viewports as Record<string, unknown>)) {
+            if (isUiViewport(value)) viewports[key] = { x: value.x, y: value.y, k: value.k };
+        }
+        out.viewports = viewports;
+    }
+    return out;
+}
+
+/** Writes the UI slice to storage (best effort — quota/privacy errors swallowed). */
+export function persistUi(state: UiSlice, storage: UiStorage | null = sessionStorageOrNull()): void {
+    if (!storage) return;
+    const slice: UiSlice = {
+        tier: state.tier,
+        focusSystemId: state.focusSystemId,
+        siteListId: state.siteListId,
+        selectedEntityId: state.selectedEntityId,
+        panelTab: state.panelTab,
+        mapCollapsed: state.mapCollapsed,
+        showUnknown: state.showUnknown,
+        viewports: state.viewports,
+    };
+    try {
+        storage.setItem(UI_PERSIST_KEY, JSON.stringify(slice));
+    } catch {
+        // best effort
+    }
+}
 
 export const useUiStore = create<UiState>()((set) => ({
     ...UI_INITIAL,
+    // Restore the persisted slice at creation (SSR/bun: no window -> defaults).
+    ...readPersistedUi(),
     actions: {
         setTier(tier: MapTier) {
             set({ tier });
@@ -820,8 +933,20 @@ export const useUiStore = create<UiState>()((set) => ({
         setShowUnknown(show: boolean) {
             set({ showUnknown: show });
         },
+        rememberViewport(key: string, viewport: UiViewport) {
+            set((state) => ({
+                viewports: { ...state.viewports, [key]: { ...viewport } },
+            }));
+        },
         reset() {
             set({ ...UI_INITIAL });
         },
     },
 }));
+
+// Mirror every UI change into sessionStorage (a tiny slice — cheaper and less
+// invasive than the zustand persist middleware, and bun-testable through the
+// exported readPersistedUi/persistUi pair). No window (SSR/bun) -> no-op.
+if (typeof window !== 'undefined') {
+    useUiStore.subscribe((state) => persistUi(state));
+}

@@ -1002,6 +1002,18 @@ export function applyLlegadaConocimiento(model: WorldModel, lugarId: string): vo
  *                conocido (same ancestry logic as worldNav)
  * Unknown ids and unparseable payloads are silently skipped — the journal is
  * a log, not a validated source, and the agent will reconcile it later.
+ *
+ * TODO(M6) — DELIBERATE ASYMMETRY: `pista` entries are NOT overlaid. Only
+ * knowledge is monotonic (it never lowers, so replaying it is always safe);
+ * pista estados move in both directions and can be corrected mid-journal, so
+ * an overlay would need real replay semantics the scanner doesn't have. The
+ * consequence the GM sees: a pista transitioned live during a session reverts
+ * to its FILE estado on reload until the agent maintenance runs. PROTOCOLO.md
+ * (M6) must therefore instruct the agent to process pista entries promptly
+ * after every session; whether this overlay should learn pista replay is an
+ * M6 decision — do not bolt it on here without deciding the undo/ordering
+ * semantics first. (Same note lives in app/world/page.tsx "SCAN-OVERLAY
+ * ASYMMETRY".)
  */
 function overlayUnprocessedJournals(model: WorldModel): void {
     for (const day of model.diario) {

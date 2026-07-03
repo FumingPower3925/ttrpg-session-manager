@@ -40,10 +40,23 @@ export function SessionRecoveryBanner({
         <span className="font-mono text-xs text-muted-foreground">({journalName})</span>
       </p>
       <div className="flex shrink-0 items-center gap-2">
-        <Button type="button" size="sm" data-session-recover onClick={onRecover}>
+        <Button
+          type="button"
+          size="sm"
+          data-session-recover
+          onClick={onRecover}
+          className="min-h-11"
+        >
           Recuperar
         </Button>
-        <Button type="button" size="sm" variant="outline" data-session-discard onClick={onDiscard}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-session-discard
+          onClick={onDiscard}
+          className="min-h-11"
+        >
           Descartar
         </Button>
       </div>

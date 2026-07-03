@@ -86,7 +86,7 @@ export function JournalPanel({
           data-journal-undo
           disabled={!canUndo}
           onClick={onUndo}
-          className="shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+          className="min-h-11 shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
         >
           <Undo2 />
           Deshacer última

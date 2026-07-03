@@ -87,7 +87,8 @@ export function EntityPanel({
           )}
         </div>
         <CardAction>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Cerrar panel">
+          {/* size-11 = 44px tap target (M5 sweep). */}
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Cerrar panel" className="size-11">
             <X />
           </Button>
         </CardAction>
@@ -171,7 +172,7 @@ export function EntityPanel({
       {hasFooter && (
         <div className="flex items-center gap-2 border-t p-3">
           {onDrillIn && (
-            <Button variant="outline" size="sm" onClick={onDrillIn}>
+            <Button variant="outline" size="sm" onClick={onDrillIn} className="min-h-11">
               <ZoomIn />
               Entrar
             </Button>

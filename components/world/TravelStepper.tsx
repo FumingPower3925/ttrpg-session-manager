@@ -71,6 +71,7 @@ export function TravelStepper({
         />
       </div>
 
+      {/* min-h-11 = 44px tap targets on the per-day loop (M5 sweep). */}
       <div className="ml-auto flex flex-wrap items-center gap-2">
         <Button
           type="button"
@@ -80,11 +81,12 @@ export function TravelStepper({
           disabled={eventDisabled}
           title={eventDisabled ? 'No hay tablas de eventos aplicables' : undefined}
           onClick={onDrawEvent}
+          className="min-h-11"
         >
           <Dices />
           Tirar evento de viaje
         </Button>
-        <Button type="button" size="sm" data-travel-next onClick={onNextDay}>
+        <Button type="button" size="sm" data-travel-next onClick={onNextDay} className="min-h-11">
           <MoveRight />
           Continuar
         </Button>
@@ -94,6 +96,7 @@ export function TravelStepper({
           variant="ghost"
           data-travel-rest
           onClick={onResolveRest}
+          className="min-h-11"
         >
           <FastForward />
           Resolver resto sin eventos
@@ -104,7 +107,7 @@ export function TravelStepper({
           variant="ghost"
           data-travel-cancel
           onClick={onCancel}
-          className="text-muted-foreground"
+          className="min-h-11 text-muted-foreground"
         >
           <X />
           Cancelar

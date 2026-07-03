@@ -78,6 +78,53 @@
  *   - rederiveLeads(): every pista/medidor/creditos/llegada/sabe mutation (and
  *     undo) re-runs deriveLeadActionability over ALL pistas with a live
  *     CondContext, then bumps modelRev.
+ *
+ * M5 ActRunner wiring (plan Part B "Cockpit" — scripted acts):
+ *   - "Jugar" appears in the EntityPanel actions and on SiteList rows when the
+ *     entity carries `playable` (a ready SessionConfig scanned from its
+ *     lugares/<id>/ folder, paths prefixed mundo/lugares/<id>/). The button
+ *     mounts the fullscreen ActRunner overlay (data-act-runner) over the
+ *     cockpit, fed with the worldStore fs manager.
+ *   - JOURNALING: opening with an active session logs a nota
+ *     "Acto iniciado: <partName> @ <placeName>" (first visible part); closing
+ *     logs "Acto cerrado: ..." with the part the GM actually ended on
+ *     (tracked via onActChange in a ref — part switches inside the runner are
+ *     not journaled themselves). No session = the runner just opens: viewing
+ *     prep is legit without recording.
+ *   - Closing unmounts the overlay; the runner's own unmount effect fades the
+ *     audio out and releases it (see components/world/ActRunner.tsx).
+ *
+ * M5 polish — UI persistence + efecto hardening:
+ *   - The uiStore slice (tier/focus/siteList/selection/panelTab/mapCollapsed/
+ *     showUnknown) mirrors to sessionStorage (key world.ui.v1, see
+ *     lib/world/stores.ts) so a reload lands where the GM was. ?e= deep-link
+ *     navigation is SKIPPED when the restored selection already equals the
+ *     param: the URL is rewritten from the live selection, so after a reload
+ *     it merely duplicates the persisted slice and recomputing the tier
+ *     target would stomp the restored placement — a pasted/shared link (no
+ *     matching slice) still navigates. Stale persisted ids after a re-scan
+ *     degrade like stale store ids always did (invalid focus -> sector tier,
+ *     missing selection -> empty panel).
+ *   - Map viewports: StarMap commits the transform once per FINISHED gesture
+ *     (pointer released / wheel settled) through onViewportChange; the page
+ *     remembers that commit per tier key ('sector' | 'system:<id>') in the
+ *     same persisted slice, and the fit-to-content effect prefers a
+ *     remembered viewport over computing a fit. Mid-gesture transforms stay
+ *     in StarMap's refs — ephemeral by design.
+ *   - medidor `:::efecto` hardening (M4 TODO): a gauge name missing from
+ *     manifest.medidores degrades to a nota entry ("Efecto no aplicado:
+ *     medidor desconocido <nombre>") + warning toast instead of silently
+ *     creating an invisible gauge no widget renders.
+ *
+ * SCAN-OVERLAY ASYMMETRY (M4 decision — documented, not a bug):
+ *   worldScanner.overlayUnprocessedJournals re-derives ONLY knowledge (sabe)
+ *   and location knowledge (llegada) from journals with procesado: false.
+ *   Pista estado transitions are intentionally NOT overlaid: a pista moved
+ *   live during a session REVERTS to its file estado on reload until the
+ *   agent maintenance loop processes the journal — so PROTOCOLO.md (M6) must
+ *   instruct the agent to process pista entries promptly after each session.
+ *   Whether the scanner should also overlay pista transitions is an M6
+ *   decision; do not "fix" it here.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -148,6 +195,7 @@ import type { EventOutcome } from '@/components/world/EventDrawer';
 import { TravelDialog } from '@/components/world/TravelDialog';
 import { TravelStepper } from '@/components/world/TravelStepper';
 import { RoutePreview } from '@/components/world/RoutePreview';
+import { ActRunner } from '@/components/world/ActRunner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -167,7 +215,7 @@ import type {
   WorldEvent,
   WorldModel,
 } from '@/types/world';
-import { FolderOpen, Globe, Lock, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
+import { FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -295,6 +343,7 @@ function diasLabel(dias: number): string {
 export default function WorldPage() {
   const status = useWorldStore((s) => s.status);
   const model = useWorldStore((s) => s.model);
+  const worldFs = useWorldStore((s) => s.fs);
   const scanProgress = useWorldStore((s) => s.scanProgress);
   const worldError = useWorldStore((s) => s.error);
 
@@ -345,6 +394,10 @@ export default function WorldPage() {
   );
   const [eventApplied, setEventApplied] = useState<number[]>([]);
   const [eventDrawCount, setEventDrawCount] = useState(0);
+  // M5: place whose ActRunner overlay is open (null = closed) + the part the
+  // GM is currently on (for the "Acto cerrado" nota — see module doc M5).
+  const [actPlaceId, setActPlaceId] = useState<string | null>(null);
+  const actPartNameRef = useRef<string | null>(null);
   /** Contexto + place anchor of the current drawer opening (redraw reuses them). */
   const eventSourceRef = useRef<{ contexto: 'viaje' | 'estancia'; anchorId: string | null }>({
     contexto: 'estancia',
@@ -988,12 +1041,15 @@ export default function WorldPage() {
       const { main, comentario } = splitEffectValue(effect.value);
       let entry: JournalEntry | null = null;
       let mensaje = '';
+      /** True when the effect degraded to a nota — surfaced as a warning toast. */
+      let warn = false;
       /** In-memory model mutation to run only after log() accepts the entry. */
       let after: (() => void) | undefined;
 
       const fallbackNota = () => {
         entry = makeEntry.nota(`${effect.key}: ${effect.value}`);
         mensaje = 'Efecto no interpretable — anotado como nota';
+        warn = true;
       };
 
       switch (effect.key) {
@@ -1018,6 +1074,14 @@ export default function WorldPage() {
             break;
           }
           const nombre = match[1];
+          // M5 hardening: a gauge outside manifest.medidores would mutate a
+          // value no widget renders — degrade to a visible nota instead.
+          if (!currentModel.manifest.medidores.includes(nombre)) {
+            entry = makeEntry.nota(`Efecto no aplicado: medidor desconocido ${nombre}`);
+            mensaje = `Medidor desconocido «${nombre}» — anotado como nota`;
+            warn = true;
+            break;
+          }
           const from = store.medidores[nombre] ?? 0;
           const to = Math.max(0, Math.min(5, from + Number(match[2])));
           entry = makeEntry.medidor(nombre, from, to, comentario);
@@ -1072,10 +1136,55 @@ export default function WorldPage() {
       if (index >= 0) {
         setEventApplied((prev) => (prev.includes(index) ? prev : [...prev, index]));
       }
-      toast.success(mensaje);
+      if (warn) toast.warning(mensaje);
+      else toast.success(mensaje);
     },
     [eventDraw, rederiveLeads]
   );
+
+  // ── M5: ActRunner (scripted acts at a playable place) ────────────────────
+
+  /** The place whose runner is open; resolves live so a re-scan closes a stale id. */
+  const actRunnerPlace = useMemo(() => {
+    if (!model || !actPlaceId) return null;
+    const entity = model.entidades.get(actPlaceId);
+    return isPlace(entity) && entity.playable ? entity : null;
+  }, [model, actPlaceId]);
+
+  const handleOpenActRunner = useCallback((id: string) => {
+    const currentModel = useWorldStore.getState().model;
+    const entity = currentModel?.entidades.get(id);
+    if (!isPlace(entity) || !entity.playable) return;
+    // First VISIBLE part (same trunk/active-path rule as the runner) — the
+    // raw parts[0] could sit on a non-active path and misname the nota.
+    const playable = entity.playable;
+    const firstPart = playable.parts.find(
+      (p) => p.pathId == null || p.pathId === (playable.activePathId ?? null)
+    );
+    actPartNameRef.current = firstPart?.name ?? null;
+    setActPlaceId(id);
+    // Journal only under an active session — viewing prep needs no recording.
+    const store = usePartyStore.getState();
+    if (store.session.active && firstPart) {
+      store.actions.log(makeEntry.nota(`Acto iniciado: ${firstPart.name} @ ${entity.nombre}`));
+    }
+  }, []);
+
+  const handleCloseActRunner = useCallback(() => {
+    const place = actRunnerPlace;
+    const partName = actPartNameRef.current;
+    setActPlaceId(null);
+    actPartNameRef.current = null;
+    const store = usePartyStore.getState();
+    if (place && partName && store.session.active) {
+      store.actions.log(makeEntry.nota(`Acto cerrado: ${partName} @ ${place.nombre}`));
+    }
+  }, [actRunnerPlace]);
+
+  /** Keeps the closing nota naming the act the GM actually ended on. */
+  const handleActChange = useCallback((actName: string) => {
+    actPartNameRef.current = actName;
+  }, []);
 
   const endSummaryPreview = useMemo(() => {
     if (!session.active) return undefined;
@@ -1282,6 +1391,12 @@ export default function WorldPage() {
     );
   }, [model, selectedEntity]);
 
+  /** M5: the selection when it is a playable place (offers "Jugar"). */
+  const selectedPlayable = useMemo(
+    () => (isPlace(selectedEntity) && selectedEntity.playable ? selectedEntity : null),
+    [selectedEntity]
+  );
+
   const childNames = useMemo(() => {
     if (!model || !selectedEntity) return [];
     return (model.childrenOf.get(selectedEntity.id) ?? []).map(
@@ -1378,11 +1493,18 @@ export default function WorldPage() {
   // Model is immutable-after-scan, so the index never staleses within a scan.
   const searchIndex = useMemo(() => (model ? buildWorldSearchIndex(model) : null), [model]);
 
-  // Deep-link init: consume ?e= once, after the first successful scan.
+  // Deep-link init: consume ?e= once, after the first successful scan. When
+  // the persisted uiStore slice already restored this exact selection the
+  // navigation is skipped — recomputing the tier target would stomp the
+  // restored placement (module doc "M5 polish").
   useEffect(() => {
     if (status !== 'ready' || !model || deepLinkDoneRef.current) return;
     deepLinkDoneRef.current = true;
-    if (initialDeepLink && model.entidades.has(initialDeepLink)) {
+    if (
+      initialDeepLink &&
+      model.entidades.has(initialDeepLink) &&
+      useUiStore.getState().selectedEntityId !== initialDeepLink
+    ) {
       navigateToEntity(initialDeepLink);
     }
   }, [status, model, initialDeepLink, navigateToEntity]);
@@ -1394,6 +1516,24 @@ export default function WorldPage() {
     writeEntityToUrl(selectedEntityId);
   }, [status, selectedEntityId]);
 
+  /**
+   * M5: remembers the finished-gesture viewport under its tier key so pan/zoom
+   * survives tier round-trips AND reloads (persisted uiStore slice). The tier
+   * key is derived from the store with the same sistema validation the render
+   * path uses, so a stale focus commits under 'sector' — matching what the
+   * user actually saw.
+   */
+  const handleViewportCommit = useCallback((next: MapViewport) => {
+    setViewport(next);
+    const currentModel = useWorldStore.getState().model;
+    const ui = useUiStore.getState();
+    const isSystem =
+      ui.tier === 'system' &&
+      ui.focusSystemId !== null &&
+      currentModel?.entidades.get(ui.focusSystemId)?.tipo === 'sistema';
+    ui.actions.rememberViewport(isSystem ? `system:${ui.focusSystemId}` : 'sector', next);
+  }, []);
+
   // ── Fit-to-content viewport (per model AND per spatial tier) ─────────────
   useLayoutEffect(() => {
     if (status !== 'ready' || !model) return;
@@ -1403,6 +1543,14 @@ export default function WorldPage() {
     const focus = focusSistema?.id ?? null;
     const fitted = fittedRef.current;
     if (fitted.model === model && fitted.tier === activeTier && fitted.focus === focus) return;
+    // A remembered viewport for this tier (persisted gesture commit) beats
+    // the computed fit: the GM returns to where they left the map.
+    const remembered = useUiStore.getState().viewports[focus ? `system:${focus}` : 'sector'];
+    if (remembered) {
+      fittedRef.current = { model, tier: activeTier, focus };
+      setViewport({ ...remembered });
+      return;
+    }
     const el = mapWrapRef.current;
     if (!el) return;
     const width = el.clientWidth;
@@ -1512,6 +1660,7 @@ export default function WorldPage() {
                 size="sm"
                 onClick={() => setDiagnosticsOpen((open) => !open)}
                 aria-pressed={diagnosticsOpen}
+                className="min-h-11"
               >
                 <TriangleAlert
                   className={
@@ -1571,6 +1720,7 @@ export default function WorldPage() {
                 variant="outline"
                 data-session-lock-close
                 onClick={handleMarkLockClosed}
+                className="min-h-11"
               >
                 Marcar como cerrada
               </Button>
@@ -1597,7 +1747,7 @@ export default function WorldPage() {
             >
               <StarMap
                 viewport={viewport}
-                onViewportChange={setViewport}
+                onViewportChange={handleViewportCommit}
                 breadcrumb={breadcrumb}
                 showUnknown={showUnknown}
                 onToggleUnknown={() => uiActions.setShowUnknown(!showUnknown)}
@@ -1657,7 +1807,8 @@ export default function WorldPage() {
                     data-panel-tab={tab}
                     aria-selected={panelTab === tab}
                     onClick={() => uiActions.setPanelTab(tab)}
-                    className={`flex-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                    // min-h-11 = 44px tap target (M5 sweep).
+                    className={`min-h-11 flex-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
                       panelTab === tab
                         ? 'bg-background font-medium shadow-sm'
                         : 'text-muted-foreground hover:text-foreground'
@@ -1679,6 +1830,7 @@ export default function WorldPage() {
                         partyLocationId={siteListPartyId}
                         onSelect={selectEntity}
                         onBack={() => uiActions.closeSiteList()}
+                        onPlay={handleOpenActRunner}
                       />
                     </div>
                   )}
@@ -1695,15 +1847,32 @@ export default function WorldPage() {
                         }
                         onClose={() => uiActions.selectEntity(null)}
                         actions={
-                          canTravelToSelected ? (
-                            <Button
-                              size="sm"
-                              data-travel-here
-                              onClick={handleOpenTravelDialog}
-                            >
-                              <Rocket />
-                              Viajar aquí
-                            </Button>
+                          canTravelToSelected || selectedPlayable ? (
+                            <>
+                              {canTravelToSelected && (
+                                <Button
+                                  size="sm"
+                                  data-travel-here
+                                  onClick={handleOpenTravelDialog}
+                                  className="min-h-11"
+                                >
+                                  <Rocket />
+                                  Viajar aquí
+                                </Button>
+                              )}
+                              {selectedPlayable && (
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  data-play-act
+                                  onClick={() => handleOpenActRunner(selectedPlayable.id)}
+                                  className="min-h-11"
+                                >
+                                  <Play />
+                                  Jugar
+                                </Button>
+                              )}
+                            </>
                           ) : undefined
                         }
                       />
@@ -1806,6 +1975,16 @@ export default function WorldPage() {
             appliedEffects={eventApplied}
             canRedraw={eventDraw !== null && eventDrawCount < 2}
           />
+
+          {actRunnerPlace?.playable && worldFs && (
+            <ActRunner
+              config={actRunnerPlace.playable}
+              placeName={actRunnerPlace.nombre}
+              fsm={worldFs}
+              onClose={handleCloseActRunner}
+              onActChange={handleActChange}
+            />
+          )}
         </>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">

@@ -422,6 +422,19 @@ test.describe('World Mode - Travel & events', () => {
             .poll(() => readOPFSFile(page, journalPath))
             .toMatch(/- \[\d{2}:\d{2}\] ganancia: 200/);
 
+        // M5 hardening: the second efecto names a gauge that is NOT in
+        // manifest.medidores (oxigeno) — it must degrade to a nota entry +
+        // warning toast instead of journaling a medidor line for an
+        // invisible gauge.
+        await drawer.locator('[data-event-effect="1"]').click();
+        await expect(
+            page.getByText('Medidor desconocido «oxigeno» — anotado como nota')
+        ).toBeVisible();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] nota: Efecto no aplicado: medidor desconocido oxigeno/);
+        expect(await readOPFSFile(page, journalPath)).not.toMatch(/medidor: oxigeno/);
+
         // Resuelto closes the drawer and journals the evento line.
         await drawer.locator('[data-event-outcome="resuelto"]').click();
         await expect(drawer).toHaveAttribute('data-state', 'closed');
@@ -476,5 +489,192 @@ test.describe('World Mode - Travel & events', () => {
         await page.locator('[data-entity-id="sistema_verne"]').dblclick();
         await expect(page.locator('[data-tier="system"]')).toBeAttached();
         await expect(page.locator('[data-route-preview]')).toHaveCount(0);
+    });
+});
+
+// ── M5: ActRunner (scripted acts inside /world) ─────────────────────────────
+//
+// porto_verne is the fixture's playable place: lugares/porto_verne/ holds
+// plan/acto1_regreso.md in `:::` act format (flat plan file -> a single part
+// named "Part 1" by scanSessionFolder's legacy fallback).
+
+/** Selects porto_verne (system tier) and opens its ActRunner via Jugar. */
+async function openPortoVerneRunner(page: import('@playwright/test').Page): Promise<void> {
+    await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+    await page.locator('[data-entity-id="porto_verne"]').click();
+    await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+
+    await page.locator('[data-play-act]').click();
+    await expect(page.locator('[data-act-runner]')).toBeVisible();
+}
+
+test.describe('World Mode - ActRunner', () => {
+    test('Jugar opens the 3-panel act renderer and Cerrar returns to the cockpit', async ({ page }) => {
+        // No estado fixture on purpose: viewing prep without a session is legit.
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        // Header: place name + the part on the act selector.
+        await expect(runner).toContainText('Porto Verne');
+        await expect(runner.locator('[data-act-part="Part 1"]')).toBeVisible();
+
+        // Center column renders the fixture's :::leer read-aloud text...
+        await expect(
+            runner.getByText('Las luces del muelle se encienden en fila', { exact: false })
+        ).toBeVisible();
+        // ...the GM-notes rail carries the act-level :::gm reminder...
+        await expect(runner.getByText('Recordatorios del acto')).toBeVisible();
+        await expect(
+            runner.getByText('Acto de apertura del arco', { exact: false })
+        ).toBeVisible();
+        // ...and the actions rail shows the active section's :::accion card.
+        // (regex, not /^Acciones/: the rail header has a leading text node.)
+        await expect(runner.getByText(/Acciones · 1\. Reentrada/)).toBeVisible();
+        await expect(runner.getByText('Localizar a Kael Voss')).toBeVisible();
+
+        // Cerrar unmounts the overlay and the cockpit map is visible again.
+        await page.locator('[data-act-close]').click();
+        await expect(page.locator('[data-act-runner]')).toHaveCount(0);
+        await expect(page.locator('[data-entity-id="porto_verne"]')).toBeVisible();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+    });
+
+    test('with an active session the journal records the acto iniciado/cerrado notas', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        const journalPath = `mundo/diario/${journalName}`;
+
+        await openPortoVerneRunner(page);
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] nota: Acto iniciado: Part 1 @ Porto Verne/);
+
+        await page.locator('[data-act-close]').click();
+        await expect(page.locator('[data-act-runner]')).toHaveCount(0);
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] nota: Acto cerrado: Part 1 @ Porto Verne/);
+    });
+});
+
+// ── M5: UI persistence (sessionStorage slice, key world.ui.v1) ──────────────
+
+test.describe('World Mode - UI persistence', () => {
+    test('reload restores tier, selection, panel tab and map viewport', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+
+        // Drill into sistema_verne, select porto_verne, switch to Pistas.
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+        await page.locator('[data-entity-id="porto_verne"]').click();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+        await page.locator('[data-panel-tab="pistas"]').click();
+        await expect(page.locator('[data-leads-panel]')).toBeVisible();
+
+        // Pan the map: StarMap commits the viewport once the gesture ends and
+        // the page remembers it under the tier key 'system:sistema_verne'.
+        const svg = page.locator('svg[aria-label="Mapa del sector"]');
+        const box = await svg.boundingBox();
+        if (!box) throw new Error('mapa no visible');
+        const startX = box.x + box.width / 2;
+        const startY = box.y + box.height - 60; // clear of nodes and overlays
+        await page.mouse.move(startX, startY);
+        await page.mouse.down();
+        await page.mouse.move(startX + 140, startY + 25, { steps: 5 });
+        await page.mouse.up();
+        const transform = await svg.locator('> g').getAttribute('transform');
+        expect(transform).not.toBeNull();
+
+        // Reload: sessionStorage and OPFS survive; re-open through the hook.
+        await page.reload();
+        await openWorldViaOPFS(page);
+
+        // Tier + panel tab restored (?e= deep-link navigation is skipped when
+        // the persisted selection already matches — module doc "M5 polish").
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+        await expect(page.locator('[data-leads-panel]')).toBeVisible();
+        // The remembered per-tier viewport beats the fit-to-content compute.
+        await expect(svg.locator('> g')).toHaveAttribute('transform', transform!);
+        // The selection survived too.
+        await page.locator('[data-panel-tab="entidad"]').click();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+    });
+});
+
+// ── M5: console lock-in ─────────────────────────────────────────────────────
+//
+// The world happy path must not emit ANY console error or warning: partyStore
+// deliberately console.warns on misuse (log without session, double start...)
+// and React warns on real bugs (keys, act, hydration), so new noise here is a
+// regression. Either fix it or allowlist it BELOW with a justification.
+//
+// INSPECTED (M5, next dev + Chromium): the happy path currently emits ZERO
+// error/warning-level messages — only `[log] [HMR] connected` and the React
+// DevTools `[info]` ad, both below the filter. The entries here pre-allowlist
+// dev-server tooling chatter whose console channel has shifted between Next
+// versions; they are NOT app messages.
+const CONSOLE_ALLOWLIST: RegExp[] = [
+    // next dev (the e2e web server) Fast Refresh / HMR chatter.
+    /\[Fast Refresh\]/,
+    /\[HMR\]/,
+    // React DevTools advertisement — printed by React development builds.
+    /Download the React DevTools/,
+];
+
+test.describe('World Mode - Console hygiene', () => {
+    test('happy path emits no console errors or warnings', async ({ page }) => {
+        const issues: string[] = [];
+        page.on('console', (message) => {
+            const type = message.type();
+            if (type !== 'error' && type !== 'warning') return;
+            const text = message.text();
+            if (CONSOLE_ALLOWLIST.some((pattern) => pattern.test(text))) return;
+            issues.push(`[${type}] ${text}`);
+        });
+        page.on('pageerror', (error) => issues.push(`[pageerror] ${error.message}`));
+
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        // Session + a quick-log write reaching OPFS.
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await page.locator('[data-quicklog="creditos"]').click();
+        await page.locator('[data-quicklog-delta="100"]').click();
+        await expect(page.locator('[data-party-bar] [data-creditos="1340"]')).toBeVisible();
+
+        // Event draw + resolve.
+        await page.locator('[data-quicklog="evento"]').click();
+        const drawer = page.locator('[data-event-drawer]');
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+        await drawer.locator('[data-event-outcome="ignorado"]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'closed');
+
+        // ActRunner open + close (audio manager mount/unmount included).
+        await openPortoVerneRunner(page);
+        await page.locator('[data-act-close]').click();
+        await expect(page.locator('[data-act-runner]')).toHaveCount(0);
+
+        // End session (journal flush + forced estado write).
+        await page.locator('[data-session-end]').click();
+        await page.locator('[data-session-end-confirm-button]').click();
+        await expect(page.locator('[data-session-start]')).toBeVisible();
+
+        expect(issues).toEqual([]);
     });
 });

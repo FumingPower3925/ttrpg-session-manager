@@ -234,10 +234,12 @@ export function StarMap({
         <div className="ml-auto">
           <Button
             variant="ghost"
-            size="icon-sm"
+            size="icon"
             onClick={onToggleCollapsed}
             title="Expandir mapa"
             aria-label="Expandir mapa"
+            // size-11 = 44px tap target (M5 sweep).
+            className="size-11"
           >
             <Maximize2 />
           </Button>
@@ -271,25 +273,28 @@ export function StarMap({
           <Breadcrumbs items={breadcrumb} />
         </div>
         {header && <div className="pointer-events-auto">{header}</div>}
+        {/* size-11 = 44px tap targets on the overlay controls (M5 sweep). */}
         <div className="pointer-events-auto flex items-center gap-1 rounded-md border bg-background/80 p-1 backdrop-blur-sm">
           <Button
             variant="ghost"
-            size="icon-sm"
+            size="icon"
             onClick={onToggleUnknown}
             title={showUnknown ? 'Ocultar entidades desconocidas' : 'Mostrar entidades desconocidas'}
             aria-label={
               showUnknown ? 'Ocultar entidades desconocidas' : 'Mostrar entidades desconocidas'
             }
             aria-pressed={showUnknown}
+            className="size-11"
           >
             {showUnknown ? <Eye /> : <EyeOff />}
           </Button>
           <Button
             variant="ghost"
-            size="icon-sm"
+            size="icon"
             onClick={onToggleCollapsed}
             title="Plegar mapa"
             aria-label="Plegar mapa"
+            className="size-11"
           >
             <Minimize2 />
           </Button>
@@ -311,7 +316,9 @@ function Breadcrumbs({ items }: { items: BreadcrumbItem[] }) {
               <button
                 type="button"
                 onClick={item.onClick}
-                className="rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                // before: pseudo extends the tap area to ~44px without growing
+                // the breadcrumb pill (M5 tap-target sweep).
+                className="relative rounded px-1 py-0.5 text-muted-foreground transition-colors before:absolute before:-inset-x-0.5 before:-inset-y-2 before:content-[''] hover:bg-accent hover:text-accent-foreground"
               >
                 {item.label}
               </button>
