@@ -8,6 +8,11 @@
  * it, because its props are SearchManager/partId-shaped while this one
  * consumes WorldSearchResult ids. Selecting a result (click or Enter for the
  * top hit) hands the entity id to the page, which navigates the map.
+ *
+ * Enter searches the CURRENT input text synchronously (the debounced results
+ * can lag what was just typed), so the top hit always matches the query on
+ * screen. The sr-only DialogDescription satisfies Radix's aria-describedby
+ * expectation (play's SearchDialog predates the warning and never added one).
  */
 
 import { useEffect, useState } from 'react';
@@ -16,6 +21,7 @@ import { WorldSearchIndex, WorldSearchResult } from '@/lib/world/worldSearch';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -72,11 +78,15 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
     setQuery('');
   };
 
+  // Enter must act on what the input says NOW, not on the last debounced
+  // results (typing fast + Enter within DEBOUNCE_MS used to open a stale hit).
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Enter' && results.length > 0) {
-      event.preventDefault();
-      handleSelect(results[0]);
-    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const fresh = index && query.trim() ? index.search(query, 10) : [];
+    setResults(fresh);
+    setIsSearching(false);
+    if (fresh.length > 0) handleSelect(fresh[0]);
   };
 
   return (
@@ -93,6 +103,10 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
       <DialogContent className="max-w-2xl" data-world-search>
         <DialogHeader>
           <DialogTitle>Buscar en el mundo</DialogTitle>
+          <DialogDescription className="sr-only">
+            Busca sistemas, lugares, facciones, PNJs, pistas y tramas. Enter abre el primer
+            resultado.
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <Input

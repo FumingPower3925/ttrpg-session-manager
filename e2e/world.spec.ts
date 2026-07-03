@@ -335,3 +335,146 @@ test.describe('World Mode - Session recorder', () => {
         expect(frontmatterBody(estadoFinal)).toBe(frontmatterBody(grupoFixture));
     });
 });
+
+// ── M4: travel + events ─────────────────────────────────────────────────────
+
+test.describe('World Mode - Travel & events', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+    });
+
+    /** Starts a session and returns the diario path (single file, sesion 1). */
+    async function startSession(page: import('@playwright/test').Page): Promise<string> {
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        return `mundo/diario/${journalName}`;
+    }
+
+    test('travel flow: Viajar aquí -> dialog -> stepper -> arrival with journal trail', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        // Select kovar_iii at the system tier (party is at porto_verne).
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await page.locator('[data-entity-id="kovar_iii"]').click();
+        await expect(page.locator('[data-entity-panel="kovar_iii"]')).toBeVisible();
+
+        await page.locator('[data-travel-here]').click();
+        const dialog = page.locator('[data-travel-dialog]');
+        await expect(dialog).toBeVisible();
+        // Intra-system hop: 1 flat day, no consumption (pips stay 2 -> 2).
+        await expect(dialog.locator('[data-travel-total-dias="1"]')).toBeVisible();
+        await expect(
+            dialog.locator('[data-travel-medidor="combustible"][data-antes="2"][data-despues="2"]')
+        ).toBeAttached();
+
+        await page.locator('[data-travel-confirm]').click();
+        const stepper = page.locator('[data-travel-stepper]');
+        await expect(stepper).toBeVisible();
+        await expect(stepper).toHaveAttribute('data-dia', '1');
+        await expect(stepper).toHaveAttribute('data-total-dias', '1');
+
+        // Undo is blocked mid-travel (the stepper's day counter lives outside
+        // the journal, so a replay-undo could not revert it)…
+        await page.locator('[data-panel-tab="diario"]').click();
+        await expect(page.locator('[data-journal-undo]')).toBeDisabled();
+
+        // Continuar on the last day = arrival: stepper gone, breadcrumb moved.
+        await page.locator('[data-travel-next]').click();
+        await expect(page.locator('[data-travel-stepper]')).toHaveCount(0);
+        // …and re-enables once the trip resolves (arrival re-selects the
+        // destination entity, which flips the panel back to Entidad).
+        await page.locator('[data-panel-tab="diario"]').click();
+        await expect(page.locator('[data-journal-undo]')).toBeEnabled();
+        await expect(
+            page.locator('[data-party-bar]').getByRole('navigation', { name: 'Ubicación' })
+        ).toContainText('Kovar III');
+
+        // Full journal trail: rumbo -> dia -> llegada.
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] llegada: kovar_iii \| dia 4128/);
+        const journal = await readOPFSFile(page, journalPath);
+        expect(journal).toMatch(
+            /- \[\d{2}:\d{2}\] rumbo: kovar_iii \| 1 dias, llegada estimada dia 4128/
+        );
+        expect(journal).toMatch(/- \[\d{2}:\d{2}\] dia: 4127->4128/);
+    });
+
+    test('estancia event: draw, apply the ganancia efecto, resolve', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        await page.locator('[data-quicklog="evento"]').click();
+        const drawer = page.locator('[data-event-drawer]');
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+        // The only estancia table in region nucleo has a single si-free event.
+        await expect(drawer).toContainText('Encargo de descarga');
+
+        // One-tap ganancia efecto -> party bar + journal line.
+        await drawer.locator('[data-event-effect="0"]').click();
+        await expect(page.locator('[data-party-bar] [data-creditos="1440"]')).toBeVisible();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] ganancia: 200/);
+
+        // Resuelto closes the drawer and journals the evento line.
+        await drawer.locator('[data-event-outcome="resuelto"]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'closed');
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] evento: estancia_porto#e01 \| resuelto/);
+    });
+
+    test('LeadsBoard: accionable star, transition, live re-derivation on gasto', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        // Default tab = Accionables; deuda_kael_zara (creditos>=800 vs 1240) stars.
+        await page.locator('[data-panel-tab="pistas"]').click();
+        const row = page.locator('[data-lead-id="deuda_kael_zara"]');
+        await expect(row).toBeVisible();
+        await expect(row.getByLabel('Accionable')).toBeVisible();
+
+        // One-tap transition activa -> en_curso is journaled.
+        await row.locator('[data-lead-transition="en_curso"]').click();
+        await expect(page.locator('[data-lead-id="deuda_kael_zara"]')).toHaveAttribute(
+            'data-lead-estado',
+            'en_curso'
+        );
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] pista: deuda_kael_zara activa->en_curso/);
+
+        // Dropping below 800 credits re-derives: the lead leaves Accionables...
+        await page.locator('[data-quicklog="creditos"]').click();
+        const custom = page.locator('[data-quicklog-creditos-custom]');
+        await custom.fill('-700');
+        await custom.press('Enter');
+        await expect(page.locator('[data-party-bar] [data-creditos="540"]')).toBeVisible();
+        await expect(page.locator('[data-lead-id="deuda_kael_zara"]')).toHaveCount(0);
+
+        // ...and shows starless under Activas.
+        await page.locator('[data-leads-tab="activas"]').click();
+        await expect(page.locator('[data-lead-id="deuda_kael_zara"]')).toBeVisible();
+        await expect(
+            page.locator('[data-lead-id="deuda_kael_zara"]').getByLabel('Accionable')
+        ).toHaveCount(0);
+    });
+
+    test('RoutePreview shows at sector tier for a cross-system selection and hides on drill-in', async ({ page }) => {
+        // porto_verne -> sistema_kessler: 1 intra day + ceil(√45)=7 sector days.
+        await page.locator('[data-entity-id="sistema_kessler"]').click();
+        const preview = page.locator('[data-route-preview]');
+        await expect(preview).toBeVisible();
+        await expect(preview).toContainText('8 días · −1 combustible');
+
+        // System tier renders no routes layer -> the preview is gone.
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+        await expect(page.locator('[data-route-preview]')).toHaveCount(0);
+    });
+});

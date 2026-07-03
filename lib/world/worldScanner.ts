@@ -8,7 +8,9 @@
 
 import { FileReference, SessionConfig } from '@/types';
 import {
+    CondContext,
     Conocimiento,
+    EventTable,
     FactionEntity,
     FactionPresence,
     JournalDay,
@@ -25,9 +27,11 @@ import {
 } from '@/types/world';
 import { scanSessionFolder } from '@/lib/sessionScanner';
 import { fileNameToDisplayName, getSubdirectory, readFileContent } from '@/lib/fsScanUtils';
+import { buildCondContext, evalConditions, isParseableCondition } from './conditions';
+import { parseEventTable } from './eventEngine';
 import { parseJournal, parseLlegadaPayload, parseSabePayload } from './logEntries';
 import { ancestryChain } from './worldNav';
-import { parsePartyState } from './partyState';
+import { defaultPartyState, parsePartyState } from './partyState';
 import {
     asCoords,
     asNumber,
@@ -212,8 +216,8 @@ async function readPartyState(
 type EntityKind = 'sistema' | 'lugar' | 'faccion' | 'pnj' | 'pista' | 'trama';
 
 interface RawEntityFile {
-    /** 'diario' records become JournalDays, never entities. */
-    kind: EntityKind | 'diario';
+    /** 'diario' records become JournalDays and 'evento' records EventTables — never entities. */
+    kind: EntityKind | 'diario' | 'evento';
     /** filename minus .md, or the folder name for playable place folders. */
     id: string;
     /** Path relative to the campaign folder. */
@@ -231,8 +235,8 @@ interface TaskResult {
 type ScanTask = () => Promise<TaskResult>;
 
 /**
- * Flat entity dirs scanned as `*.md` files. eventos/ is still skipped (M4);
- * diario/ is scanned separately below (journals, not entities) and
+ * Flat entity dirs scanned as `*.md` files. eventos/ and diario/ are scanned
+ * separately below (event tables and journals, not entities) and
  * estado/grupo.md is read via readPartyState.
  */
 const FLAT_KIND_DIRS: ReadonlyArray<{ kind: EntityKind; dir: string }> = [
@@ -314,6 +318,24 @@ async function collectTasks(mundoDir: FileSystemDirectoryHandle): Promise<ScanTa
         }
         for (const dir of dirs) {
             tasks.push(() => scanPlaceFolder(dir.name, dir.handle));
+        }
+    }
+
+    // eventos/: event tables (M4) — parsed into model.tablas, not entities.
+    const eventosDir = await getSubdirectory(mundoDir, ENTITY_DIRS.eventos);
+    if (eventosDir) {
+        const { files } = await listEntries(eventosDir);
+        for (const file of files) {
+            const filePath = `${WORLD_DIR}/${ENTITY_DIRS.eventos}/${file.name}`;
+            tasks.push(async () => ({
+                record: {
+                    kind: 'evento',
+                    id: stripMd(file.name),
+                    filePath,
+                    content: await readFileContent(file.handle),
+                },
+                issues: [],
+            }));
         }
     }
 
@@ -465,6 +487,22 @@ function parseManifest(content: string | null, problemas: ValidationIssue[]): Wo
     if (data.medidores === undefined) missing('medidores');
     if (data.regiones === undefined) missing('regiones');
 
+    const medidores =
+        data.medidores === undefined ? [...fallback.medidores] : asStringArray(data.medidores);
+    // Whitespace would break the strict `medidor <nombre> A->B` journal
+    // payload grammar (the name parses as \S+) AND the condition grammar.
+    for (const nombre of medidores) {
+        if (/\s/.test(nombre)) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: MANIFEST_PATH,
+                mensaje:
+                    `Nombre de medidor con espacios: "${nombre}" — ` +
+                    'no funciona en las entradas "medidor" del diario ni en condiciones',
+            });
+        }
+    }
+
     return {
         nombre: nombre ?? fallback.nombre,
         calendario: {
@@ -483,8 +521,7 @@ function parseManifest(content: string | null, problemas: ValidationIssue[]): Wo
             viveresCadaDias:
                 asNumber(viaje?.viveres_cada_dias) ?? fallback.viaje.viveresCadaDias,
         },
-        medidores:
-            data.medidores === undefined ? fallback.medidores : asStringArray(data.medidores),
+        medidores,
         regiones: data.regiones === undefined ? fallback.regiones : asStringArray(data.regiones),
     };
 }
@@ -783,12 +820,23 @@ function assembleModel(
     const pnjs: NpcEntity[] = [];
     const pistas: Lead[] = [];
     const tramas: Trama[] = [];
+    const tablas: EventTable[] = [];
     const diario: JournalDay[] = [];
 
     for (const record of records) {
         // Journals are not entities: no id dedupe, own tolerant parser.
         if (record.kind === 'diario') {
             diario.push(parseJournal(record.content, record.filePath));
+            continue;
+        }
+
+        // Event tables live in model.tablas only (drawn from the EventDrawer,
+        // never selected on the map) — like journals, they stay out of the
+        // entity map and its global id dedupe.
+        if (record.kind === 'evento') {
+            const parsedTable = parseEventTable(record.content, record.filePath, record.id);
+            problemas.push(...parsedTable.issues);
+            tablas.push(parsedTable.table);
             continue;
         }
 
@@ -865,6 +913,7 @@ function assembleModel(
         pnjs,
         pistas,
         tramas,
+        tablas,
         problemas,
         childrenOf,
         estadoGrupo,
@@ -876,7 +925,7 @@ function assembleModel(
     // sees the post-session world even before the agent maintenance loop.
     overlayUnprocessedJournals(model);
     warnOrphans(entidades, sistemas, lugares, facciones, pnjs, pistas, tramas, problemas);
-    deriveLeadActionability(entidades, pistas, problemas);
+    deriveLeadActionability(model, pistas, problemas);
     groupTramaPistas(tramas, pistas);
 
     return model;
@@ -1152,21 +1201,57 @@ function deriveRegionInheritance(
     }
 }
 
+/** `manual: <texto>` requisito — the app never evaluates it, the GM does. */
+const MANUAL_REQUISITO = /^manual\s*:/;
+
 /**
- * Lead.accionable (derived, never stored): estadoPista activa/en_curso AND donde
- * is absent-or-conocido/visitado. Any requisitos entry degrades the result to
- * 'manual' ("según GM") — evalCondition() arrives in M4; until then the app
- * cannot check condition strings against PartyState.
+ * Lead.accionable (derived, never stored): estadoPista activa/en_curso AND
+ * donde absent-or-conocido/visitado AND requisitos satisfied (M4):
+ *   - all conditions true            -> true
+ *   - any `manual:` entry OR any condition null (unparseable/unevaluable)
+ *                                    -> 'manual' ("según GM" — the GM decides,
+ *                                       so null/manual dominate a false)
+ *   - otherwise (some condition false) -> false
+ * Conditions evaluate through evalConditions against a CondContext built from
+ * estado/grupo.md (party defaults when the file is absent, lugarActual =
+ * estadoGrupo.ubicacion). Syntactically bad requisitos also earn an aviso.
  *
- * Exported for /world (M3): live pista transitions re-run it on the touched
- * lead (with a throwaway issues array) so `accionable` stays coherent.
+ * Exported for /world: live pista transitions re-run it on the touched lead
+ * (with a throwaway issues array). SIGNATURE CHANGED IN M4: takes the whole
+ * WorldModel (was the entidades map) because the context needs ancestry +
+ * estadoGrupo; pass `ctx` to evaluate against LIVE party numbers instead of
+ * the scan-frozen estadoGrupo (the page builds it via buildCondContext).
  */
 export function deriveLeadActionability(
-    entidades: Map<string, WorldEntityBase>,
+    model: WorldModel,
     pistas: Lead[],
-    problemas: ValidationIssue[]
+    problemas: ValidationIssue[],
+    ctx?: CondContext
 ): void {
+    const entidades = model.entidades;
+    const context =
+        ctx ??
+        buildCondContext(
+            model,
+            model.estadoGrupo ?? defaultPartyState(),
+            model.estadoGrupo?.ubicacion ?? null
+        );
+
     for (const pista of pistas) {
+        const manual = pista.requisitos.some((req) => MANUAL_REQUISITO.test(req.trim()));
+        const condiciones = pista.requisitos.filter((req) => !MANUAL_REQUISITO.test(req.trim()));
+
+        // File-content validation — independent of the party's current state.
+        for (const cond of condiciones) {
+            if (!isParseableCondition(cond)) {
+                problemas.push({
+                    nivel: 'aviso',
+                    archivo: pista.filePath,
+                    mensaje: `Requisito no interpretable: "${cond}" — la pista queda "según GM"`,
+                });
+            }
+        }
+
         const estadoOk = pista.estadoPista === 'activa' || pista.estadoPista === 'en_curso';
 
         let dondeOk = true;
@@ -1190,11 +1275,10 @@ export function deriveLeadActionability(
 
         if (!estadoOk || !dondeOk) {
             pista.accionable = false;
-        } else if (pista.requisitos.length > 0) {
-            pista.accionable = 'manual';
-        } else {
-            pista.accionable = true;
+            continue;
         }
+        const cumplidas = evalConditions(condiciones, context); // [] -> true
+        pista.accionable = manual || cumplidas === null ? 'manual' : cumplidas;
     }
 }
 

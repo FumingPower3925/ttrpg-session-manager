@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Conocimiento, PlaceEntity, SystemEntity } from '@/types/world';
 import { EntityNode } from './EntityNode';
 import { PartyMarker } from './PartyMarker';
@@ -33,6 +34,8 @@ interface SectorViewProps {
   showUnknown: boolean;
   onSelect: (id: string) => void;
   onDrillIn: (id: string) => void;
+  /** M4 slot: RoutePreview content rendered into the routes layer. */
+  routes?: ReactNode;
 }
 
 export function SectorView({
@@ -45,6 +48,7 @@ export function SectorView({
   showUnknown,
   onSelect,
   onDrillIn,
+  routes,
 }: SectorViewProps) {
   const nodes: SectorNode[] = [
     ...sistemas.map((sistema) => ({
@@ -83,7 +87,7 @@ export function SectorView({
   return (
     <>
       {/* M4 slot: RoutePreview renders travel lines into this layer. */}
-      <g data-layer="routes" />
+      <g data-layer="routes">{routes}</g>
       {partyNode && <PartyMarker x={partyNode.x} y={partyNode.y} />}
       {visible.map((node) => (
         <EntityNode

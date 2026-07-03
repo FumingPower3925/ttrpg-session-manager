@@ -30,7 +30,6 @@ import {
 } from 'lucide-react';
 
 const DISABLED_TITLE = 'Inicia sesión para registrar';
-const EVENTO_TITLE = 'Disponible en M4';
 const MEDIDOR_MAX = 5;
 
 const MEDIDOR_ICONS: Record<string, LucideIcon> = {
@@ -65,6 +64,12 @@ interface QuickLogBarProps {
   onMedidor: (nombre: string, to: number) => void;
   /** Opens the leads tab/dialog (page-owned). */
   onPista: () => void;
+  /**
+   * Opens the estancia EventDrawer (page-owned). Enabled whenever the session
+   * runs — with no applicable tables the drawer shows its empty state instead
+   * of disabling the button (the GM discovers why there).
+   */
+  onEvento: () => void;
   /** Freeform note text (non-empty, trimmed). */
   onNota: (text: string) => void;
 }
@@ -78,6 +83,7 @@ export function QuickLogBar({
   onCreditos,
   onMedidor,
   onPista,
+  onEvento,
   onNota,
 }: QuickLogBarProps) {
   /** Which popover is open: 'creditos' | medidor name | null. */
@@ -220,9 +226,11 @@ export function QuickLogBar({
         id="evento"
         icon={Zap}
         label="Evento"
-        enabled={false}
-        disabledTitle={EVENTO_TITLE}
-        onClick={() => undefined}
+        enabled={enabled}
+        onClick={() => {
+          setOpenPopover(null);
+          onEvento();
+        }}
       />
 
       {/* Nota: inline expanding input (Enter registra, Escape pliega). */}

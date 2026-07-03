@@ -90,6 +90,7 @@ function makeModel(): WorldModel {
         pnjs: [],
         pistas: [],
         tramas: [],
+        tablas: [],
         problemas: [],
         childrenOf: new Map(),
         estadoGrupo: null,

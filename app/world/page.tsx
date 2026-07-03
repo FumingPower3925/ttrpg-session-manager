@@ -38,6 +38,46 @@
  *   - Crash mirror: partyStore's SessionMirror (sessionStorage) -> recovery
  *     banner; `sesion_activa: true` without a mirror -> stale-lock notice
  *     (plan Part A anti-conflict protocol).
+ *
+ * M4 travel + events wiring (plan Part B "Travel" + "Cockpit"):
+ *   - Selecting a spatial non-current entity offers "Viajar aquí" (EntityPanel
+ *     actions) and — when origin/destination resolve to DIFFERENT sector roots
+ *     with coordinates and the plan is not portal — a RoutePreview line on the
+ *     sector tier (system tier renders no routes layer; preview also hides
+ *     while a trip is running).
+ *   - Confirming the TravelDialog (active session required — otherwise toast
+ *     "Inicia sesión para viajar") journals `rumbo` and arms the TravelStepper.
+ *     CONSUMPTION SCHEDULE: travelDaySchedule() spreads each leg's combustible
+ *     inside that leg (unit i of C on leg-day ceil(i·D/C); the default 1 per
+ *     tramo lands on the sector leg's LAST day) and charges 1 víveres every
+ *     viveresCadaDias-th day of the whole trip — per-day amounts sum exactly
+ *     to the plan totals, so stepping == "Resolver resto". Gauges clamp at 0
+ *     (GM override); the clamped medidor entry is what gets journaled.
+ *   - REGION OF ROUTE for travel event draws: the CondContext anchors on the
+ *     ORIGIN until the sector leg completes (dia <= sectorLegEndDay), then on
+ *     the DESTINATION — ubicacion itself only changes at arrival. Intra-system
+ *     trips have no sector leg, so the anchor stays on the origin (same root).
+ *   - CANCEL SEMANTICS: cancelling mid-travel stops the stepper and journals
+ *     ONLY a nota ("Viaje interrumpido hacia X en dia N"); ubicacion stays at
+ *     the origin, already-stepped days stay elapsed, and the `rumbo` field
+ *     stays set in estado until the next llegada clears it — there is no
+ *     rumbo-clearing entry type by design; the agent reconciles from the nota.
+ *   - UNDO IS DISABLED WHILE A TRIP RUNS (canUndo requires travel === null):
+ *     the TravelRun day counter/schedule are component state the replay-undo
+ *     cannot revert, so a mid-travel undo would desync stepper vs journal
+ *     (consumption already charged for a day the store no longer counts).
+ *     The escape hatch is Cancelar (position kept), then undo normally.
+ *   - PORTAL plans skip rumbo/days entirely: confirm journals the llegada
+ *     immediately (comentario "por portal") and applies the knowledge bump.
+ *   - Event `:::efecto` lines convert to journal entries against CURRENT party
+ *     state (gasto/ganancia direct; medidor deltas clamp 0..5; sabe also bumps
+ *     the in-memory conocimiento — never lowering — and pista mutates
+ *     estadoPista like a manual transition). Unparseable/unknown effects
+ *     degrade to a nota entry so nothing is silently lost. Redraw is allowed
+ *     once per drawer opening and journals nothing by itself.
+ *   - rederiveLeads(): every pista/medidor/creditos/llegada/sabe mutation (and
+ *     undo) re-runs deriveLeadActionability over ALL pistas with a live
+ *     CondContext, then bumps modelRev.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -64,7 +104,16 @@ import {
   applyLlegadaConocimiento,
   deriveLeadActionability,
 } from '@/lib/world/worldScanner';
+import { buildCondContext } from '@/lib/world/conditions';
+import { applicableTables, drawEvent } from '@/lib/world/eventEngine';
 import {
+  computeTravelPlan,
+  sectorLegEndDay,
+  travelDaySchedule,
+} from '@/lib/world/travel';
+import type { TravelDayConsumption } from '@/lib/world/travel';
+import {
+  CONOCIMIENTOS,
   ENTITY_DIRS,
   ESTADOS_PISTA,
   PARTY_STATE_FILE,
@@ -78,7 +127,7 @@ import {
   sectorNodeFor,
   tierTargetFor,
 } from '@/lib/world/worldNav';
-import { StarMap } from '@/components/world/StarMap';
+import { StarMap, useMapScale } from '@/components/world/StarMap';
 import type { BreadcrumbItem, MapViewport } from '@/components/world/StarMap';
 import { SectorView, WORLD_SCALE } from '@/components/world/SectorView';
 import { SystemView, systemFitRadius } from '@/components/world/SystemView';
@@ -93,20 +142,32 @@ import { MoverDialog } from '@/components/world/MoverDialog';
 import type { MoverDialogLugar } from '@/components/world/MoverDialog';
 import { JournalPanel } from '@/components/world/JournalPanel';
 import { SessionRecoveryBanner } from '@/components/world/SessionRecoveryBanner';
+import { LeadsBoard } from '@/components/world/LeadsBoard';
+import { EventDrawer } from '@/components/world/EventDrawer';
+import type { EventOutcome } from '@/components/world/EventDrawer';
+import { TravelDialog } from '@/components/world/TravelDialog';
+import { TravelStepper } from '@/components/world/TravelStepper';
+import { RoutePreview } from '@/components/world/RoutePreview';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import type {
+  Conocimiento,
+  EventEffect,
+  EventTable,
   FactionPresence,
   JournalDay,
+  JournalEntry,
   Lead,
   PartyState,
   PlaceEntity,
   SystemEntity,
+  TravelPlan,
   WorldEntityBase,
+  WorldEvent,
   WorldModel,
 } from '@/types/world';
-import { FolderOpen, Globe, Lock, RefreshCw, Star, TriangleAlert } from 'lucide-react';
+import { FolderOpen, Globe, Lock, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -177,6 +238,60 @@ function toPanelLead(pista: Lead): EntityPanelLead {
   };
 }
 
+// ── M4 travel + events module helpers ────────────────────────────────────────
+
+/** A running trip (armed by the TravelDialog confirm, driven by the stepper). */
+interface TravelRun {
+  plan: TravelPlan;
+  destinoId: string;
+  destinoName: string;
+  /** 1-based day ABOUT to be traveled ("Día N de total"). */
+  dia: number;
+  /** Per-day consumption (index dia-1); see travelDaySchedule docs. */
+  schedule: TravelDayConsumption[];
+  /** Last 1-based day of the sector leg — event anchor switches after it. */
+  sectorEndDay: number;
+}
+
+interface RoutePreviewData {
+  fromXY: { x: number; y: number };
+  toXY: { x: number; y: number };
+  label: string;
+}
+
+/**
+ * Bridges the page-computed preview data to RoutePreview, which needs the
+ * LIVE zoom k. Must render inside StarMap's children (MapScaleContext).
+ */
+function RouteLayer({ data }: { data: RoutePreviewData | null }) {
+  const k = useMapScale();
+  if (!data) return null;
+  return <RoutePreview fromXY={data.fromXY} toXY={data.toXY} label={data.label} k={k} />;
+}
+
+/** Split an efecto value on its first `|`: machine part + free comment. */
+function splitEffectValue(value: string): { main: string; comentario?: string } {
+  const idx = value.indexOf('|');
+  if (idx === -1) return { main: value.trim() };
+  const comentario = value.slice(idx + 1).trim();
+  return { main: value.slice(0, idx).trim(), comentario: comentario || undefined };
+}
+
+/** Raises an entity's conocimiento to at least `nivel` in memory — never lowers. */
+function bumpConocimientoInMemory(
+  entity: WorldEntityBase | undefined,
+  nivel: Conocimiento
+): void {
+  if (!entity) return;
+  if (CONOCIMIENTOS.indexOf(nivel) > CONOCIMIENTOS.indexOf(entity.conocimiento)) {
+    entity.conocimiento = nivel;
+  }
+}
+
+function diasLabel(dias: number): string {
+  return dias === 1 ? '1 día' : `${dias} días`;
+}
+
 export default function WorldPage() {
   const status = useWorldStore((s) => s.status);
   const model = useWorldStore((s) => s.model);
@@ -217,6 +332,43 @@ export default function WorldPage() {
   // pista transitions); bumping this counter re-renders the derived views.
   const [modelRev, setModelRev] = useState(0);
   const touchModel = useCallback(() => setModelRev((rev) => rev + 1), []);
+
+  // M4 travel + events state.
+  const [travelDialog, setTravelDialog] = useState<{
+    targetId: string;
+    plan: TravelPlan | null;
+  } | null>(null);
+  const [travel, setTravel] = useState<TravelRun | null>(null);
+  const [eventOpen, setEventOpen] = useState(false);
+  const [eventDraw, setEventDraw] = useState<{ table: EventTable; event: WorldEvent } | null>(
+    null
+  );
+  const [eventApplied, setEventApplied] = useState<number[]>([]);
+  const [eventDrawCount, setEventDrawCount] = useState(0);
+  /** Contexto + place anchor of the current drawer opening (redraw reuses them). */
+  const eventSourceRef = useRef<{ contexto: 'viaje' | 'estancia'; anchorId: string | null }>({
+    contexto: 'estancia',
+    anchorId: null,
+  });
+
+  /**
+   * M4: re-derives `accionable` for ALL pistas against a LIVE CondContext
+   * (current partyStore numbers + ubicacion ancestry) and bumps modelRev.
+   * Cheap (pure loops over the scanned pistas) — called after every
+   * pista/medidor/creditos/llegada/sabe mutation and after undo.
+   */
+  const rederiveLeads = useCallback(() => {
+    const currentModel = useWorldStore.getState().model;
+    if (!currentModel) return;
+    const party = usePartyStore.getState();
+    deriveLeadActionability(
+      currentModel,
+      currentModel.pistas,
+      [],
+      buildCondContext(currentModel, party, party.ubicacion)
+    );
+    setModelRev((rev) => rev + 1);
+  }, []);
 
   const mapWrapRef = useRef<HTMLDivElement>(null);
   const fittedRef = useRef<{
@@ -538,22 +690,30 @@ export default function WorldPage() {
 
   // ── M3: quick-log actions (partyStore.log is the single mutation point) ───
 
-  const handleCreditos = useCallback((delta: number) => {
-    if (delta === 0) return;
-    const logged = usePartyStore
-      .getState()
-      .actions.log(delta < 0 ? makeEntry.gasto(-delta) : makeEntry.ganancia(delta));
-    if (!logged) return;
-    toast.success(`${delta > 0 ? '+' : ''}${delta} créditos anotados`);
-  }, []);
+  const handleCreditos = useCallback(
+    (delta: number) => {
+      if (delta === 0) return;
+      const logged = usePartyStore
+        .getState()
+        .actions.log(delta < 0 ? makeEntry.gasto(-delta) : makeEntry.ganancia(delta));
+      if (!logged) return;
+      rederiveLeads(); // requisitos like creditos>=N track the live balance
+      toast.success(`${delta > 0 ? '+' : ''}${delta} créditos anotados`);
+    },
+    [rederiveLeads]
+  );
 
-  const handleMedidor = useCallback((nombre: string, to: number) => {
-    const store = usePartyStore.getState();
-    const from = store.medidores[nombre] ?? 0;
-    if (from === to) return;
-    if (!store.actions.log(makeEntry.medidor(nombre, from, to))) return;
-    toast.success(`${medidorLabel(nombre)} ${from} → ${to}`);
-  }, []);
+  const handleMedidor = useCallback(
+    (nombre: string, to: number) => {
+      const store = usePartyStore.getState();
+      const from = store.medidores[nombre] ?? 0;
+      if (from === to) return;
+      if (!store.actions.log(makeEntry.medidor(nombre, from, to))) return;
+      rederiveLeads();
+      toast.success(`${medidorLabel(nombre)} ${from} → ${to}`);
+    },
+    [rederiveLeads]
+  );
 
   const handleNota = useCallback((text: string) => {
     if (!usePartyStore.getState().actions.log(makeEntry.nota(text))) return;
@@ -570,11 +730,11 @@ export default function WorldPage() {
       // (applyLlegadaConocimiento): destination ≥ visitado, `en:` ancestors
       // ≥ conocido. The files are updated later by the agent from the journal.
       applyLlegadaConocimiento(currentModel, id);
-      touchModel();
+      rederiveLeads(); // llegada moves the ctx anchor AND unlocks donde-based pistas
       navigateToEntity(id);
       toast.success(`Llegada: ${currentModel.entidades.get(id)?.nombre ?? id}`);
     },
-    [navigateToEntity, touchModel]
+    [navigateToEntity, rederiveLeads]
   );
 
   const handlePistaTransition = useCallback(
@@ -584,11 +744,11 @@ export default function WorldPage() {
       const from = pista.estadoPista;
       if (!usePartyStore.getState().actions.log(makeEntry.pista(pista.id, from, to))) return;
       pista.estadoPista = to;
-      deriveLeadActionability(currentModel.entidades, [pista], []);
-      touchModel();
+      // Full re-derive: other pistas may gate on pista:<id>:<estado> conditions.
+      rederiveLeads();
       toast.success(`Pista «${pista.nombre}»: ${from.replace('_', ' ')} → ${to.replace('_', ' ')}`);
     },
-    [touchModel]
+    [rederiveLeads]
   );
 
   const handleUndo = useCallback(() => {
@@ -607,12 +767,315 @@ export default function WorldPage() {
         (ESTADOS_PISTA as readonly string[]).includes(parsed.from)
       ) {
         pista.estadoPista = parsed.from as Lead['estadoPista'];
-        deriveLeadActionability(currentModel.entidades, [pista], []);
-        touchModel();
       }
     }
+    // rederiveLeads reads the store AFTER undoLast, so the replay-reverted
+    // numbers apply to every requisito (not only the undone pista's).
+    rederiveLeads();
     toast.success(`Última entrada deshecha (${removed.tipo})`);
-  }, [touchModel]);
+  }, [rederiveLeads]);
+
+  // ── M4: travel flow ───────────────────────────────────────────────────────
+
+  /** Arrival shared by the stepper paths + portal confirm: llegada entry, knowledge bump, navigate. */
+  const arriveAt = useCallback(
+    (destinoId: string, comentario?: string) => {
+      const currentModel = useWorldStore.getState().model;
+      const store = usePartyStore.getState();
+      if (!currentModel) return;
+      if (!store.actions.log(makeEntry.llegada(destinoId, store.diaMundo, comentario))) return;
+      applyLlegadaConocimiento(currentModel, destinoId);
+      setTravel(null);
+      navigateToEntity(destinoId);
+      rederiveLeads();
+      toast.success(`Llegada: ${currentModel.entidades.get(destinoId)?.nombre ?? destinoId}`);
+    },
+    [navigateToEntity, rederiveLeads]
+  );
+
+  /** One clamped medidor entry (0..5); logging the clamp IS the GM override record. */
+  const logGaugeConsumption = useCallback((nombre: string, amount: number) => {
+    if (amount <= 0) return;
+    const store = usePartyStore.getState();
+    const from = store.medidores[nombre] ?? 0;
+    const to = Math.max(0, Math.min(5, from - amount));
+    store.actions.log(makeEntry.medidor(nombre, from, to));
+  }, []);
+
+  /** "Viajar aquí": snapshot the target + plan at click time and open the dialog. */
+  const handleOpenTravelDialog = useCallback(() => {
+    const currentModel = useWorldStore.getState().model;
+    const party = usePartyStore.getState();
+    const targetId = useUiStore.getState().selectedEntityId;
+    if (!currentModel || !party.ubicacion || !targetId) return;
+    setTravelDialog({
+      targetId,
+      plan: computeTravelPlan(party.ubicacion, targetId, currentModel, {
+        medidores: party.medidores,
+      }),
+    });
+  }, []);
+
+  const handleTravelConfirm = useCallback(() => {
+    const dialog = travelDialog;
+    const currentModel = useWorldStore.getState().model;
+    if (!dialog || !dialog.plan || !currentModel) return;
+    const store = usePartyStore.getState();
+    if (!store.session.active) {
+      toast.error('Inicia sesión para viajar');
+      return;
+    }
+    const destinoName = currentModel.entidades.get(dialog.targetId)?.nombre ?? dialog.targetId;
+    if (dialog.plan.portal) {
+      // Portal: manual arrival, no rumbo/days/consumption (plan Part A).
+      arriveAt(dialog.targetId, 'por portal');
+      return;
+    }
+    const plan = dialog.plan;
+    if (
+      !store.actions.log(
+        makeEntry.rumbo(dialog.targetId, plan.totalDias, store.diaMundo + plan.totalDias)
+      )
+    ) {
+      return;
+    }
+    if (plan.totalDias <= 0) {
+      // Degenerate 0-day plan (coincident roots): arrive immediately.
+      arriveAt(dialog.targetId);
+      return;
+    }
+    setTravel({
+      plan,
+      destinoId: dialog.targetId,
+      destinoName,
+      dia: 1,
+      schedule: travelDaySchedule(plan, currentModel.manifest.viaje.viveresCadaDias),
+      sectorEndDay: sectorLegEndDay(plan, currentModel),
+    });
+    toast.success(`Rumbo a ${destinoName} — ${diasLabel(plan.totalDias)}`);
+  }, [travelDialog, arriveAt]);
+
+  /** Continuar: journal the day + its scheduled consumption; last day = arrival. */
+  const handleTravelNext = useCallback(() => {
+    const run = travel;
+    if (!run) return;
+    const store = usePartyStore.getState();
+    if (!store.actions.log(makeEntry.dia(store.diaMundo, store.diaMundo + 1))) return;
+    const consumo = run.schedule[run.dia - 1];
+    if (consumo) {
+      logGaugeConsumption('combustible', consumo.combustible);
+      logGaugeConsumption('viveres', consumo.viveres);
+    }
+    if (run.dia >= run.plan.totalDias) {
+      arriveAt(run.destinoId);
+    } else {
+      setTravel({ ...run, dia: run.dia + 1 });
+      rederiveLeads(); // dia>=N / medidor requisitos track each travel day
+    }
+  }, [travel, arriveAt, logGaugeConsumption, rederiveLeads]);
+
+  /** Resolver resto: remaining days + consumption in one batch, then arrive. */
+  const handleTravelRest = useCallback(() => {
+    const run = travel;
+    if (!run) return;
+    const store = usePartyStore.getState();
+    const remaining = run.plan.totalDias - run.dia + 1;
+    if (!store.actions.log(makeEntry.dia(store.diaMundo, store.diaMundo + remaining))) return;
+    const totals = run.schedule.slice(run.dia - 1).reduce(
+      (acc, day) => ({
+        combustible: acc.combustible + day.combustible,
+        viveres: acc.viveres + day.viveres,
+      }),
+      { combustible: 0, viveres: 0 }
+    );
+    logGaugeConsumption('combustible', totals.combustible);
+    logGaugeConsumption('viveres', totals.viveres);
+    arriveAt(run.destinoId);
+  }, [travel, arriveAt, logGaugeConsumption]);
+
+  /** Cancel: only a nota — ubicacion stays at origin (see module doc CANCEL SEMANTICS). */
+  const handleTravelCancel = useCallback(() => {
+    const run = travel;
+    if (!run) return;
+    const store = usePartyStore.getState();
+    store.actions.log(
+      makeEntry.nota(`Viaje interrumpido hacia ${run.destinoName} en dia ${store.diaMundo}`)
+    );
+    setTravel(null);
+    rederiveLeads();
+    toast(`Viaje a ${run.destinoName} cancelado — el grupo mantiene su posición`);
+  }, [travel, rederiveLeads]);
+
+  // A trip cannot outlive its session (log() would reject every step anyway).
+  useEffect(() => {
+    if (!session.active) {
+      setTravel(null);
+      setEventOpen(false);
+    }
+  }, [session.active]);
+
+  // ── M4: event drawer ──────────────────────────────────────────────────────
+
+  /** Weighted draw over the tables applicable at `anchorId` for `contexto`. */
+  const drawFromTables = useCallback(
+    (
+      contexto: 'viaje' | 'estancia',
+      anchorId: string | null
+    ): { table: EventTable; event: WorldEvent } | null => {
+      const currentModel = useWorldStore.getState().model;
+      if (!currentModel) return null;
+      const party = usePartyStore.getState();
+      const ctx = buildCondContext(currentModel, party, anchorId);
+      const tables = applicableTables(currentModel.tablas, contexto, ctx.regionActual);
+      return drawEvent(tables, ctx, Math.random);
+    },
+    []
+  );
+
+  const openEventDrawer = useCallback(
+    (contexto: 'viaje' | 'estancia', anchorId: string | null) => {
+      eventSourceRef.current = { contexto, anchorId };
+      setEventDraw(drawFromTables(contexto, anchorId));
+      setEventApplied([]);
+      setEventDrawCount(1);
+      setEventOpen(true);
+    },
+    [drawFromTables]
+  );
+
+  /** Otra tirada: one redraw per opening, journals nothing by itself. */
+  const handleEventRedraw = useCallback(() => {
+    const { contexto, anchorId } = eventSourceRef.current;
+    setEventDraw(drawFromTables(contexto, anchorId));
+    setEventApplied([]);
+    setEventDrawCount((count) => count + 1);
+  }, [drawFromTables]);
+
+  const handleEventOutcome = useCallback(
+    (outcome: EventOutcome, nota?: string) => {
+      const draw = eventDraw;
+      if (!draw) return;
+      const comentario =
+        outcome === 'complicacion'
+          ? nota
+            ? `complicación: ${nota}`
+            : 'complicación'
+          : outcome;
+      if (
+        !usePartyStore
+          .getState()
+          .actions.log(makeEntry.evento(draw.table.id, draw.event.id, comentario))
+      ) {
+        return;
+      }
+      toast.success(`Evento «${draw.event.titulo}»: ${comentario}`);
+    },
+    [eventDraw]
+  );
+
+  /**
+   * One `:::efecto` line -> one journal entry via makeEntry against CURRENT
+   * party state. Grammar per plan Part A (module doc "Event :::efecto lines");
+   * unparseable/unknown effects degrade to a nota entry.
+   */
+  const handleApplyEffect = useCallback(
+    (effect: EventEffect) => {
+      const currentModel = useWorldStore.getState().model;
+      const store = usePartyStore.getState();
+      const draw = eventDraw;
+      if (!currentModel || !draw) return;
+
+      const { main, comentario } = splitEffectValue(effect.value);
+      let entry: JournalEntry | null = null;
+      let mensaje = '';
+      /** In-memory model mutation to run only after log() accepts the entry. */
+      let after: (() => void) | undefined;
+
+      const fallbackNota = () => {
+        entry = makeEntry.nota(`${effect.key}: ${effect.value}`);
+        mensaje = 'Efecto no interpretable — anotado como nota';
+      };
+
+      switch (effect.key) {
+        case 'gasto':
+        case 'ganancia': {
+          if (!/^[+-]?\d+$/.test(main)) {
+            fallbackNota();
+            break;
+          }
+          const cantidad = Number(main);
+          entry =
+            effect.key === 'gasto'
+              ? makeEntry.gasto(cantidad, comentario)
+              : makeEntry.ganancia(cantidad, comentario);
+          mensaje = `${effect.key === 'gasto' ? '-' : '+'}${cantidad} créditos anotados`;
+          break;
+        }
+        case 'medidor': {
+          const match = /^(\S+)\s+([+-]?\d+)$/.exec(main);
+          if (!match) {
+            fallbackNota();
+            break;
+          }
+          const nombre = match[1];
+          const from = store.medidores[nombre] ?? 0;
+          const to = Math.max(0, Math.min(5, from + Number(match[2])));
+          entry = makeEntry.medidor(nombre, from, to, comentario);
+          mensaje = `${medidorLabel(nombre)} ${from} → ${to}`;
+          break;
+        }
+        case 'sabe': {
+          const match = /^(\S+)\s+(\S+)$/.exec(main);
+          if (!match || !(CONOCIMIENTOS as readonly string[]).includes(match[2])) {
+            fallbackNota();
+            break;
+          }
+          const id = match[1];
+          const nivel = match[2] as Conocimiento;
+          const from = currentModel.entidades.get(id)?.conocimiento ?? 'desconocido';
+          entry = makeEntry.sabe(id, from, nivel, comentario);
+          mensaje = `Sabe: ${currentModel.entidades.get(id)?.nombre ?? id} → ${nivel}`;
+          after = () => bumpConocimientoInMemory(currentModel.entidades.get(id), nivel);
+          break;
+        }
+        case 'pista': {
+          const match = /^(\S+)\s+(\S+)$/.exec(main);
+          const pista = match
+            ? currentModel.pistas.find((candidate) => candidate.id === match[1])
+            : undefined;
+          if (!match || !pista || !(ESTADOS_PISTA as readonly string[]).includes(match[2])) {
+            fallbackNota();
+            break;
+          }
+          const to = match[2] as Lead['estadoPista'];
+          entry = makeEntry.pista(pista.id, pista.estadoPista, to, comentario);
+          mensaje = `Pista «${pista.nombre}» → ${to.replace('_', ' ')}`;
+          after = () => {
+            pista.estadoPista = to;
+          };
+          break;
+        }
+        case 'nota':
+          entry = makeEntry.nota(effect.value);
+          mensaje = 'Nota registrada';
+          break;
+        default:
+          fallbackNota();
+      }
+
+      if (!entry || !store.actions.log(entry)) return;
+      after?.();
+      // Covers every effect type: creditos/medidor numbers, pista estados and
+      // sabe knowledge (donde-conocido gating) all feed accionable.
+      rederiveLeads();
+      const index = draw.event.efectos.indexOf(effect);
+      if (index >= 0) {
+        setEventApplied((prev) => (prev.includes(index) ? prev : [...prev, index]));
+      }
+      toast.success(mensaje);
+    },
+    [eventDraw, rederiveLeads]
+  );
 
   const endSummaryPreview = useMemo(() => {
     if (!session.active) return undefined;
@@ -854,6 +1317,62 @@ export default function WorldPage() {
       .map(toPanelLead);
   }, [model, selectedEntity, selectedIsContainer, modelRev]);
 
+  // ── M4: travel + events derived data ─────────────────────────────────────
+
+  /** Viajar aquí offered for spatial (sistema/lugar) non-current selections, once per trip. */
+  const canTravelToSelected = useMemo(() => {
+    if (!selectedEntity || !ubicacion || travel !== null) return false;
+    if (selectedEntity.id === ubicacion) return false;
+    return selectedEntity.tipo === 'sistema' || isPlace(selectedEntity);
+  }, [selectedEntity, ubicacion, travel]);
+
+  /**
+   * Event-context place anchor mid-travel: origin until the sector leg
+   * completes, then the destination (module doc REGION OF ROUTE).
+   */
+  const travelAnchorId = useMemo(() => {
+    if (!travel) return ubicacion;
+    return travel.dia <= travel.sectorEndDay ? ubicacion : travel.destinoId;
+  }, [travel, ubicacion]);
+
+  /** Stepper "Tirar evento" disabled when no viaje table applies at the anchor. */
+  const travelEventDisabled = useMemo(() => {
+    void modelRev;
+    if (!model || !travel) return true;
+    const ctx = buildCondContext(model, { creditos, medidores, diaMundo }, travelAnchorId);
+    return applicableTables(model.tablas, 'viaje', ctx.regionActual).length === 0;
+  }, [model, travel, travelAnchorId, creditos, medidores, diaMundo, modelRev]);
+
+  /**
+   * RoutePreview endpoints (map pixels) + label for the CURRENT selection.
+   * Sector tier only (SystemView has no routes layer), and only when both
+   * endpoints resolve to different sector roots with coordinates and the plan
+   * is a real route (not null/portal). Hidden while a trip runs.
+   */
+  const routePreview = useMemo<RoutePreviewData | null>(() => {
+    void modelRev; // llegadas bump conocimiento/ubicacion-derived data in place
+    if (!model || !ubicacion || !selectedEntity || travel !== null) return null;
+    if (!canTravelToSelected) return null;
+    const plan = computeTravelPlan(ubicacion, selectedEntity.id, model, { medidores });
+    if (!plan || plan.portal) return null;
+    const fromRoot = sectorNodeFor(model, ubicacion);
+    const toRoot = sectorNodeFor(model, selectedEntity.id);
+    if (!fromRoot || !toRoot || fromRoot === toRoot) return null;
+    const fromCoords = (model.entidades.get(fromRoot) as Partial<PlaceEntity> | undefined)
+      ?.coordenadas;
+    const toCoords = (model.entidades.get(toRoot) as Partial<PlaceEntity> | undefined)
+      ?.coordenadas;
+    if (!fromCoords || !toCoords) return null;
+    const label =
+      diasLabel(plan.totalDias) +
+      (plan.totalCombustible > 0 ? ` · −${plan.totalCombustible} combustible` : '');
+    return {
+      fromXY: { x: fromCoords.x * WORLD_SCALE, y: fromCoords.y * WORLD_SCALE },
+      toXY: { x: toCoords.x * WORLD_SCALE, y: toCoords.y * WORLD_SCALE },
+      label,
+    };
+  }, [model, ubicacion, selectedEntity, canTravelToSelected, medidores, travel, modelRev]);
+
   // ── Search & deep link ────────────────────────────────────────────────────
 
   // Model is immutable-after-scan, so the index never staleses within a scan.
@@ -971,7 +1490,12 @@ export default function WorldPage() {
 
   const erroresCount = model?.problemas.filter((p) => p.nivel === 'error').length ?? 0;
 
-  const canUndo = session.active && session.entries.length > 1;
+  // Undo is BLOCKED mid-travel: the stepper's day counter and consumption
+  // schedule live outside the journal (TravelRun state), so undoing a stepper
+  // entry (dia/medidor) would revert the store but not the run — the journal
+  // trail would stop summing to the plan totals. Cancel the trip first (nota,
+  // position kept), then undo freely.
+  const canUndo = session.active && session.entries.length > 1 && travel === null;
 
   return (
     <div data-world-status={status} className="flex h-screen flex-col bg-background">
@@ -1053,6 +1577,19 @@ export default function WorldPage() {
             </div>
           )}
 
+          {travel && (
+            <TravelStepper
+              dia={travel.dia}
+              totalDias={travel.plan.totalDias}
+              destinoName={travel.destinoName}
+              onDrawEvent={() => openEventDrawer('viaje', travelAnchorId)}
+              onNextDay={handleTravelNext}
+              onResolveRest={handleTravelRest}
+              onCancel={handleTravelCancel}
+              eventDisabled={travelEventDisabled}
+            />
+          )}
+
           <main className="flex min-h-0 flex-1 gap-3 p-3">
             <div
               ref={mapWrapRef}
@@ -1091,6 +1628,7 @@ export default function WorldPage() {
                     showUnknown={showUnknown}
                     onSelect={selectEntity}
                     onDrillIn={enterEntity}
+                    routes={<RouteLayer data={routePreview} />}
                   />
                 )}
               </StarMap>
@@ -1156,6 +1694,18 @@ export default function WorldPage() {
                           selectedIsContainer ? () => enterEntity(selectedEntity.id) : undefined
                         }
                         onClose={() => uiActions.selectEntity(null)}
+                        actions={
+                          canTravelToSelected ? (
+                            <Button
+                              size="sm"
+                              data-travel-here
+                              onClick={handleOpenTravelDialog}
+                            >
+                              <Rocket />
+                              Viajar aquí
+                            </Button>
+                          ) : undefined
+                        }
                       />
                     </div>
                   )}
@@ -1171,12 +1721,18 @@ export default function WorldPage() {
 
               {panelTab === 'pistas' && (
                 <div className="min-h-0 flex-1">
-                  <LeadsListCard
+                  <LeadsBoard
                     pistas={model.pistas}
-                    modelRev={modelRev}
+                    tramas={model.tramas}
+                    diaMundo={diaMundo}
                     sessionActive={session.active}
-                    onTransition={handlePistaTransition}
-                    onNavigate={navigateToEntity}
+                    modelRev={modelRev}
+                    onTransition={(id, _from, to) => {
+                      const pista = model.pistas.find((candidate) => candidate.id === id);
+                      if (pista) handlePistaTransition(pista, to);
+                    }}
+                    onSelectPlace={navigateToEntity}
+                    placeNombre={(id) => model.entidades.get(id)?.nombre}
                   />
                 </div>
               )}
@@ -1204,6 +1760,7 @@ export default function WorldPage() {
             onCreditos={handleCreditos}
             onMedidor={handleMedidor}
             onPista={() => uiActions.setPanelTab('pistas')}
+            onEvento={() => openEventDrawer('estancia', usePartyStore.getState().ubicacion)}
             onNota={handleNota}
           />
 
@@ -1214,6 +1771,40 @@ export default function WorldPage() {
             recentIds={recentMoveIds}
             currentId={ubicacion}
             onMove={handleMove}
+          />
+
+          <TravelDialog
+            open={travelDialog !== null}
+            onOpenChange={(open) => {
+              if (!open) setTravelDialog(null);
+            }}
+            plan={travelDialog?.plan ?? null}
+            fromName={
+              ubicacion ? (model.entidades.get(ubicacion)?.nombre ?? ubicacion) : 'desconocida'
+            }
+            toName={
+              travelDialog
+                ? (model.entidades.get(travelDialog.targetId)?.nombre ?? travelDialog.targetId)
+                : ''
+            }
+            medidores={medidores}
+            onConfirm={handleTravelConfirm}
+            nameFor={(id) => model.entidades.get(id)?.nombre ?? id}
+          />
+
+          <EventDrawer
+            open={eventOpen}
+            onOpenChange={setEventOpen}
+            draw={
+              eventDraw
+                ? { tableNombre: eventDraw.table.nombre, event: eventDraw.event }
+                : null
+            }
+            onRedraw={handleEventRedraw}
+            onOutcome={handleEventOutcome}
+            onApplyEffect={handleApplyEffect}
+            appliedEffects={eventApplied}
+            canRedraw={eventDraw !== null && eventDrawCount < 2}
           />
         </>
       ) : (
@@ -1279,136 +1870,5 @@ export default function WorldPage() {
         </div>
       )}
     </div>
-  );
-}
-
-// ── Pistas tab (M3 placeholder — the full LeadsBoard arrives in M4) ─────────
-
-/** Allowed one-tap estado transitions per current estado (plan Part A workflow). */
-const PISTA_TRANSITIONS: Record<Lead['estadoPista'], Lead['estadoPista'][]> = {
-  rumor: ['activa'],
-  activa: ['en_curso', 'fallida'],
-  en_curso: ['resuelta', 'fallida'],
-  resuelta: [],
-  fallida: [],
-};
-
-const PISTA_ESTADO_LABEL: Record<Lead['estadoPista'], string> = {
-  rumor: 'Rumor',
-  activa: 'Activa',
-  en_curso: 'En curso',
-  resuelta: 'Resuelta',
-  fallida: 'Fallida',
-};
-
-const PISTA_ESTADO_ORDER: Record<Lead['estadoPista'], number> = {
-  activa: 0,
-  en_curso: 1,
-  rumor: 2,
-  resuelta: 3,
-  fallida: 4,
-};
-
-interface LeadsListCardProps {
-  pistas: Lead[];
-  /** Re-render key: pista estado/accionable are mutated in place on the model. */
-  modelRev: number;
-  sessionActive: boolean;
-  onTransition: (pista: Lead, to: Lead['estadoPista']) => void;
-  onNavigate: (id: string) => void;
-}
-
-function LeadsListCard({ pistas, modelRev, sessionActive, onTransition, onNavigate }: LeadsListCardProps) {
-  const sorted = useMemo(() => {
-    void modelRev;
-    return [...pistas].sort((a, b) => {
-      const accA = a.accionable === true ? 0 : 1;
-      const accB = b.accionable === true ? 0 : 1;
-      if (accA !== accB) return accA - accB;
-      const orderDelta = PISTA_ESTADO_ORDER[a.estadoPista] - PISTA_ESTADO_ORDER[b.estadoPista];
-      if (orderDelta !== 0) return orderDelta;
-      return a.nombre.localeCompare(b.nombre, 'es');
-    });
-  }, [pistas, modelRev]);
-
-  return (
-    <Card className="flex h-full flex-col gap-0 overflow-hidden py-0" data-leads-panel>
-      <div className="border-b px-3 py-2">
-        <p className="text-sm font-medium">Pistas</p>
-        <p className="text-xs text-muted-foreground">Tablero completo en M4</p>
-      </div>
-      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-        {sorted.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">Sin pistas.</p>
-        ) : (
-          sorted.map((pista) => (
-            <div
-              key={pista.id}
-              data-lead-id={pista.id}
-              data-lead-estado={pista.estadoPista}
-              className="rounded-md border px-3 py-2"
-            >
-              <div className="flex items-start gap-2">
-                {pista.accionable === true && (
-                  <Star
-                    className="mt-0.5 size-4 shrink-0 fill-amber-400 text-amber-400"
-                    aria-label="Accionable"
-                  />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="break-words text-sm font-medium">{pista.nombre}</p>
-                  {pista.donde && (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate(pista.donde!)}
-                      className="text-xs text-muted-foreground hover:underline"
-                    >
-                      @ {pista.donde}
-                    </button>
-                  )}
-                </div>
-                <div className="flex shrink-0 flex-col items-end gap-1">
-                  <Badge
-                    variant={
-                      pista.estadoPista === 'resuelta' || pista.estadoPista === 'fallida'
-                        ? 'outline'
-                        : 'secondary'
-                    }
-                  >
-                    {PISTA_ESTADO_LABEL[pista.estadoPista]}
-                  </Badge>
-                  {pista.accionable === 'manual' && (
-                    <Badge variant="outline" className="text-muted-foreground">
-                      según GM
-                    </Badge>
-                  )}
-                </div>
-              </div>
-              {PISTA_TRANSITIONS[pista.estadoPista].length > 0 && (
-                <div className="mt-1.5 flex flex-wrap justify-end gap-1">
-                  {PISTA_TRANSITIONS[pista.estadoPista].map((to) => (
-                    <Button
-                      key={to}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-lead-transition={to}
-                      disabled={!sessionActive}
-                      title={sessionActive ? undefined : 'Inicia sesión para registrar'}
-                      onClick={() => onTransition(pista, to)}
-                      className={`h-6 px-2 text-xs ${
-                        to === 'fallida' ? 'border-destructive/40 text-destructive' : ''
-                      }`}
-                    >
-                      {PISTA_ESTADO_LABEL[to]}
-                    </Button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-    </Card>
   );
 }

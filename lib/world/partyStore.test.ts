@@ -92,6 +92,7 @@ function makeModel(estadoGrupo: PartyState | null, diario: JournalDay[] = []): W
         pnjs: [],
         pistas: [],
         tramas: [],
+        tablas: [],
         problemas: [],
         childrenOf: new Map(),
         estadoGrupo,

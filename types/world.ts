@@ -98,6 +98,75 @@ export interface Trama extends WorldEntityBase {
   pistas: Lead[];
 }
 
+/**
+ * One `:::efecto` line of an event (M4). Same shape semantics as ActField:
+ * `key` is the field name (gasto/ganancia/medidor/sabe/pista/nota), `value`
+ * the raw value part. The cockpit converts these to journal entries.
+ */
+export interface EventEffect {
+  key: string;
+  value: string;
+}
+
+/** One `##` section of an event table (M4). */
+export interface WorldEvent {
+  id: string;
+  titulo: string;
+  peso: number;
+  /** Per-event gate conditions (condition grammar; all must hold). */
+  si: string[];
+  etiquetas: string[];
+  /** Markdown body (`:::leer/:::gm/:::accion` render through parseAct). */
+  cuerpo: string;
+  efectos: EventEffect[];
+}
+
+/** An `eventos/*.md` table (M4). */
+export interface EventTable extends WorldEntityBase {
+  contexto: 'viaje' | 'estancia' | 'ambas';
+  regiones: string[];
+  /** Conditional weight modifiers: when `si` holds, matching etiquetas gain `peso`. */
+  sesgos: { si: string; etiquetas: string[]; peso: number }[];
+  eventos: WorldEvent[];
+}
+
+/** One route segment of a travel plan (M4). */
+export interface TravelLeg {
+  fromId: string;
+  toId: string;
+  dias: number;
+  combustible: number;
+  viveres: number;
+}
+
+/** Full route proposal shown in the TravelDialog (M4). */
+export interface TravelPlan {
+  legs: TravelLeg[];
+  totalDias: number;
+  totalCombustible: number;
+  totalViveres: number;
+  warnings: string[];
+  /** Destination is `acceso: portal` — no route calc applies. */
+  portal: boolean;
+}
+
+/**
+ * Evaluation context for the condition grammar (M4): pista `requisitos`,
+ * event `si` and table `sesgos` all evaluate against this via evalCondition.
+ */
+export interface CondContext {
+  creditos: number;
+  medidores: Record<string, number>;
+  diaMundo: number;
+  regionActual: string | null;
+  etiquetasActuales: string[];
+  faccionesActuales: string[];
+  /** Lead id -> its estadoPista; null when the pista does not exist. */
+  pistaEstado: (id: string) => string | null;
+  /** Lugar id -> its conocimiento; null when the lugar does not exist. */
+  lugarConocimiento: (id: string) => string | null;
+}
+
 export interface WorldManifest {
   nombre: string;
   calendario: {
@@ -225,6 +294,8 @@ export interface WorldModel {
   pnjs: NpcEntity[];
   pistas: Lead[];
   tramas: Trama[];
+  /** Event tables from `eventos/` (M4). */
+  tablas: EventTable[];
   problemas: ValidationIssue[];
   /** Parent id -> child entity ids (inverse of `en:`). */
   childrenOf: Map<string, string[]>;

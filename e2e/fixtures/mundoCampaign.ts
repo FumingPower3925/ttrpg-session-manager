@@ -301,7 +301,51 @@ facciones: [vortex_logistics]
 4. Cierre: la deuda se salda o Kael cae.
 `,
         },
-        eventos: {},
+        eventos: {
+            'viajes_nucleo.md': `---
+tipo: eventos
+nombre: Viajes por el nucleo
+contexto: viaje
+regiones: [nucleo]
+---
+## v01 — Control de aduanas {peso=3}
+
+:::leer
+Una patrulla de aduanas os hace detener los motores y acoplarse para una
+inspeccion de carga. El oficial menciona, de pasada, avistamientos en el
+espacio profundo.
+:::
+
+:::efecto
+- gasto: 50 | tasa de inspeccion
+- sabe: nodo_central conocido
+:::
+
+## v02 — Consumo critico {peso=1; si=combustible<=1}
+
+:::gm
+El indicador de combustible entra en zona critica; sin repostar pronto la
+nave quedara a la deriva.
+:::
+`,
+            'estancia_porto.md': `---
+tipo: eventos
+nombre: Estancia en el nucleo
+contexto: estancia
+regiones: [nucleo]
+---
+## e01 — Encargo de descarga {peso=2}
+
+:::leer
+Un capataz del muelle os ofrece unos turnos de descarga bien pagados:
+paga inmediata y sin papeleo.
+:::
+
+:::efecto
+- ganancia: 200 | turnos de descarga
+:::
+`,
+        },
         estado: {},
         diario: {},
         PLANTILLAS: {
@@ -344,11 +388,35 @@ medidores:
 - 2 cargas de repuestos para la nave.
 `;
 
+/**
+ * M4 variant of deuda_kael_zara: `requisitos` evaluated against the LIVE
+ * party numbers — with the estado fixture (creditos 1240 >= 800) it derives
+ * accionable; a session gasto below 800 must drop the star (e2e asserts the
+ * re-derivation). Only the CON_ESTADO variant carries it: without grupo.md
+ * the defaults (creditos 0) would turn the base-fixture pista false and
+ * change what the M1-M3 tests see.
+ */
+const DEUDA_KAEL_ZARA_CON_REQUISITOS = `---
+tipo: pista
+nombre: La deuda de Kael con Zara
+estado: activa
+trama: deudas
+donde: porto_verne
+origen: kael_voss
+plazo: 40
+requisitos: ["creditos>=800"]
+recompensa: 400 creditos y un contacto estable en los muelles
+---
+Kael necesita que alguien entregue un paquete sin que el consorcio se
+entere. Si sale bien, Zara Hollis le perdona parte de la deuda.
+`;
+
 /** Same campaign, plus estado/grupo.md — the party is docked at porto_verne. */
 export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     // FileTree is JSON-safe (plain strings/objects), so a JSON round-trip clones it.
     const clone = JSON.parse(JSON.stringify(MUNDO_CAMPAIGN)) as FileTree;
     const mundo = clone.mundo as FileTree;
     (mundo.estado as FileTree)['grupo.md'] = GRUPO_MD;
+    (mundo.pistas as FileTree)['deuda_kael_zara.md'] = DEUDA_KAEL_ZARA_CON_REQUISITOS;
     return clone;
 })();

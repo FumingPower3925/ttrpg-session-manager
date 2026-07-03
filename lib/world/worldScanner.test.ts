@@ -80,7 +80,16 @@ function happyTree(): FileTree {
                 'la_red_despierta.md':
                     '---\nrol: principal\nestado: activa\nreloj: {actual: 1, max: 6}\nlugares_clave: [porto_verne, nodo_sigma]\nfacciones: [consorcio_tetrad]\n---\n',
             },
-            eventos: { 'viaje_frontera.md': '---\ncontexto: viaje\n---\n## v01\n' },
+            eventos: {
+                'viaje_frontera.md':
+                    '---\ncontexto: viaje\nregiones: [frontera]\nsesgos:\n' +
+                    '  - {si: combustible<=1, etiquetas: [averia], peso: 2}\n---\n' +
+                    '## v01 — Baliza de socorro {peso=3; si=region:frontera; etiquetas=recurso}\n\n' +
+                    ':::leer\nUna baliza parpadea en el vacio.\n:::\n\n' +
+                    ':::efecto\n- ganancia: 400 | chatarra\n- medidor: combustible -1\n:::\n\n' +
+                    '## v02 — Fallo de motor {etiquetas=averia}\n\n:::gm\nTirada de nave CD 17.\n:::\n',
+                '_borrador_eventos.md': '---\ncontexto: viaje\n---\n',
+            },
             estado: { 'grupo.md': '---\ncreditos: 100\n---\n' },
             diario: { '2026-07-12_s08.md': '---\nsesion: 8\n---\n' },
         },
@@ -122,7 +131,7 @@ describe('scanWorldFolder — happy path', () => {
         expect(model.tramas.map((t) => t.id)).toEqual(['la_red_despierta']);
         expect(model.entidades.size).toBe(11);
 
-        // eventos/estado/diario contents never become entities in M1
+        // eventos/estado/diario contents never become entities
         expect(model.entidades.has('viaje_frontera')).toBe(false);
         expect(model.entidades.has('grupo')).toBe(false);
 
@@ -207,6 +216,49 @@ describe('scanWorldFolder — happy path', () => {
         expect(planet.playable).toBeUndefined();
     });
 
+    test('parses eventos/ into model.tablas (M4), outside the entity map', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+
+        expect(model.tablas).toHaveLength(1); // _borrador_eventos.md ignored
+        const tabla = model.tablas[0];
+        expect(tabla.id).toBe('viaje_frontera');
+        expect(tabla.filePath).toBe('mundo/eventos/viaje_frontera.md');
+        expect(tabla.contexto).toBe('viaje');
+        expect(tabla.regiones).toEqual(['frontera']);
+        expect(tabla.sesgos).toEqual([{ si: 'combustible<=1', etiquetas: ['averia'], peso: 2 }]);
+
+        expect(tabla.eventos.map((e) => e.id)).toEqual(['v01', 'v02']);
+        const v01 = tabla.eventos[0];
+        expect(v01.titulo).toBe('Baliza de socorro');
+        expect(v01.peso).toBe(3);
+        expect(v01.si).toEqual(['region:frontera']);
+        expect(v01.etiquetas).toEqual(['recurso']);
+        expect(v01.efectos).toEqual([
+            { key: 'ganancia', value: '400 | chatarra' },
+            { key: 'medidor', value: 'combustible -1' },
+        ]);
+        // :::efecto stripped from the cuerpo; the other ::: blocks stay.
+        expect(v01.cuerpo).toContain(':::leer');
+        expect(v01.cuerpo).not.toContain('efecto');
+        expect(tabla.eventos[1].peso).toBe(1);
+    });
+
+    test('eventos/ issues surface in model.problemas', async () => {
+        const tree = happyTree();
+        ((tree.mundo as FileTree).eventos as FileTree)['tabla_rota.md'] =
+            '---\ncontexto: viaje\n---\n## x01 — Sabotaje {si=cuando quiera el GM}\n\n## sin encabezado valido\n';
+        const model = await scanWorldFolder(makeHandle('campaign', tree));
+
+        expect(model.tablas).toHaveLength(2);
+        const rota = model.tablas.find((t) => t.id === 'tabla_rota')!;
+        expect(rota.eventos).toHaveLength(1); // bad si keeps the event; bad heading drops it
+        const avisos = model.problemas.filter((p) => p.archivo === 'mundo/eventos/tabla_rota.md');
+        expect(avisos).toHaveLength(2);
+        expect(avisos.every((p) => p.nivel === 'aviso')).toBe(true);
+        expect(avisos.some((p) => p.mensaje.includes('Condición no interpretable'))).toBe(true);
+        expect(avisos.some((p) => p.mensaje.includes('Encabezado de evento'))).toBe(true);
+    });
+
     test('childrenOf: sistemas + deep-space roots, en-chains as children', async () => {
         const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
 
@@ -250,8 +302,8 @@ describe('scanWorldFolder — happy path', () => {
         });
 
         // 1 manifest + 1 estado/grupo.md + 2 sistemas + 1 faccion + 1 pnj + 2 pistas
-        // + 1 trama + 3 lugares + 1 carpeta + 1 diario
-        const total = 14;
+        // + 1 trama + 3 lugares + 1 carpeta + 1 tabla de eventos + 1 diario
+        const total = 15;
         expect(calls.length).toBeGreaterThan(0);
         expect(calls[0]).toEqual([1, total]);
         expect(calls[calls.length - 1]).toEqual([total, total]);
@@ -430,7 +482,10 @@ describe('scanWorldFolder — accionable + manifest defaults', () => {
                 pistas: {
                     'p_activa.md': '---\nestado: activa\ndonde: sitio_conocido\n---\n',
                     'p_oculta.md': '---\nestado: activa\ndonde: sitio_oculto\n---\n',
-                    'p_manual.md': '---\nestado: en_curso\nrequisitos: [combustible<=2]\n---\n',
+                    'p_falsa.md': '---\nestado: en_curso\nrequisitos: ["combustible<=2"]\n---\n',
+                    'p_manual.md':
+                        '---\nestado: en_curso\nrequisitos: ["manual: decide el GM"]\n---\n',
+                    'p_rota.md': '---\nestado: en_curso\nrequisitos: [si el GM quiere]\n---\n',
                     'p_rumor.md': '---\nestado: rumor\n---\n',
                     'p_resuelta.md': '---\nestado: resuelta\ndonde: sitio_conocido\n---\n',
                 },
@@ -444,9 +499,26 @@ describe('scanWorldFolder — accionable + manifest defaults', () => {
 
         expect(accionableOf('p_activa')).toBe(true); // activa @ conocido
         expect(accionableOf('p_oculta')).toBe(false); // donde desconocido
-        expect(accionableOf('p_manual')).toBe('manual'); // requisitos -> según GM (evalCondition llega en M4)
+        // Sin estado/grupo.md las condiciones evalúan contra los defaults
+        // (combustible 3): 3 <= 2 es false — ya no degrada a 'manual' (M4).
+        expect(accionableOf('p_falsa')).toBe(false);
+        expect(accionableOf('p_manual')).toBe('manual'); // requisito manual: -> según GM
+        expect(accionableOf('p_rota')).toBe('manual'); // condición no interpretable
         expect(accionableOf('p_rumor')).toBe(false); // estado rumor
         expect(accionableOf('p_resuelta')).toBe(false); // estado terminal
+    });
+
+    test('aviso: requisito no interpretable', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', derivationsTree()));
+
+        const avisos = model.problemas.filter(
+            (p) => p.nivel === 'aviso' && p.mensaje.includes('Requisito no interpretable')
+        );
+        expect(avisos).toHaveLength(1);
+        expect(avisos[0].archivo).toBe('mundo/pistas/p_rota.md');
+        expect(avisos[0].mensaje).toContain('si el GM quiere');
+        // manual: entries are for the GM by design — never an aviso
+        expect(model.problemas.some((p) => p.archivo === 'mundo/pistas/p_manual.md')).toBe(false);
     });
 
     test('aviso: pista activa at a desconocido place', async () => {
@@ -484,6 +556,93 @@ describe('scanWorldFolder — accionable + manifest defaults', () => {
         expect(model.manifest.medidores).toEqual(['viveres', 'combustible', 'nave']);
         expect(model.manifest.regiones).toEqual([]);
         expect(model.manifest.calendario.diasPorMes).toBe(30);
+    });
+});
+
+// ── Requisitos evaluados contra estado/grupo.md (M4) ────────────────────────
+
+describe('scanWorldFolder — requisitos con estado del grupo', () => {
+    function requisitosTree(pistas: Record<string, string>): FileTree {
+        return {
+            mundo: {
+                'mundo.md': FULL_MANIFEST, // regiones: [nucleo, frontera]
+                sistemas: {
+                    'sys_f.md':
+                        '---\ncoordenadas: {x: 0, y: 0}\nregion: frontera\nconocimiento: visitado\n---\n',
+                },
+                lugares: {
+                    'base_f.md':
+                        '---\nen: sys_f\nconocimiento: visitado\netiquetas: [pirata]\n---\n',
+                },
+                pistas,
+                estado: {
+                    'grupo.md':
+                        '---\ndia_mundo: 4200\nubicacion: base_f\ncreditos: 1000\n' +
+                        'medidores: {viveres: 3, combustible: 1, nave: 2}\n---\n',
+                },
+            },
+        };
+    }
+
+    test('condiciones ciertas -> true; falsas -> false; manual gana a false', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                requisitosTree({
+                    'p_ok.md':
+                        '---\nestado: activa\nrequisitos: ["creditos>=800", "region:frontera", "combustible<=1"]\n---\n',
+                    'p_conjuncion.md':
+                        '---\nestado: activa\nrequisitos: ["etiqueta:pirata&dia>=100"]\n---\n',
+                    'p_pobre.md': '---\nestado: activa\nrequisitos: ["creditos>=2000"]\n---\n',
+                    'p_mixta.md':
+                        '---\nestado: activa\nrequisitos: ["creditos>=2000", "manual: decide el GM"]\n---\n',
+                    'p_medidor_raro.md':
+                        '---\nestado: activa\nrequisitos: ["oxigeno<=2"]\n---\n',
+                })
+            )
+        );
+        const accionableOf = (id: string) => (model.entidades.get(id) as Lead).accionable;
+
+        expect(accionableOf('p_ok')).toBe(true);
+        expect(accionableOf('p_conjuncion')).toBe(true); // etiquetas del lugar actual + dia_mundo
+        expect(accionableOf('p_pobre')).toBe(false);
+        expect(accionableOf('p_mixta')).toBe('manual'); // manual/null dominan sobre false
+        expect(accionableOf('p_medidor_raro')).toBe('manual'); // medidor desconocido -> null
+        // sintaxis correcta: el medidor desconocido NO es un aviso de requisito
+        expect(
+            model.problemas.some((p) => p.mensaje.includes('Requisito no interpretable'))
+        ).toBe(false);
+    });
+});
+
+// ── Aviso: nombre de medidor con espacios (TODO del verificador M3) ─────────
+
+describe('scanWorldFolder — medidores del manifiesto', () => {
+    test('aviso cuando un nombre de medidor contiene espacios', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    'mundo.md':
+                        '---\nnombre: Mini\nmedidores: [viveres, celda de energia, nave]\n---\n',
+                },
+            })
+        );
+
+        expect(model.manifest.medidores).toEqual(['viveres', 'celda de energia', 'nave']);
+        const avisos = model.problemas.filter((p) =>
+            p.mensaje.includes('Nombre de medidor con espacios')
+        );
+        expect(avisos).toHaveLength(1);
+        expect(avisos[0].nivel).toBe('aviso');
+        expect(avisos[0].archivo).toBe('mundo/mundo.md');
+        expect(avisos[0].mensaje).toContain('"celda de energia"');
+    });
+
+    test('sin aviso para nombres sin espacios', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+        expect(
+            model.problemas.some((p) => p.mensaje.includes('Nombre de medidor'))
+        ).toBe(false);
     });
 });
 

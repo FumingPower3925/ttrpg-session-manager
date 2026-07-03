@@ -17,6 +17,7 @@ import { Conocimiento } from '@/types/world';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -107,6 +108,9 @@ export function MoverDialog({
       <DialogContent className="max-w-lg" data-mover-dialog>
         <DialogHeader>
           <DialogTitle>Mover al grupo</DialogTitle>
+          <DialogDescription className="sr-only">
+            Elige el destino del grupo. Enter selecciona el primer resultado.
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <Input
