@@ -122,6 +122,12 @@ export interface WorldEvent {
   /** Per-event gate conditions (condition grammar; all must hold). */
   si: string[];
   etiquetas: string[];
+  /**
+   * Once-only flag (`unico` bare token in the header attrs). A unico event
+   * that already appears in the journal is HARD-excluded from future draws;
+   * non-unico events only decay by seen-count. Default false.
+   */
+  unico: boolean;
   /** Markdown body (`:::leer/:::gm/:::accion` render through parseAct). */
   cuerpo: string;
   efectos: EventEffect[];

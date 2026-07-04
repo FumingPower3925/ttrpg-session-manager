@@ -603,6 +603,31 @@ test.describe('World Mode - Travel & events', () => {
             .toMatch(/- \[\d{2}:\d{2}\] evento: estancia_porto#e01 \| resuelto/);
     });
 
+    // Dedup wiring no-regression: the drawer still opens/draws and the redraw
+    // still returns an event with the new history-model plumbing in place. A
+    // random draw is unit-covered (eventEngine.test.ts); here we only assert
+    // the wiring did not break — the single-event estancia table means the
+    // redraw's exclude-the-shown-event step empties the live pool and falls
+    // back, so an event is always shown (never a dead-end drawer).
+    test('event drawer opens and redraws with the dedup wiring (no regression)', async ({ page }) => {
+        await startSession(page);
+
+        await page.locator('[data-quicklog="evento"]').click();
+        const drawer = page.locator('[data-event-drawer]');
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+        await expect(drawer).toContainText('Encargo de descarga');
+
+        // "Otra tirada" (redraw) still returns a drawn event, never emptiness.
+        await drawer.locator('[data-event-redraw]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+        await expect(drawer).toContainText('Encargo de descarga');
+        // Redraw is one-shot per opening: the button is gone after using it.
+        await expect(drawer.locator('[data-event-redraw]')).toHaveCount(0);
+
+        await drawer.locator('[data-event-outcome="ignorado"]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'closed');
+    });
+
     test('LeadsBoard: accionable star, transition, live re-derivation on gasto', async ({ page }) => {
         const journalPath = await startSession(page);
 
@@ -771,13 +796,33 @@ test.describe('World Mode - Música del mundo', () => {
         await expect(toggle).toHaveAttribute('aria-pressed', 'false');
     });
 
-    test('a world without mundo/musica/ renders no dock at all', async ({ page }) => {
+    test('a world without mundo/musica/ still shows the dock, opening to an empty state', async ({ page }) => {
         await page.goto('/world');
         await materializeIntoOPFS(page, MUNDO_CAMPAIGN); // no musica/ folder
         await openWorldViaOPFS(page);
 
         await expect(page.locator('[data-world-status="ready"]')).toBeAttached();
-        await expect(page.locator('[data-world-audio="toggle"]')).toHaveCount(0);
+
+        // The toggle is ALWAYS present now (an empty folder must not read as a
+        // broken cockpit) — closed by default, no panel yet.
+        const toggle = page.locator('[data-world-audio="toggle"]');
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
+
+        // Open it: the empty-state panel with the "Sin música cargada" hint.
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        const panel = page.locator('[data-world-audio="panel"]');
+        await expect(panel).toBeVisible();
+        await expect(page.locator('[data-world-audio="panel"][data-world-audio-empty]')).toBeVisible();
+        await expect(panel).toContainText('Sin música cargada');
+        await expect(panel).toContainText('mundo/musica/');
+        // No AudioControls rendered (no manager exists for an empty folder).
+        await expect(panel.locator('[data-world-audio-bgm-count]')).toHaveCount(0);
+
+        // Toggle back off.
+        await toggle.click();
         await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
     });
 

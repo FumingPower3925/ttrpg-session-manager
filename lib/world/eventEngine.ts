@@ -215,13 +215,26 @@ function parseEventos(body: string, aviso: (mensaje: string) => void): WorldEven
                       .map((part) => part.trim())
                       .filter((part) => part !== '');
 
+        // `unico` is a bare presence token: parseEventAttrs maps it to the
+        // value 'true' (any value present ⇒ once-only; absent ⇒ false).
+        const unico = attrs.unico !== undefined;
+
         const { cuerpoLines, efectos } = extractEfectos(sectionLines);
 
         if (seen.has(id)) {
             aviso(`id de evento duplicado: "${id}" — se conserva el primero`);
         } else {
             seen.add(id);
-            eventos.push({ id, titulo, peso, si, etiquetas, cuerpo: cuerpoLines.join('\n').trim(), efectos });
+            eventos.push({
+                id,
+                titulo,
+                peso,
+                si,
+                etiquetas,
+                unico,
+                cuerpo: cuerpoLines.join('\n').trim(),
+                efectos,
+            });
         }
     };
 
@@ -343,19 +356,57 @@ export function applicableTables(
 }
 
 /**
+ * Tallies how many times each event was already drawn, keyed by
+ * `<tabla>#<id>` — the same id key drawEvent uses. Accepts the raw
+ * `evento:` payload strings (`<tabla>#<id>` optionally with a ` | outcome`
+ * suffix, which is ignored) OR full `evento: <payload>` lines; any string
+ * whose `<tabla>#<id>` head parses out is counted, everything else ignored.
+ * The count is what the history model decays / hard-excludes against.
+ */
+export function eventSeenCounts(payloads: Iterable<string>): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const raw of payloads) {
+        // Drop an `evento:` prefix if a full journal line was passed, then the
+        // ` | outcome` suffix, then match the `<tabla>#<id>` head.
+        const body = raw.replace(/^\s*evento:\s*/i, '');
+        const head = body.split('|', 1)[0].trim();
+        const match = /^([^#\s]+)#(\S+)$/.exec(head);
+        if (!match) continue;
+        const key = `${match[1]}#${match[2]}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+}
+
+/**
  * Weighted draw over every event of every table whose `si` all hold.
  * Null-condition events are EXCLUDED silently (they were already avisado at
  * scan time). Effective weight = peso + sum of the table's matching sesgos —
  * a sesgo matches when its own `si` holds (null = never) AND it shares at
  * least one etiqueta with the event — floored at 1. `rng` returns [0, 1)
  * (injectable for deterministic tests). Empty pool = null.
+ *
+ * HISTORY MODEL (optional `seenCounts`, keyed `<tabla>#<id>` — see
+ * eventSeenCounts): a `unico` event already seen is HARD-excluded; a
+ * non-unico seen event decays to effectiveWeight = max(1, round(peso /
+ * (1 + seenCount))) so it grows rare but never impossible. If excluding the
+ * seen-unico events empties the pool (everything eligible was unico-and-seen)
+ * the draw FALLS BACK to the pre-exclusion pool so a draw is always returned
+ * (never a dead-end). Omitting `seenCounts` is exactly the pre-history
+ * behavior.
  */
 export function drawEvent(
     tables: EventTable[],
     ctx: CondContext,
-    rng: () => number
+    rng: () => number,
+    seenCounts?: Map<string, number>
 ): { table: EventTable; event: WorldEvent } | null {
-    const pool: Array<{ table: EventTable; event: WorldEvent; weight: number }> = [];
+    type Entry = { table: EventTable; event: WorldEvent; weight: number };
+    // Full gated pool (pre-exclusion, undecayed weights) — the fallback when
+    // exclusion empties the live pool.
+    const fullPool: Entry[] = [];
+    // Live pool: seen-unico excluded, non-unico decayed by seenCount.
+    const pool: Entry[] = [];
 
     for (const table of tables) {
         const activeBiases = table.sesgos.filter((sesgo) => evalCondition(sesgo.si, ctx) === true);
@@ -367,19 +418,28 @@ export function drawEvent(
                     weight += sesgo.peso;
                 }
             }
-            pool.push({ table, event, weight: Math.max(1, weight) });
+            weight = Math.max(1, weight);
+            fullPool.push({ table, event, weight });
+
+            const seen = seenCounts?.get(`${table.id}#${event.id}`) ?? 0;
+            if (seen > 0 && event.unico) continue; // hard-exclude seen unico
+            const effective = seen > 0 ? Math.max(1, Math.round(weight / (1 + seen))) : weight;
+            pool.push({ table, event, weight: effective });
         }
     }
 
-    if (pool.length === 0) return null;
+    // Exclusion emptied the live pool (all eligible events were unico-and-seen)
+    // but real candidates existed — never dead-end, draw over the full pool.
+    const active = pool.length > 0 ? pool : fullPool;
+    if (active.length === 0) return null;
 
-    const total = pool.reduce((sum, entry) => sum + entry.weight, 0);
+    const total = active.reduce((sum, entry) => sum + entry.weight, 0);
     let roll = rng() * total;
-    for (const entry of pool) {
+    for (const entry of active) {
         roll -= entry.weight;
         if (roll < 0) return { table: entry.table, event: entry.event };
     }
     // rng defensively returned >= 1: fall back to the last entry.
-    const last = pool[pool.length - 1];
+    const last = active[active.length - 1];
     return { table: last.table, event: last.event };
 }

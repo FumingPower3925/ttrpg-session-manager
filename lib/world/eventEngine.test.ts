@@ -3,6 +3,7 @@ import { test, expect, describe } from 'bun:test';
 import {
     applicableTables,
     drawEvent,
+    eventSeenCounts,
     parseEventAttrs,
     parseEventTable,
 } from './eventEngine';
@@ -225,6 +226,50 @@ describe('parseEventTable', () => {
         expect(result.table.eventos[0].peso).toBe(1);
         expect(result.issues.some((issue) => issue.mensaje.includes('"peso"'))).toBe(true);
     });
+
+    test('unico: bare token -> true, absent -> false', () => {
+        const result = parseEventTable(
+            '---\ncontexto: viaje\n---\n' +
+                '## v01 — Solo una vez {peso=2; unico; etiquetas=rumor}\n\nCuerpo.\n\n' +
+                '## v02 — Recurrente {peso=1}\n\nOtro.\n',
+            'mundo/eventos/t.md',
+            't'
+        );
+        const [v01, v02] = result.table.eventos;
+        expect(v01.unico).toBe(true);
+        expect(v01.peso).toBe(2); // the bare token does not disturb the other attrs
+        expect(v01.etiquetas).toEqual(['rumor']);
+        expect(v02.unico).toBe(false);
+    });
+});
+
+// ── eventSeenCounts ──────────────────────────────────────────────────────────
+
+describe('eventSeenCounts', () => {
+    test('tallies <tabla>#<id> payloads, ignoring the outcome suffix', () => {
+        const counts = eventSeenCounts([
+            'viaje_frontera#v01',
+            'viaje_frontera#v01 | resuelto',
+            'viaje_frontera#v02',
+            'estancia_porto#e01 | complicación: fuga',
+        ]);
+        expect(counts.get('viaje_frontera#v01')).toBe(2);
+        expect(counts.get('viaje_frontera#v02')).toBe(1);
+        expect(counts.get('estancia_porto#e01')).toBe(1);
+        expect(counts.size).toBe(3);
+    });
+
+    test('accepts full `evento:` lines and ignores non-evento payloads', () => {
+        const counts = eventSeenCounts([
+            'evento: viaje_frontera#v01',
+            'evento: viaje_frontera#v01 | ignorado',
+            'no es un payload de evento',
+            'gasto: 100',
+            '',
+        ]);
+        expect(counts.get('viaje_frontera#v01')).toBe(2);
+        expect(counts.size).toBe(1);
+    });
 });
 
 // ── applicableTables ────────────────────────────────────────────────────────
@@ -248,7 +293,17 @@ function tabla(id: string, overrides: Partial<EventTable> = {}): EventTable {
 }
 
 function evento(id: string, overrides: Partial<WorldEvent> = {}): WorldEvent {
-    return { id, titulo: id, peso: 1, si: [], etiquetas: [], cuerpo: '', efectos: [], ...overrides };
+    return {
+        id,
+        titulo: id,
+        peso: 1,
+        si: [],
+        etiquetas: [],
+        unico: false,
+        cuerpo: '',
+        efectos: [],
+        ...overrides,
+    };
 }
 
 describe('applicableTables', () => {
@@ -401,5 +456,77 @@ describe('drawEvent', () => {
     test('defensive: an rng returning 1 falls back to the last pool entry', () => {
         const table = tabla('t', { eventos: [evento('a'), evento('b')] });
         expect(drawEvent([table], ctx(), () => 1)!.event.id).toBe('b');
+    });
+
+    // ── history model (seenCounts) ────────────────────────────────────────────
+
+    test('an omitted seenCounts is exactly the pre-history behavior', () => {
+        const table = tabla('t', {
+            eventos: [evento('a', { peso: 1, unico: true }), evento('b', { peso: 3 })],
+        });
+        // total 4: a owns [0,1), b owns [1,4) — same as the weighted test above.
+        expect(drawEvent([table], ctx(), () => 0)!.event.id).toBe('a');
+        expect(drawEvent([table], ctx(), () => 0.5)!.event.id).toBe('b');
+    });
+
+    test('a seen unico event is never returned (swept across the whole range)', () => {
+        const table = tabla('t', {
+            eventos: [evento('once', { peso: 5, unico: true }), evento('rep', { peso: 1 })],
+        });
+        const seen = new Map([['t#once', 1]]);
+        // Without exclusion 'once' would own [0,5) of 6 — dominate almost every
+        // roll. With it seen+unico, only 'rep' can ever come out.
+        for (let i = 0; i <= 20; i++) {
+            const roll = i / 21; // 0 .. ~0.95
+            const drawn = drawEvent([table], ctx(), () => roll, seen);
+            expect(drawn!.event.id).toBe('rep');
+        }
+    });
+
+    test('an UNSEEN unico event still draws normally', () => {
+        const table = tabla('t', {
+            eventos: [evento('once', { peso: 5, unico: true }), evento('rep', { peso: 1 })],
+        });
+        // Empty tally: 'once' is eligible and (weight 5 of 6) dominates.
+        expect(drawEvent([table], ctx(), () => 0.1, new Map())!.event.id).toBe('once');
+    });
+
+    test('a seen non-unico event is decayed but still possible', () => {
+        // peso 9, seen 2 -> effective round(9 / 3) = 3; paired with a fresh
+        // peso-1 event the decayed one owns [0,3) of 4 and the fresh one [3,4).
+        const table = tabla('t', {
+            eventos: [evento('warhorse', { peso: 9 }), evento('fresh', { peso: 1 })],
+        });
+        const seen = new Map([['t#warhorse', 2]]);
+        // Still reachable...
+        expect(drawEvent([table], ctx(), () => 0.1, seen)!.event.id).toBe('warhorse');
+        // ...but the fresh event now owns the tail it never would at 9/1.
+        expect(drawEvent([table], ctx(), () => 0.9, seen)!.event.id).toBe('fresh');
+        // Decay floors at 1, never 0 (huge seen count still leaves it drawable).
+        const buried = new Map([['t#warhorse', 999]]);
+        const onlyOne = tabla('t', { eventos: [evento('warhorse', { peso: 9 })] });
+        expect(drawEvent([onlyOne], ctx(), () => 0.5, buried)!.event.id).toBe('warhorse');
+    });
+
+    test('all-unico-seen falls back to the full pool (never a dead-end)', () => {
+        const table = tabla('t', {
+            eventos: [
+                evento('u1', { peso: 2, unico: true }),
+                evento('u2', { peso: 2, unico: true }),
+            ],
+        });
+        const seen = new Map([
+            ['t#u1', 1],
+            ['t#u2', 1],
+        ]);
+        // Both eligible events are unico-and-seen -> live pool empty -> fall
+        // back to the pre-exclusion pool so SOMETHING still comes out.
+        const drawn = drawEvent([table], ctx(), () => 0.5, seen);
+        expect(drawn).not.toBeNull();
+        expect(['u1', 'u2']).toContain(drawn!.event.id);
+    });
+
+    test('empty pool stays null even with a seen tally', () => {
+        expect(drawEvent([], ctx(), () => 0, new Map([['t#a', 1]]))).toBeNull();
     });
 });

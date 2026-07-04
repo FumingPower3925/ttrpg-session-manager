@@ -211,7 +211,7 @@ import {
   deriveLeadActionability,
 } from '@/lib/world/worldScanner';
 import { buildCondContext } from '@/lib/world/conditions';
-import { applicableTables, drawEvent } from '@/lib/world/eventEngine';
+import { applicableTables, drawEvent, eventSeenCounts } from '@/lib/world/eventEngine';
 import {
   computeTravelPlan,
   sectorLegEndDay,
@@ -1025,18 +1025,38 @@ export default function WorldPage() {
 
   // ── M4: event drawer (openers first — the travel deficit hook uses them) ──
 
-  /** Weighted draw over the tables applicable at `anchorId` for `contexto`. */
+  /**
+   * Weighted draw over the tables applicable at `anchorId` for `contexto`,
+   * honoring the once-only/decay history model. The seen tally spans BOTH the
+   * live session (partyStore evento entries) AND every scanned diario journal
+   * (evento entries) — so a unico event fired in a prior, not-yet-maintained
+   * session does not refire even before its journal is processed. `extraSeen`
+   * bumps ids beyond that tally: the redraw passes the id just shown so it is
+   * excluded/decayed and the second draw differs when the pool allows.
+   */
   const drawFromTables = useCallback(
     (
       contexto: 'viaje' | 'estancia',
-      anchorId: string | null
+      anchorId: string | null,
+      extraSeen: string[] = []
     ): { table: EventTable; event: WorldEvent } | null => {
       const currentModel = useWorldStore.getState().model;
       if (!currentModel) return null;
       const party = usePartyStore.getState();
       const ctx = buildCondContext(currentModel, party, anchorId);
       const tables = applicableTables(currentModel.tablas, contexto, ctx.regionActual);
-      return drawEvent(tables, ctx, Math.random);
+      const eventoPayloads: string[] = [];
+      for (const entry of party.session.entries) {
+        if (entry.tipo === 'evento') eventoPayloads.push(entry.payload);
+      }
+      for (const journal of currentModel.diario) {
+        for (const entry of journal.entradas) {
+          if (entry.tipo === 'evento') eventoPayloads.push(entry.payload);
+        }
+      }
+      eventoPayloads.push(...extraSeen);
+      const seenCounts = eventSeenCounts(eventoPayloads);
+      return drawEvent(tables, ctx, Math.random, seenCounts);
     },
     []
   );
@@ -1262,13 +1282,18 @@ export default function WorldPage() {
 
   // ── M4: event drawer (draw lifecycle) ─────────────────────────────────────
 
-  /** Otra tirada: one redraw per opening, journals nothing by itself. */
+  /**
+   * Otra tirada: one redraw per opening, journals nothing by itself. The event
+   * just shown this opening is added to the seen tally so the redraw excludes
+   * (unico) or decays (non-unico) it — a different draw when the pool allows.
+   */
   const handleEventRedraw = useCallback(() => {
     const { contexto, anchorId } = eventSourceRef.current;
-    setEventDraw(drawFromTables(contexto, anchorId));
+    const shownId = eventDraw ? `${eventDraw.table.id}#${eventDraw.event.id}` : null;
+    setEventDraw(drawFromTables(contexto, anchorId, shownId ? [shownId] : []));
     setEventApplied([]);
     setEventDrawCount((count) => count + 1);
-  }, [drawFromTables]);
+  }, [drawFromTables, eventDraw]);
 
   const handleEventOutcome = useCallback(
     (outcome: EventOutcome, nota?: string) => {
@@ -2502,16 +2527,17 @@ export default function WorldPage() {
             canRedraw={eventDraw !== null && eventDrawCount < 2}
           />
 
-          {/* World music dock: exists only while the manager does (>=1 track);
-              concealed (state kept) while the ActRunner owns the room. */}
-          {worldAudio && (
-            <WorldAudioDock
-              audioManager={worldAudio}
-              bgm={model.musica.bgm}
-              eventPlaylists={model.musica.eventPlaylists}
-              concealed={actRunnerOpen}
-            />
-          )}
+          {/* World music dock: ALWAYS present in the ready state so an empty
+              mundo/musica/ reads as "no music yet" (empty-state panel) rather
+              than a missing control. The manager is null until there is at
+              least one track (no AudioManager for an empty folder). Concealed
+              (state kept) while the ActRunner owns the room. */}
+          <WorldAudioDock
+            audioManager={worldAudio}
+            bgm={model.musica.bgm}
+            eventPlaylists={model.musica.eventPlaylists}
+            concealed={actRunnerOpen}
+          />
 
           {actRunnerPlace?.playable && worldFs && (
             <ActRunner
