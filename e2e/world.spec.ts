@@ -123,6 +123,62 @@ test.describe('World Mode - Drill-in & tiers', () => {
         await expect(bar).toBeVisible();
         await expect(bar).toContainText('no hay datos del grupo');
     });
+
+    test('double-clicking a place with children opens the SiteList (tier 3)', async ({ page }) => {
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+
+        // porto_verne contains torre_korinth -> dblclick drills into the list.
+        await page.locator('[data-entity-id="porto_verne"]').dblclick();
+        const list = page.locator('[data-site-list="porto_verne"]');
+        await expect(list).toBeVisible();
+        await expect(list.locator('[data-site-id="torre_korinth"]')).toBeVisible();
+        // The duplicate EntityPanel for the SAME lugar is suppressed (the list
+        // header already names it); selecting a row brings the panel back.
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toHaveCount(0);
+
+        await list.locator('[data-site-id="torre_korinth"]').click();
+        await expect(page.locator('[data-entity-panel="torre_korinth"]')).toBeVisible();
+
+        // Breadcrumb carries all three levels; the middle crumb pops the list.
+        const crumbs = page.getByRole('navigation', { name: 'Ruta del mapa' });
+        await expect(crumbs).toContainText('Porto Verne');
+        await crumbs.getByRole('button', { name: 'Sistema Verne' }).click();
+        await expect(page.locator('[data-site-list="porto_verne"]')).toHaveCount(0);
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+    });
+});
+
+// ── B1 fix: cockpit bootstrap without estado/grupo.md ───────────────────────
+
+test.describe('World Mode - Crear estado/grupo.md', () => {
+    test('the null-estado bar offers creating the file and unblocks the session', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN); // estado/ empty
+        await openWorldViaOPFS(page);
+
+        const bar = page.locator('[data-party-bar]');
+        await expect(bar).toContainText('no hay datos del grupo');
+
+        await page.locator('[data-create-estado]').click();
+
+        // The bar switches to the live readout with the defaults...
+        await expect(bar.locator('[data-creditos="0"]')).toBeVisible();
+        await expect(bar.locator('[data-medidor="viveres"][data-valor="3"]')).toBeAttached();
+        await expect(page.locator('[data-session-start]')).toBeEnabled();
+
+        // ...and the file landed on disk, agent-parseable.
+        const estado = await readOPFSFile(page, 'mundo/estado/grupo.md');
+        expect(estado).toContain('tipo: estado_grupo');
+        expect(estado).toContain('sesion_activa: false');
+
+        // The unblocked cockpit records for real.
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+    });
 });
 
 // ── M2: search + deep link ──────────────────────────────────────────────────
@@ -367,10 +423,15 @@ test.describe('World Mode - Travel & events', () => {
         await page.locator('[data-travel-here]').click();
         const dialog = page.locator('[data-travel-dialog]');
         await expect(dialog).toBeVisible();
-        // Intra-system hop: 1 flat day, no consumption (pips stay 2 -> 2).
+        // Intra-system hop: 1 flat day, no fuel (pips stay 2 -> 2) — but the
+        // calendar crosses dia 4128 (multiple of viveres_cada_dias 4), so the
+        // dialog previews exactly 1 ración: 3 -> 2.
         await expect(dialog.locator('[data-travel-total-dias="1"]')).toBeVisible();
         await expect(
             dialog.locator('[data-travel-medidor="combustible"][data-antes="2"][data-despues="2"]')
+        ).toBeAttached();
+        await expect(
+            dialog.locator('[data-travel-medidor="viveres"][data-antes="3"][data-despues="2"]')
         ).toBeAttached();
 
         await page.locator('[data-travel-confirm]').click();
@@ -395,7 +456,7 @@ test.describe('World Mode - Travel & events', () => {
             page.locator('[data-party-bar]').getByRole('navigation', { name: 'Ubicación' })
         ).toContainText('Kovar III');
 
-        // Full journal trail: rumbo -> dia -> llegada.
+        // Full journal trail: rumbo -> dia -> consumo -> llegada.
         await expect
             .poll(() => readOPFSFile(page, journalPath))
             .toMatch(/- \[\d{2}:\d{2}\] llegada: kovar_iii \| dia 4128/);
@@ -404,6 +465,101 @@ test.describe('World Mode - Travel & events', () => {
             /- \[\d{2}:\d{2}\] rumbo: kovar_iii \| 1 dias, llegada estimada dia 4128/
         );
         expect(journal).toMatch(/- \[\d{2}:\d{2}\] dia: 4127->4128/);
+        // The calendar tick journaled as a medidor entry (replay-safe trail).
+        expect(journal).toMatch(
+            /- \[\d{2}:\d{2}\] medidor: viveres 3->2 \| consumo de víveres/
+        );
+        await expect(
+            page.locator('[data-party-bar] [data-medidor="viveres"][data-valor="2"]')
+        ).toBeAttached();
+    });
+
+    test('travel dialog in viewer mode: plan previews, confirm disabled with hint', async ({ page }) => {
+        // NO session on purpose: previewing routes is legit, travelling records.
+        await page.locator('[data-entity-id="sistema_kessler"]').click();
+        await expect(page.locator('[data-entity-panel="sistema_kessler"]')).toBeVisible();
+        await page.locator('[data-travel-here]').click();
+
+        const dialog = page.locator('[data-travel-dialog]');
+        await expect(dialog).toBeVisible();
+        await expect(dialog.locator('[data-travel-total-dias="8"]')).toBeVisible();
+        await expect(dialog.locator('[data-travel-session-hint]')).toBeVisible();
+        await expect(dialog.locator('[data-travel-confirm]')).toBeDisabled();
+    });
+
+    test('insufficiency warning carries the schedule-derived depletion day', async ({ page }) => {
+        await startSession(page);
+
+        // Drop combustible to 1: the 8-day Kessler run needs ceil(7/4) = 2.
+        await page.locator('[data-quicklog="combustible"]').click();
+        await page.locator('[data-quicklog-pips="combustible"] [data-quicklog-pip="1"]').click();
+        await expect(
+            page.locator('[data-party-bar] [data-medidor="combustible"][data-valor="1"]')
+        ).toBeAttached();
+
+        await page.locator('[data-entity-id="sistema_kessler"]').click();
+        await page.locator('[data-travel-here]').click();
+        const dialog = page.locator('[data-travel-dialog]');
+        await expect(dialog).toBeVisible();
+        await expect(dialog.getByText('Combustible insuficiente')).toBeVisible();
+        // Fuel ticks on trip days 5 and 8 (sector leg-days 4 and 7): with 1
+        // in the tank the second tick cannot be covered -> depletion day 8.
+        await expect(dialog.locator('[data-travel-agotamiento-combustible="8"]')).toBeVisible();
+        // GM override stays available (destructive confirm).
+        await expect(dialog.locator('[data-travel-confirm]')).toBeEnabled();
+        await dialog.getByRole('button', { name: 'Cancelar' }).click();
+        await expect(dialog).toBeHidden();
+    });
+
+    test('descanso: quick-log button advances the calendar and ticks víveres', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        // +3 days from 4127 crosses 4128 (multiple of 4) -> exactly 1 ración.
+        await page.locator('[data-quicklog="descanso"]').click();
+        await page.locator('[data-quicklog-descanso-dias="3"]').click();
+
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] descanso: 3 dias/);
+        expect(await readOPFSFile(page, journalPath)).toMatch(
+            /- \[\d{2}:\d{2}\] medidor: viveres 3->2 \| consumo de víveres/
+        );
+        const bar = page.locator('[data-party-bar]');
+        await expect(bar.locator('[data-dia="4130"]')).toBeAttached();
+        await expect(bar.locator('[data-medidor="viveres"][data-valor="2"]')).toBeAttached();
+
+        // Custom amount: +2 from 4130 crosses 4132 -> a second ración.
+        await page.locator('[data-quicklog="descanso"]').click();
+        const custom = page.locator('[data-quicklog-descanso-custom]');
+        await custom.fill('2');
+        await custom.press('Enter');
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] descanso: 2 dias/);
+        await expect(bar.locator('[data-dia="4132"]')).toBeAttached();
+        await expect(bar.locator('[data-medidor="viveres"][data-valor="1"]')).toBeAttached();
+    });
+
+    test('a tick on an empty gauge journals the deficit nota, never medidor 0->0', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        // Empty the pantry, then rest across a ration day (4128).
+        await page.locator('[data-quicklog="viveres"]').click();
+        await page.locator('[data-quicklog-pips="viveres"] [data-quicklog-pip="0"]').click();
+        await expect(
+            page.locator('[data-party-bar] [data-medidor="viveres"][data-valor="0"]')
+        ).toBeAttached();
+
+        await page.locator('[data-quicklog="descanso"]').click();
+        await page.locator('[data-quicklog-descanso-dias="3"]').click();
+
+        // Complication hook: deficit nota + warning toast with the event action.
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] nota: Sin víveres desde el día 4130 — el grupo pasa hambre/);
+        expect(await readOPFSFile(page, journalPath)).not.toMatch(/medidor: viveres 0->0/);
+        await expect(page.getByText('el grupo pasa hambre', { exact: false }).first()).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Tirar evento' })).toBeVisible();
     });
 
     test('estancia event: draw, apply the ganancia efecto, resolve', async ({ page }) => {
@@ -479,11 +635,12 @@ test.describe('World Mode - Travel & events', () => {
     });
 
     test('RoutePreview shows at sector tier for a cross-system selection and hides on drill-in', async ({ page }) => {
-        // porto_verne -> sistema_kessler: 1 intra day + ceil(√45)=7 sector days.
+        // porto_verne -> sistema_kessler: 1 intra day + ceil(√45)=7 sector days;
+        // combustible = ceil(7/4) = 2 (per-day cadence on the sector leg).
         await page.locator('[data-entity-id="sistema_kessler"]').click();
         const preview = page.locator('[data-route-preview]');
         await expect(preview).toBeVisible();
-        await expect(preview).toContainText('8 días · −1 combustible');
+        await expect(preview).toContainText('8 días · −2 combustible');
 
         // System tier renders no routes layer -> the preview is gone.
         await page.locator('[data-entity-id="sistema_verne"]').dblclick();

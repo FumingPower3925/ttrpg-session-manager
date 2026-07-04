@@ -5,9 +5,11 @@
  * party is en route ("Día 2 de 3 — rumbo a X"). Pure and props-driven; the
  * page owns the day loop (per-day date + consumption entries), the event
  * draw (EventDrawer) and the arrival. Cancel aborts the remaining days —
- * nothing further is logged.
+ * nothing further is logged — behind a small confirm popover: it sits next
+ * to "Resolver resto" and a misclick would silently abort the trip.
  */
 
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dices, FastForward, MoveRight, Rocket, X } from 'lucide-react';
 
@@ -38,7 +40,8 @@ export function TravelStepper({
   onCancel,
   eventDisabled,
 }: TravelStepperProps) {
-  const progress = totalDias > 0 ? Math.min(Math.max(dia / totalDias, 0), 1) : 0;
+  // Day `dia` is ABOUT to be traveled: the bar fills with completed days.
+  const progress = totalDias > 0 ? Math.min(Math.max((dia - 1) / totalDias, 0), 1) : 0;
 
   return (
     <div
@@ -61,7 +64,7 @@ export function TravelStepper({
         className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-primary/15"
         role="progressbar"
         aria-label="Progreso del viaje"
-        aria-valuenow={dia}
+        aria-valuenow={dia - 1}
         aria-valuemin={0}
         aria-valuemax={totalDias}
       >
@@ -101,18 +104,90 @@ export function TravelStepper({
           <FastForward />
           Resolver resto sin eventos
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          data-travel-cancel
-          onClick={onCancel}
-          className="min-h-11 text-muted-foreground"
-        >
-          <X />
-          Cancelar
-        </Button>
+        <CancelTravelButton destinoName={destinoName} onCancel={onCancel} />
       </div>
+    </div>
+  );
+}
+
+/** "Cancelar" behind a confirm popover (same pattern as Terminar sesión). */
+function CancelTravelButton({
+  destinoName,
+  onCancel,
+}: {
+  destinoName: string;
+  onCancel: () => void;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setConfirmOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setConfirmOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [confirmOpen]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        data-travel-cancel
+        aria-expanded={confirmOpen}
+        onClick={() => setConfirmOpen((open) => !open)}
+        className="min-h-11 text-muted-foreground"
+      >
+        <X />
+        Cancelar
+      </Button>
+      {confirmOpen && (
+        <div
+          data-travel-cancel-confirm-popover
+          className="absolute right-0 top-full z-50 mt-2 w-72 rounded-md border bg-popover p-3 text-popover-foreground shadow-md"
+        >
+          <p className="text-sm font-medium">¿Cancelar el viaje a {destinoName}?</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            El grupo mantiene su posición; los días ya avanzados no se devuelven.
+          </p>
+          <div className="mt-3 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmOpen(false)}
+              className="min-h-11"
+            >
+              Seguir viajando
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              data-travel-cancel-confirm
+              onClick={() => {
+                setConfirmOpen(false);
+                onCancel();
+              }}
+              className="min-h-11"
+            >
+              Cancelar viaje
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

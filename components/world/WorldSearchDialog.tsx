@@ -72,10 +72,20 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Closing by ANY path clears the query, so reopening never shows stale
+  // results (Escape-close used to keep them).
+  const handleOpenChange = (open: boolean) => {
+    setIsOpen(open);
+    if (!open) {
+      setQuery('');
+      setResults([]);
+      setIsSearching(false);
+    }
+  };
+
   const handleSelect = (result: WorldSearchResult) => {
     onResultSelect(result.id);
-    setIsOpen(false);
-    setQuery('');
+    handleOpenChange(false);
   };
 
   // Enter must act on what the input says NOW, not on the last debounced
@@ -90,7 +100,7 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" className="min-h-11 gap-2" aria-label="Buscar en el mundo">
           <Search className="h-4 w-4" />

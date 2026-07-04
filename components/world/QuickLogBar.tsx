@@ -1,15 +1,19 @@
 'use client';
 
 /**
- * QuickLogBar — bottom cockpit action band (M3, plan Part B). Eight large
+ * QuickLogBar — bottom cockpit action band (M3, plan Part B). Nine large
  * one-tap buttons; every logging path is at most 2 interactions. Pure and
  * props-driven: the page owns the store and passes callbacks. Disabled as a
- * whole until the session is active.
+ * whole until the session is active, with two exceptions:
+ *   - «Pista» only switches the right panel to the Pistas tab (it logs
+ *     nothing), so it stays enabled even without a session — same as the tab.
+ *   - «Descansar» and «Evento» additionally disable MID-TRAVEL: the stepper
+ *     owns day advancement and the viaje event draw there.
  *
- * Popovers (créditos amounts, medidor pips) are hand-rolled (relative anchor +
- * absolute panel opening upward) instead of ui/dropdown-menu because the
- * créditos panel embeds a free-text input and Radix menus fight keyboard
- * focus inside items.
+ * Popovers (créditos amounts, medidor pips, descanso days) are hand-rolled
+ * (relative anchor + absolute panel opening upward) instead of
+ * ui/dropdown-menu because the créditos panel embeds a free-text input and
+ * Radix menus fight keyboard focus inside items.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -23,6 +27,7 @@ import {
   Gauge,
   LucideIcon,
   MapPin,
+  Moon,
   Rocket,
   StickyNote,
   Target,
@@ -56,13 +61,19 @@ interface QuickLogBarProps {
   medidores: Record<string, number>;
   /** Gauge names from the world manifest (order preserved). */
   medidorNames: string[];
+  /** Current dia_mundo — shown under «Descansar». */
+  diaMundo: number;
   /** Opens the MoverDialog (page-owned). */
   onMover: () => void;
   /** Signed credit delta, already confirmed by the GM. */
   onCreditos: (delta: number) => void;
   /** Absolute new value 0-5 for the named gauge. */
   onMedidor: (nombre: string, to: number) => void;
-  /** Opens the leads tab/dialog (page-owned). */
+  /** Rest N days (> 0); the page advances dia_mundo + víveres ticks. */
+  onDescanso: (dias: number) => void;
+  /** True mid-travel: the stepper owns day advancement then. */
+  descansoDisabled?: boolean;
+  /** Opens the leads tab/dialog (page-owned). Never session-gated: logs nothing. */
   onPista: () => void;
   /**
    * Opens the estancia EventDrawer (page-owned). Enabled whenever the session
@@ -70,20 +81,29 @@ interface QuickLogBarProps {
    * of disabling the button (the GM discovers why there).
    */
   onEvento: () => void;
+  /** True mid-travel: the estancia pool would anchor on the origin already left. */
+  eventoDisabled?: boolean;
   /** Freeform note text (non-empty, trimmed). */
   onNota: (text: string) => void;
 }
+
+const MID_TRAVEL_DESCANSO_TITLE = 'El viaje en curso ya avanza los días — usa «Continuar»';
+const MID_TRAVEL_EVENTO_TITLE = 'Durante un viaje usa «Tirar evento de viaje»';
 
 export function QuickLogBar({
   enabled,
   creditos,
   medidores,
   medidorNames,
+  diaMundo,
   onMover,
   onCreditos,
   onMedidor,
+  onDescanso,
+  descansoDisabled = false,
   onPista,
   onEvento,
+  eventoDisabled = false,
   onNota,
 }: QuickLogBarProps) {
   /** Which popover is open: 'creditos' | medidor name | null. */
@@ -211,11 +231,37 @@ export function QuickLogBar({
         );
       })}
 
+      {/* Descansar: +1/+3/custom days popover (calendar drives víveres). */}
+      <PopoverAnchor
+        open={openPopover === 'descanso'}
+        onClose={() => setOpenPopover(null)}
+        panel={
+          <DescansoPanel
+            onDescanso={(dias) => {
+              onDescanso(dias);
+              setOpenPopover(null);
+            }}
+          />
+        }
+      >
+        <ActionButton
+          id="descanso"
+          icon={Moon}
+          label="Descansar"
+          sub={`día ${diaMundo}`}
+          enabled={enabled && !descansoDisabled}
+          disabledTitle={enabled ? MID_TRAVEL_DESCANSO_TITLE : DISABLED_TITLE}
+          active={openPopover === 'descanso'}
+          onClick={() => setOpenPopover(openPopover === 'descanso' ? null : 'descanso')}
+        />
+      </PopoverAnchor>
+
+      {/* Pista never logs anything — it stays available as a shortcut to the tab. */}
       <ActionButton
         id="pista"
         icon={Target}
         label="Pista"
-        enabled={enabled}
+        enabled
         onClick={() => {
           setOpenPopover(null);
           onPista();
@@ -226,7 +272,8 @@ export function QuickLogBar({
         id="evento"
         icon={Zap}
         label="Evento"
-        enabled={enabled}
+        enabled={enabled && !eventoDisabled}
+        disabledTitle={enabled ? MID_TRAVEL_EVENTO_TITLE : DISABLED_TITLE}
         onClick={() => {
           setOpenPopover(null);
           onEvento();
@@ -244,7 +291,7 @@ export function QuickLogBar({
             value={notaText}
             onChange={(event) => setNotaText(event.target.value)}
             onKeyDown={handleNotaKeyDown}
-            placeholder="Nota rápida… (Enter registra)"
+            placeholder="Nota rápida…"
             className="h-8 border-none bg-transparent px-1 shadow-none focus-visible:ring-0 dark:bg-transparent"
             aria-label="Nota rápida"
           />
@@ -371,7 +418,8 @@ function CreditosPanel({ onDelta }: { onDelta: (delta: number) => void }) {
   const [custom, setCustom] = useState('');
 
   const submitCustom = () => {
-    const amount = Number.parseInt(custom, 10);
+    // Tolerate the Unicode minus (−) some keyboards produce.
+    const amount = Number.parseInt(custom.replace(/−/g, '-'), 10);
     if (!Number.isFinite(amount) || amount === 0) return;
     onDelta(amount);
     setCustom('');
@@ -405,10 +453,60 @@ function CreditosPanel({ onDelta }: { onDelta: (delta: number) => void }) {
             submitCustom();
           }
         }}
-        placeholder="Cantidad… (−400)"
+        placeholder="Cantidad… (-400)"
         inputMode="numeric"
         className="h-8"
         aria-label="Cantidad de créditos"
+      />
+    </div>
+  );
+}
+
+const DESCANSO_DELTAS = [1, 3];
+
+/** +1 / +3 days one-tap, or a custom positive number (Enter confirms). */
+function DescansoPanel({ onDescanso }: { onDescanso: (dias: number) => void }) {
+  const [custom, setCustom] = useState('');
+
+  const submitCustom = () => {
+    const dias = Number.parseInt(custom.replace(/−/g, '-'), 10);
+    if (!Number.isFinite(dias) || dias <= 0) return;
+    onDescanso(dias);
+    setCustom('');
+  };
+
+  return (
+    <div className="w-44 space-y-2" data-quicklog-descanso-menu>
+      <div className="grid grid-cols-2 gap-1">
+        {DESCANSO_DELTAS.map((dias) => (
+          <Button
+            key={dias}
+            type="button"
+            variant="secondary"
+            size="sm"
+            data-quicklog-descanso-dias={dias}
+            onClick={() => onDescanso(dias)}
+            // h-11 = 44px tap target (M5 sweep).
+            className="h-11 tabular-nums"
+          >
+            +{dias} {dias === 1 ? 'día' : 'días'}
+          </Button>
+        ))}
+      </div>
+      <Input
+        data-quicklog-descanso-custom
+        value={custom}
+        onChange={(event) => setCustom(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            submitCustom();
+          }
+        }}
+        placeholder="Días… (5)"
+        inputMode="numeric"
+        className="h-8"
+        aria-label="Días de descanso"
       />
     </div>
   );

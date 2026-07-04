@@ -53,6 +53,8 @@ interface EntityPanelProps {
    * children) — matches the map badge, which also counts the interior.
    */
   interiorLeads?: EntityPanelLead[];
+  /** True when the entity is the party's current location ("Estáis aquí"). */
+  isCurrentLocation?: boolean;
   onDrillIn?: () => void;
   onClose: () => void;
   /** Page-provided action buttons (Viajar / Entrar / Jugar). */
@@ -65,6 +67,7 @@ export function EntityPanel({
   factionNames,
   leads,
   interiorLeads = [],
+  isCurrentLocation = false,
   onDrillIn,
   onClose,
   actions,
@@ -77,6 +80,10 @@ export function EntityPanel({
       <CardHeader className="border-b py-4">
         <CardTitle className="text-base">{entity.nombre}</CardTitle>
         <div className="flex flex-wrap items-center gap-1">
+          {isCurrentLocation && (
+            // Same badge language as the SiteList's current-location row.
+            <Badge data-entity-current>Estáis aquí</Badge>
+          )}
           <Badge variant="secondary">{entity.tipo}</Badge>
           <Badge variant="outline">{CONOCIMIENTO_LABEL[entity.conocimiento]}</Badge>
           {entity.acceso && entity.acceso !== 'normal' && (

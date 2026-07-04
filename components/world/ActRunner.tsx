@@ -213,6 +213,10 @@ abrir el acto.`;
     [currentTab]
   );
 
+  /** "bram_oskar.md" -> "bram oskar" — tabs read as names, not filenames. */
+  const docTabLabel = (name: string): string =>
+    name.replace(/\.md$/i, '').replace(/_/g, ' ');
+
   const handleImageClose = useCallback(() => {
     setCurrentTab(previousTab);
   }, [previousTab]);
@@ -298,7 +302,7 @@ abrir el acto.`;
                 ))}
                 {currentPart.supportDocs.map((doc, index) => (
                   <TabsTrigger key={`doc-${index}`} value={`doc-${index}`}>
-                    {doc.name}
+                    {docTabLabel(doc.name)}
                   </TabsTrigger>
                 ))}
               </TabsList>

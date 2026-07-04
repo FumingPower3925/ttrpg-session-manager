@@ -270,15 +270,22 @@ export function EventDrawer({
     setNota('');
   }, [eventId, open]);
 
-  // Escape closes (the sheet is modal-ish but keeps the page interactive).
+  // Escape closes (the sheet is modal-ish but keeps the page interactive) —
+  // but with the complicación row open it only collapses THAT first: closing
+  // the whole drawer would discard the drawn event and the typed nota.
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onOpenChange(false);
+      if (event.key !== 'Escape') return;
+      if (complicacionOpen) {
+        setComplicacionOpen(false);
+        return;
+      }
+      onOpenChange(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onOpenChange]);
+  }, [open, onOpenChange, complicacionOpen]);
 
   const resolve = (outcome: EventOutcome, outcomeNota?: string) => {
     onOutcome(outcome, outcomeNota);
@@ -439,6 +446,12 @@ export function EventDrawer({
                       if (event.key === 'Enter') {
                         event.preventDefault();
                         resolve('complicacion', nota.trim() || undefined);
+                      } else if (event.key === 'Escape') {
+                        // Collapse the row only; the window handler is
+                        // stopped so the drawer (and the draw) survive.
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setComplicacionOpen(false);
                       }
                     }}
                     placeholder="¿Qué se complica?"

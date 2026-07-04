@@ -26,7 +26,7 @@ function makeModel(entities: WorldEntityBase[]): WorldModel {
             viaje: {
                 diasPorUnidad: 1,
                 intrasistemaDias: 1,
-                combustiblePorTramo: 1,
+                combustibleCadaDias: 4,
                 viveresCadaDias: 4,
             },
             medidores: ['viveres', 'combustible', 'nave'],

@@ -96,9 +96,12 @@ export function MoverDialog({
   };
 
   // Enter picks the first movable candidate (recientes first) — 2-tap flow.
+  // Only once something was typed: a stray Enter right after opening used to
+  // journal an accidental llegada to the first Reciente.
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
+    if (query.trim() === '') return;
     const first = [...recientes, ...resto].find((lugar) => lugar.id !== currentId);
     if (first) handleMove(first.id);
   };

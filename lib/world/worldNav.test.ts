@@ -60,7 +60,7 @@ function faccion(id: string): FactionEntity {
 const MANIFEST: WorldManifest = {
     nombre: 'Sector Test',
     calendario: { era: 'dG', anoEpoca: 322, diasPorMes: 30, meses: ['Uno'] },
-    viaje: { diasPorUnidad: 1, intrasistemaDias: 1, combustiblePorTramo: 1, viveresCadaDias: 4 },
+    viaje: { diasPorUnidad: 1, intrasistemaDias: 1, combustibleCadaDias: 4, viveresCadaDias: 4 },
     medidores: ['viveres', 'combustible', 'nave'],
     regiones: [],
 };

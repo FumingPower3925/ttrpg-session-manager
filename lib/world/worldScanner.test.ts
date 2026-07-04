@@ -17,7 +17,7 @@ calendario:
 viaje:
   dias_por_unidad: 2
   intrasistema_dias: 1
-  combustible_por_tramo: 1
+  combustible_cada_dias: 4
   viveres_cada_dias: 4
 medidores: [viveres, combustible, nave]
 regiones: [nucleo, frontera]
@@ -149,6 +149,7 @@ describe('scanWorldFolder — happy path', () => {
         expect(model.manifest.calendario.anoEpoca).toBe(1200);
         expect(model.manifest.calendario.meses).toEqual(['Alfa', 'Beta', 'Gamma']);
         expect(model.manifest.viaje.diasPorUnidad).toBe(2);
+        expect(model.manifest.viaje.combustibleCadaDias).toBe(4);
         expect(model.manifest.viaje.viveresCadaDias).toBe(4);
         expect(model.manifest.medidores).toEqual(['viveres', 'combustible', 'nave']);
         expect(model.manifest.regiones).toEqual(['nucleo', 'frontera']);
@@ -550,12 +551,66 @@ describe('scanWorldFolder — accionable + manifest defaults', () => {
         expect(model.manifest.viaje).toEqual({
             diasPorUnidad: 1,
             intrasistemaDias: 1,
-            combustiblePorTramo: 1,
+            combustibleCadaDias: 4,
             viveresCadaDias: 4,
         });
         expect(model.manifest.medidores).toEqual(['viveres', 'combustible', 'nave']);
         expect(model.manifest.regiones).toEqual([]);
         expect(model.manifest.calendario.diasPorMes).toBe(30);
+    });
+});
+
+// ── Migración del knob de combustible (combustible_por_tramo -> _cada_dias) ─
+
+describe('scanWorldFolder — migración combustible_cada_dias', () => {
+    function manifestTree(viajeYaml: string): FileTree {
+        return {
+            mundo: {
+                'mundo.md': `---\nnombre: Mig\ncalendario: {era: dG, ano_epoca: 1, dias_por_mes: 30, meses: [Uno]}\nviaje:\n${viajeYaml}\nmedidores: [viveres, combustible, nave]\nregiones: []\n---\n`,
+            },
+        };
+    }
+
+    const legacyAviso = (model: { problemas: { mensaje: string }[] }) =>
+        model.problemas.filter((p) => p.mensaje.includes('combustible_por_tramo'));
+
+    test('legacy key only: default cadence + aviso (never mapped numerically)', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', manifestTree('  dias_por_unidad: 1\n  combustible_por_tramo: 1'))
+        );
+        expect(model.manifest.viaje.combustibleCadaDias).toBe(4);
+        const avisos = legacyAviso(model);
+        expect(avisos).toHaveLength(1);
+        expect(avisos[0].mensaje).toContain('obsoleto');
+        expect(avisos[0].mensaje).toContain('(aplicado: 4)');
+    });
+
+    test('both keys: combustible_cada_dias wins, still with the aviso', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                manifestTree('  combustible_por_tramo: 1\n  combustible_cada_dias: 6')
+            )
+        );
+        expect(model.manifest.viaje.combustibleCadaDias).toBe(6);
+        expect(legacyAviso(model)).toHaveLength(1);
+        expect(legacyAviso(model)[0].mensaje).toContain('(aplicado: 6)');
+    });
+
+    test('neither key: silent default 4', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', manifestTree('  dias_por_unidad: 1'))
+        );
+        expect(model.manifest.viaje.combustibleCadaDias).toBe(4);
+        expect(legacyAviso(model)).toHaveLength(0);
+    });
+
+    test('new key only: parsed, no aviso', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', manifestTree('  combustible_cada_dias: 2'))
+        );
+        expect(model.manifest.viaje.combustibleCadaDias).toBe(2);
+        expect(legacyAviso(model)).toHaveLength(0);
     });
 });
 

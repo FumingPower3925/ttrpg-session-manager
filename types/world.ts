@@ -179,8 +179,13 @@ export interface WorldManifest {
     /** 1 map unit = N days. */
     diasPorUnidad: number;
     intrasistemaDias: number;
-    /** Consumption suggestions — app proposes, GM confirms. */
-    combustiblePorTramo: number;
+    /**
+     * Consumption suggestions — app proposes, GM confirms.
+     * combustible: 1 unit per `combustible_cada_dias` SECTOR-leg days
+     * (ceil per leg); viveres: 1 ration per `viveres_cada_dias` calendar
+     * days, anchored on `dia_mundo` (travel, descanso — any day advance).
+     */
+    combustibleCadaDias: number;
     viveresCadaDias: number;
   };
   medidores: string[];

@@ -61,8 +61,6 @@ interface StarMapProps {
   onToggleUnknown: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  /** Optional extra overlay content (top-center), e.g. a tier hint. */
-  header?: ReactNode;
 }
 
 /** Subtle repeating star field — pure CSS, theme-aware, no images. */
@@ -99,7 +97,6 @@ export function StarMap({
   onToggleUnknown,
   collapsed,
   onToggleCollapsed,
-  header,
 }: StarMapProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const gRef = useRef<SVGGElement>(null);
@@ -272,7 +269,6 @@ export function StarMap({
         <div className="pointer-events-auto flex items-center rounded-md border bg-background/80 px-2 py-1 backdrop-blur-sm">
           <Breadcrumbs items={breadcrumb} />
         </div>
-        {header && <div className="pointer-events-auto">{header}</div>}
         {/* size-11 = 44px tap targets on the overlay controls (M5 sweep). */}
         <div className="pointer-events-auto flex items-center gap-1 rounded-md border bg-background/80 p-1 backdrop-blur-sm">
           <Button

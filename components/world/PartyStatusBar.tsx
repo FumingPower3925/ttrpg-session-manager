@@ -54,6 +54,11 @@ function formatElapsed(ms: number): string {
 interface PartyStatusBarProps {
   /** Party state from estado/grupo.md; null renders the slim hint bar. */
   estado: PartyState | null;
+  /**
+   * Creates estado/grupo.md with the defaults (B1 fix: without the file the
+   * whole cockpit is dead-ended). Rendered as a CTA on the null-estado bar.
+   */
+  onCreateEstado?: () => void;
   /** Preformatted in-world date (page derives it from dia_mundo + manifest calendar). */
   fecha: string;
   /** Current location display name; fallback when no breadcrumb chain resolves. */
@@ -81,6 +86,7 @@ interface PartyStatusBarProps {
 
 export function PartyStatusBar({
   estado,
+  onCreateEstado,
   fecha,
   locationName,
   locationPath,
@@ -99,13 +105,27 @@ export function PartyStatusBar({
     return (
       <div
         data-party-bar
-        className="flex min-h-9 items-center gap-2 border-b bg-muted/40 px-3 py-1 text-xs text-muted-foreground"
+        className="flex min-h-9 flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/40 px-3 py-1 text-xs text-muted-foreground"
       >
         <MapPin className="size-3.5 shrink-0" aria-hidden />
         <span>
           Sin <code className="rounded bg-muted px-1">estado/grupo.md</code> — no hay datos del
-          grupo.
+          grupo ni registro de sesión.
         </span>
+        {onCreateEstado && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-create-estado
+            onClick={onCreateEstado}
+            // min-h-11 = 44px tap target (M5 sweep) — this unblocks the cockpit.
+            className="min-h-11"
+          >
+            <Play />
+            Crear estado/grupo.md
+          </Button>
+        )}
       </div>
     );
   }

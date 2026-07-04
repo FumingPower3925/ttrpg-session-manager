@@ -8,6 +8,8 @@
  *   - 3 systems with the three knowledge extremes (visitado/rumoreado/desconocido)
  *     plus 1 deep-space node with own coords  -> 4 sector-tier map nodes.
  *   - porto_verne/ is a PLAYABLE place folder (lugar.md + plan/characters/music).
+ *   - torre_korinth is a CHILD of porto_verne (en: porto_verne) so the
+ *     non-spatial SiteList tier (tier 3) is reachable from the fixture.
  *   - PLANTILLAS/pista.md and lugares/_borrador.md must be IGNORED by the scanner.
  *   - lugares/roto.md has invalid YAML -> degraded load + Diagnostico entry.
  *   - estado/ exists but is EMPTY -> the party bar renders the absent-estado hint.
@@ -30,7 +32,7 @@ calendario:
 viaje:
   dias_por_unidad: 1
   intrasistema_dias: 1
-  combustible_por_tramo: 1
+  combustible_cada_dias: 4
   viveres_cada_dias: 4
 medidores: [viveres, combustible, nave]
 regiones: [nucleo, frontera]
@@ -113,6 +115,17 @@ resumen: Estructura predecesora en el espacio profundo; solo accesible por porta
 ---
 Ninguna ruta convencional llega hasta el. Los que hablan de el mencionan
 una puerta que se abre desde dentro.
+`,
+            'torre_korinth.md': `---
+tipo: estructura
+nombre: Torre Korinth
+en: porto_verne
+conocimiento: conocido
+etiquetas: [corporativo]
+resumen: Aguja corporativa que domina el anillo de muelles de Porto Verne.
+servicios: [informacion, trabajo]
+---
+Sede local de Vortex Logistics; medio puerto le debe algo a alguien de la torre.
 `,
             '_borrador.md': `---
 tipo: estacion

@@ -45,14 +45,25 @@
  *     with coordinates and the plan is not portal — a RoutePreview line on the
  *     sector tier (system tier renders no routes layer; preview also hides
  *     while a trip is running).
- *   - Confirming the TravelDialog (active session required — otherwise toast
- *     "Inicia sesión para viajar") journals `rumbo` and arms the TravelStepper.
- *     CONSUMPTION SCHEDULE: travelDaySchedule() spreads each leg's combustible
- *     inside that leg (unit i of C on leg-day ceil(i·D/C); the default 1 per
- *     tramo lands on the sector leg's LAST day) and charges 1 víveres every
- *     viveresCadaDias-th day of the whole trip — per-day amounts sum exactly
- *     to the plan totals, so stepping == "Resolver resto". Gauges clamp at 0
- *     (GM override); the clamped medidor entry is what gets journaled.
+ *   - Confirming the TravelDialog (active session required — the confirm is
+ *     disabled with a hint row until "Iniciar sesión") journals `rumbo` and
+ *     arms the TravelStepper.
+ *     CONSUMPTION SCHEDULE (economy redesign): travelDaySchedule() burns each
+ *     sector leg's combustible at combustible_cada_dias boundaries inside that
+ *     leg (remainder on the leg's last day) and charges 1 víveres on every
+ *     dia_mundo that is a multiple of viveres_cada_dias — CALENDAR-anchored,
+ *     so the same route costs ±1 ration depending on the departure phase and
+ *     the dialog previews the exact number. Per-day amounts sum exactly to
+ *     the plan totals, so stepping == "Resolver resto". Gauges clamp at 0
+ *     (GM override); the clamped medidor entry is what gets journaled, and a
+ *     tick meeting an ALREADY-EMPTY gauge journals a deficit nota (hambre /
+ *     a la deriva) + warning toast with a "Tirar evento" action instead of a
+ *     no-op `medidor 0->0` line.
+ *   - DESCANSO: the QuickLogBar «Descansar» button advances dia_mundo outside
+ *     travel (stepper owns days mid-trip) — one `descanso` entry plus the
+ *     calendar víveres ticks via the same consumption path. Undoing a
+ *     descanso therefore takes two undos (tick first) — same as travel-day
+ *     pairs.
  *   - REGION OF ROUTE for travel event draws: the CondContext anchors on the
  *     ORIGIN until the sector leg completes (dia <= sectorLegEndDay), then on
  *     the DESTINATION — ubicacion itself only changes at arrival. Intra-system
@@ -139,7 +150,7 @@ import {
   useWorldStore,
 } from '@/lib/world/stores';
 import type { SessionMirror } from '@/lib/world/stores';
-import { formatFecha, serializePartyState } from '@/lib/world/partyState';
+import { defaultPartyState, formatFecha, serializePartyState } from '@/lib/world/partyState';
 import { JournalWriter } from '@/lib/world/journalWriter';
 import {
   makeEntry,
@@ -157,6 +168,7 @@ import {
   computeTravelPlan,
   sectorLegEndDay,
   travelDaySchedule,
+  viveresTicksBetween,
 } from '@/lib/world/travel';
 import type { TravelDayConsumption } from '@/lib/world/travel';
 import {
@@ -386,8 +398,15 @@ export default function WorldPage() {
   const [travelDialog, setTravelDialog] = useState<{
     targetId: string;
     plan: TravelPlan | null;
+    /** Per-day consumption for the plan, computed at dialog-open time. */
+    schedule: TravelDayConsumption[];
   } | null>(null);
   const [travel, setTravel] = useState<TravelRun | null>(null);
+  // Ref twins for closures that outlive a render (toast actions, deficit hook).
+  const travelStateRef = useRef<TravelRun | null>(null);
+  useEffect(() => {
+    travelStateRef.current = travel;
+  }, [travel]);
   const [eventOpen, setEventOpen] = useState(false);
   const [eventDraw, setEventDraw] = useState<{ table: EventTable; event: WorldEvent } | null>(
     null
@@ -496,7 +515,11 @@ export default function WorldPage() {
   const handleReconnect = useCallback(async () => {
     if (!pendingHandle) return;
     const handle = await reconnectDirHandle(pendingHandle);
-    if (!handle) return; // permission denied — keep offering the button
+    if (!handle) {
+      // Permission denied — keep offering the button, but say why it did nothing.
+      toast.error('Permiso denegado al reconectar — vuelve a intentarlo o elige otra carpeta');
+      return;
+    }
     setPendingHandle(null);
     setEntry('select');
     await openWorld(handle);
@@ -743,67 +766,6 @@ export default function WorldPage() {
 
   // ── M3: quick-log actions (partyStore.log is the single mutation point) ───
 
-  const handleCreditos = useCallback(
-    (delta: number) => {
-      if (delta === 0) return;
-      const logged = usePartyStore
-        .getState()
-        .actions.log(delta < 0 ? makeEntry.gasto(-delta) : makeEntry.ganancia(delta));
-      if (!logged) return;
-      rederiveLeads(); // requisitos like creditos>=N track the live balance
-      toast.success(`${delta > 0 ? '+' : ''}${delta} créditos anotados`);
-    },
-    [rederiveLeads]
-  );
-
-  const handleMedidor = useCallback(
-    (nombre: string, to: number) => {
-      const store = usePartyStore.getState();
-      const from = store.medidores[nombre] ?? 0;
-      if (from === to) return;
-      if (!store.actions.log(makeEntry.medidor(nombre, from, to))) return;
-      rederiveLeads();
-      toast.success(`${medidorLabel(nombre)} ${from} → ${to}`);
-    },
-    [rederiveLeads]
-  );
-
-  const handleNota = useCallback((text: string) => {
-    if (!usePartyStore.getState().actions.log(makeEntry.nota(text))) return;
-    toast.success('Nota registrada');
-  }, []);
-
-  const handleMove = useCallback(
-    (id: string) => {
-      const currentModel = useWorldStore.getState().model;
-      const store = usePartyStore.getState();
-      if (!currentModel) return;
-      if (!store.actions.log(makeEntry.llegada(id, store.diaMundo))) return;
-      // In-memory knowledge bump — reuses the scanner's journal-overlay rule
-      // (applyLlegadaConocimiento): destination ≥ visitado, `en:` ancestors
-      // ≥ conocido. The files are updated later by the agent from the journal.
-      applyLlegadaConocimiento(currentModel, id);
-      rederiveLeads(); // llegada moves the ctx anchor AND unlocks donde-based pistas
-      navigateToEntity(id);
-      toast.success(`Llegada: ${currentModel.entidades.get(id)?.nombre ?? id}`);
-    },
-    [navigateToEntity, rederiveLeads]
-  );
-
-  const handlePistaTransition = useCallback(
-    (pista: Lead, to: Lead['estadoPista']) => {
-      const currentModel = useWorldStore.getState().model;
-      if (!currentModel) return;
-      const from = pista.estadoPista;
-      if (!usePartyStore.getState().actions.log(makeEntry.pista(pista.id, from, to))) return;
-      pista.estadoPista = to;
-      // Full re-derive: other pistas may gate on pista:<id>:<estado> conditions.
-      rederiveLeads();
-      toast.success(`Pista «${pista.nombre}»: ${from.replace('_', ' ')} → ${to.replace('_', ' ')}`);
-    },
-    [rederiveLeads]
-  );
-
   const handleUndo = useCallback(() => {
     const currentModel = useWorldStore.getState().model;
     const removed = usePartyStore.getState().actions.undoLast();
@@ -828,6 +790,120 @@ export default function WorldPage() {
     toast.success(`Última entrada deshecha (${removed.tipo})`);
   }, [rederiveLeads]);
 
+  /**
+   * Sonner action for quick-log success toasts: undo where the eyes are,
+   * without the Diario tab detour. Undo stays BLOCKED mid-travel (same rule
+   * as the Diario button — see the canUndo comment below), read via the ref
+   * because the toast can outlive the render that created it.
+   */
+  const undoToastAction = useMemo(
+    () => ({
+      label: 'Deshacer',
+      onClick: () => {
+        if (travelStateRef.current !== null) return;
+        handleUndo();
+      },
+    }),
+    [handleUndo]
+  );
+
+  const handleCreditos = useCallback(
+    (delta: number) => {
+      if (delta === 0) return;
+      const logged = usePartyStore
+        .getState()
+        .actions.log(delta < 0 ? makeEntry.gasto(-delta) : makeEntry.ganancia(delta));
+      if (!logged) return;
+      rederiveLeads(); // requisitos like creditos>=N track the live balance
+      toast.success(`${delta > 0 ? '+' : ''}${delta} créditos anotados`, {
+        action: undoToastAction,
+      });
+    },
+    [rederiveLeads, undoToastAction]
+  );
+
+  const handleMedidor = useCallback(
+    (nombre: string, to: number) => {
+      const store = usePartyStore.getState();
+      const from = store.medidores[nombre] ?? 0;
+      if (from === to) return;
+      if (!store.actions.log(makeEntry.medidor(nombre, from, to))) return;
+      rederiveLeads();
+      toast.success(`${medidorLabel(nombre)} ${from} → ${to}`, { action: undoToastAction });
+    },
+    [rederiveLeads, undoToastAction]
+  );
+
+  const handleNota = useCallback((text: string) => {
+    if (!usePartyStore.getState().actions.log(makeEntry.nota(text))) return;
+    toast.success('Nota registrada');
+  }, []);
+
+  const handleMove = useCallback(
+    (id: string) => {
+      const currentModel = useWorldStore.getState().model;
+      const store = usePartyStore.getState();
+      if (!currentModel) return;
+      if (!store.actions.log(makeEntry.llegada(id, store.diaMundo))) return;
+      // In-memory knowledge bump — reuses the scanner's journal-overlay rule
+      // (applyLlegadaConocimiento): destination ≥ visitado, `en:` ancestors
+      // ≥ conocido. The files are updated later by the agent from the journal.
+      applyLlegadaConocimiento(currentModel, id);
+      rederiveLeads(); // llegada moves the ctx anchor AND unlocks donde-based pistas
+      navigateToEntity(id);
+      toast.success(`Llegada: ${currentModel.entidades.get(id)?.nombre ?? id}`, {
+        action: undoToastAction,
+      });
+    },
+    [navigateToEntity, rederiveLeads, undoToastAction]
+  );
+
+  const handlePistaTransition = useCallback(
+    (pista: Lead, to: Lead['estadoPista']) => {
+      const currentModel = useWorldStore.getState().model;
+      if (!currentModel) return;
+      const from = pista.estadoPista;
+      if (!usePartyStore.getState().actions.log(makeEntry.pista(pista.id, from, to))) return;
+      pista.estadoPista = to;
+      // Full re-derive: other pistas may gate on pista:<id>:<estado> conditions.
+      rederiveLeads();
+      toast.success(
+        `Pista «${pista.nombre}»: ${from.replace('_', ' ')} → ${to.replace('_', ' ')}`,
+        { action: undoToastAction }
+      );
+    },
+    [rederiveLeads, undoToastAction]
+  );
+
+  // ── M4: event drawer (openers first — the travel deficit hook uses them) ──
+
+  /** Weighted draw over the tables applicable at `anchorId` for `contexto`. */
+  const drawFromTables = useCallback(
+    (
+      contexto: 'viaje' | 'estancia',
+      anchorId: string | null
+    ): { table: EventTable; event: WorldEvent } | null => {
+      const currentModel = useWorldStore.getState().model;
+      if (!currentModel) return null;
+      const party = usePartyStore.getState();
+      const ctx = buildCondContext(currentModel, party, anchorId);
+      const tables = applicableTables(currentModel.tablas, contexto, ctx.regionActual);
+      return drawEvent(tables, ctx, Math.random);
+    },
+    []
+  );
+
+  const openEventDrawer = useCallback(
+    (contexto: 'viaje' | 'estancia', anchorId: string | null) => {
+      eventSourceRef.current = { contexto, anchorId };
+      setEventDraw(drawFromTables(contexto, anchorId));
+      setEventApplied([]);
+      setEventDrawCount(1);
+      setEventOpen(true);
+    },
+    [drawFromTables]
+  );
+
   // ── M4: travel flow ───────────────────────────────────────────────────────
 
   /** Arrival shared by the stepper paths + portal confirm: llegada entry, knowledge bump, navigate. */
@@ -846,26 +922,93 @@ export default function WorldPage() {
     [navigateToEntity, rederiveLeads]
   );
 
-  /** One clamped medidor entry (0..5); logging the clamp IS the GM override record. */
-  const logGaugeConsumption = useCallback((nombre: string, amount: number) => {
-    if (amount <= 0) return;
-    const store = usePartyStore.getState();
-    const from = store.medidores[nombre] ?? 0;
-    const to = Math.max(0, Math.min(5, from - amount));
-    store.actions.log(makeEntry.medidor(nombre, from, to));
-  }, []);
+  /**
+   * One clamped medidor entry (0..5); logging the clamp IS the GM override
+   * record. A tick that meets an ALREADY-EMPTY gauge journals a deficit nota
+   * instead of a no-op `medidor 0->0` line, and surfaces a warning toast with
+   * a «Tirar evento» action (the viaje/estancia tables are the complication
+   * source — the GM resolves and logs via `:::efecto`).
+   */
+  const logGaugeConsumption = useCallback(
+    (nombre: string, amount: number, comentario?: string) => {
+      if (amount <= 0) return;
+      const store = usePartyStore.getState();
+      const from = store.medidores[nombre] ?? 0;
+      const to = Math.max(0, from - amount);
+      if (from > 0) {
+        store.actions.log(makeEntry.medidor(nombre, from, to, comentario));
+      }
+      if (amount <= from) return;
+      // Deficit: the gauge cannot cover the tick(s) — complication hook.
+      const dia = store.diaMundo;
+      const texto =
+        nombre === 'viveres'
+          ? `Sin víveres desde el día ${dia} — el grupo pasa hambre; complicación pendiente`
+          : nombre === 'combustible'
+            ? `Sin combustible el día ${dia} — la nave queda a la deriva; complicación pendiente`
+            : `Sin ${nombre} el día ${dia} — complicación pendiente`;
+      if (!store.actions.log(makeEntry.nota(texto))) return;
+      toast.warning(texto, {
+        action: {
+          label: 'Tirar evento',
+          onClick: () => {
+            const run = travelStateRef.current;
+            const loc = usePartyStore.getState().ubicacion;
+            if (run) {
+              openEventDrawer('viaje', run.dia <= run.sectorEndDay ? loc : run.destinoId);
+            } else {
+              openEventDrawer('estancia', loc);
+            }
+          },
+        },
+      });
+    },
+    [openEventDrawer]
+  );
 
-  /** "Viajar aquí": snapshot the target + plan at click time and open the dialog. */
+  /**
+   * «Descansar»: advances dia_mundo OUTSIDE travel (the stepper owns day
+   * advancement mid-trip — the QuickLogBar button is disabled then). One
+   * `descanso` entry + the calendar víveres ticks through the shared
+   * consumption path, then re-derive (plazo / dia>=N requisitos).
+   */
+  const handleDescanso = useCallback(
+    (dias: number) => {
+      const currentModel = useWorldStore.getState().model;
+      const store = usePartyStore.getState();
+      if (dias <= 0 || !currentModel || !store.session.active) return;
+      if (travelStateRef.current !== null) return;
+      const d0 = store.diaMundo;
+      if (!store.actions.log(makeEntry.descanso(dias))) return;
+      const ticks = viveresTicksBetween(
+        d0,
+        d0 + dias,
+        currentModel.manifest.viaje.viveresCadaDias
+      );
+      logGaugeConsumption('viveres', ticks, 'consumo de víveres');
+      rederiveLeads();
+      toast.success(`Descanso de ${diasLabel(dias)} — día ${d0 + dias}`);
+    },
+    [logGaugeConsumption, rederiveLeads]
+  );
+
+  /** "Viajar aquí": snapshot the target + plan/schedule at click time and open the dialog. */
   const handleOpenTravelDialog = useCallback(() => {
     const currentModel = useWorldStore.getState().model;
     const party = usePartyStore.getState();
     const targetId = useUiStore.getState().selectedEntityId;
     if (!currentModel || !party.ubicacion || !targetId) return;
+    const plan = computeTravelPlan(party.ubicacion, targetId, currentModel, {
+      medidores: party.medidores,
+      diaMundo: party.diaMundo,
+    });
     setTravelDialog({
       targetId,
-      plan: computeTravelPlan(party.ubicacion, targetId, currentModel, {
-        medidores: party.medidores,
-      }),
+      plan,
+      schedule:
+        plan && !plan.portal
+          ? travelDaySchedule(plan, currentModel.manifest.viaje, party.diaMundo)
+          : [],
     });
   }, []);
 
@@ -902,7 +1045,9 @@ export default function WorldPage() {
       destinoId: dialog.targetId,
       destinoName,
       dia: 1,
-      schedule: travelDaySchedule(plan, currentModel.manifest.viaje.viveresCadaDias),
+      // Computed at dialog-open time with the same diaMundo the plan used —
+      // dialog preview and stepper ticks always agree.
+      schedule: dialog.schedule,
       sectorEndDay: sectorLegEndDay(plan, currentModel),
     });
     toast.success(`Rumbo a ${destinoName} — ${diasLabel(plan.totalDias)}`);
@@ -916,8 +1061,8 @@ export default function WorldPage() {
     if (!store.actions.log(makeEntry.dia(store.diaMundo, store.diaMundo + 1))) return;
     const consumo = run.schedule[run.dia - 1];
     if (consumo) {
-      logGaugeConsumption('combustible', consumo.combustible);
-      logGaugeConsumption('viveres', consumo.viveres);
+      logGaugeConsumption('combustible', consumo.combustible, 'consumo de combustible');
+      logGaugeConsumption('viveres', consumo.viveres, 'consumo de víveres');
     }
     if (run.dia >= run.plan.totalDias) {
       arriveAt(run.destinoId);
@@ -941,8 +1086,8 @@ export default function WorldPage() {
       }),
       { combustible: 0, viveres: 0 }
     );
-    logGaugeConsumption('combustible', totals.combustible);
-    logGaugeConsumption('viveres', totals.viveres);
+    logGaugeConsumption('combustible', totals.combustible, 'consumo de combustible');
+    logGaugeConsumption('viveres', totals.viveres, 'consumo de víveres');
     arriveAt(run.destinoId);
   }, [travel, arriveAt, logGaugeConsumption]);
 
@@ -967,34 +1112,7 @@ export default function WorldPage() {
     }
   }, [session.active]);
 
-  // ── M4: event drawer ──────────────────────────────────────────────────────
-
-  /** Weighted draw over the tables applicable at `anchorId` for `contexto`. */
-  const drawFromTables = useCallback(
-    (
-      contexto: 'viaje' | 'estancia',
-      anchorId: string | null
-    ): { table: EventTable; event: WorldEvent } | null => {
-      const currentModel = useWorldStore.getState().model;
-      if (!currentModel) return null;
-      const party = usePartyStore.getState();
-      const ctx = buildCondContext(currentModel, party, anchorId);
-      const tables = applicableTables(currentModel.tablas, contexto, ctx.regionActual);
-      return drawEvent(tables, ctx, Math.random);
-    },
-    []
-  );
-
-  const openEventDrawer = useCallback(
-    (contexto: 'viaje' | 'estancia', anchorId: string | null) => {
-      eventSourceRef.current = { contexto, anchorId };
-      setEventDraw(drawFromTables(contexto, anchorId));
-      setEventApplied([]);
-      setEventDrawCount(1);
-      setEventOpen(true);
-    },
-    [drawFromTables]
-  );
+  // ── M4: event drawer (draw lifecycle) ─────────────────────────────────────
 
   /** Otra tirada: one redraw per opening, journals nothing by itself. */
   const handleEventRedraw = useCallback(() => {
@@ -1197,7 +1315,12 @@ export default function WorldPage() {
       else if (e.tipo === 'gasto') net -= Number(e.payload) || 0;
       else if (e.tipo === 'ganancia') net += Number(e.payload) || 0;
     }
-    return `${session.entries.length} registros · ${viajes} viajes · ${net >= 0 ? '+' : ''}${net} cr · ${pistasCount} pistas`;
+    const total = session.entries.length;
+    return (
+      `${total} ${total === 1 ? 'registro' : 'registros'} · ` +
+      `${viajes} ${viajes === 1 ? 'viaje' : 'viajes'} · ${net >= 0 ? '+' : ''}${net} cr · ` +
+      `${pistasCount} ${pistasCount === 1 ? 'pista' : 'pistas'}`
+    );
   }, [session]);
 
   // ── Derived map data ──────────────────────────────────────────────────────
@@ -1275,8 +1398,36 @@ export default function WorldPage() {
 
   // ── Party readout (live store fields; hydrate seeds them from the file) ──
 
+  /**
+   * B1 fix: without estado/grupo.md the whole cockpit is dead-ended (no
+   * "Iniciar sesión"), so the hint bar offers creating the file with the
+   * defaults (the GM tweaks it later — or the agent does). Write + in-memory
+   * model update + hydrate: no re-scan needed.
+   */
+  const handleCreateEstado = useCallback(async () => {
+    const currentModel = useWorldStore.getState().model;
+    const fsm = useWorldStore.getState().fs;
+    if (!currentModel || currentModel.estadoGrupo || !fsm) return;
+    if (!(await ensureWriteAccess())) {
+      toast.error('Permisos de escritura denegados — no se pudo crear estado/grupo.md');
+      return;
+    }
+    const estado = defaultPartyState(ESTADO_PATH);
+    try {
+      await fsm.writeTextFile(ESTADO_PATH, serializePartyState(estado, new Date().toISOString()));
+      currentModel.estadoGrupo = estado;
+      usePartyStore.getState().actions.hydrate(currentModel);
+      touchModel();
+      toast.success('estado/grupo.md creado — ya puedes iniciar sesión');
+    } catch (error) {
+      console.error('No se pudo crear estado/grupo.md:', error);
+      toast.error('No se pudo escribir estado/grupo.md');
+    }
+  }, [ensureWriteAccess, touchModel]);
+
   /** Live PartyState view for the status bar; null keeps the M2 absent-file hint. */
   const estadoBar = useMemo<PartyState | null>(() => {
+    void modelRev; // handleCreateEstado mutates model.estadoGrupo in place
     if (!model?.estadoGrupo) return null;
     return {
       sesionActiva: session.active,
@@ -1288,7 +1439,7 @@ export default function WorldPage() {
       bodyMd: '',
       filePath: model.estadoGrupo.filePath,
     };
-  }, [model, session.active, diaMundo, ubicacion, rumbo, creditos, medidores]);
+  }, [model, modelRev, session.active, diaMundo, ubicacion, rumbo, creditos, medidores]);
 
   const fecha = useMemo(
     () => (model ? formatFecha(diaMundo, model.manifest) : ''),
@@ -1434,12 +1585,17 @@ export default function WorldPage() {
 
   // ── M4: travel + events derived data ─────────────────────────────────────
 
-  /** Viajar aquí offered for spatial (sistema/lugar) non-current selections, once per trip. */
+  /**
+   * Viajar aquí offered for spatial (sistema/lugar) non-current selections,
+   * once per trip. Anything on the current location's `en:` chain is excluded
+   * too: "travelling" to the sistema you are already inside would only lose
+   * positional precision (ubicacion would coarsen to the container).
+   */
   const canTravelToSelected = useMemo(() => {
-    if (!selectedEntity || !ubicacion || travel !== null) return false;
-    if (selectedEntity.id === ubicacion) return false;
+    if (!model || !selectedEntity || !ubicacion || travel !== null) return false;
+    if (ancestryChain(model, ubicacion).includes(selectedEntity.id)) return false;
     return selectedEntity.tipo === 'sistema' || isPlace(selectedEntity);
-  }, [selectedEntity, ubicacion, travel]);
+  }, [model, selectedEntity, ubicacion, travel]);
 
   /**
    * Event-context place anchor mid-travel: origin until the sector leg
@@ -1468,7 +1624,7 @@ export default function WorldPage() {
     void modelRev; // llegadas bump conocimiento/ubicacion-derived data in place
     if (!model || !ubicacion || !selectedEntity || travel !== null) return null;
     if (!canTravelToSelected) return null;
-    const plan = computeTravelPlan(ubicacion, selectedEntity.id, model, { medidores });
+    const plan = computeTravelPlan(ubicacion, selectedEntity.id, model, { medidores, diaMundo });
     if (!plan || plan.portal) return null;
     const fromRoot = sectorNodeFor(model, ubicacion);
     const toRoot = sectorNodeFor(model, selectedEntity.id);
@@ -1486,7 +1642,7 @@ export default function WorldPage() {
       toXY: { x: toCoords.x * WORLD_SCALE, y: toCoords.y * WORLD_SCALE },
       label,
     };
-  }, [model, ubicacion, selectedEntity, canTravelToSelected, medidores, travel, modelRev]);
+  }, [model, ubicacion, selectedEntity, canTravelToSelected, medidores, diaMundo, travel, modelRev]);
 
   // ── Search & deep link ────────────────────────────────────────────────────
 
@@ -1665,7 +1821,14 @@ export default function WorldPage() {
 
   return (
     <div data-world-status={status} className="flex h-screen flex-col bg-background">
-      <Toaster position="top-center" richColors />
+      {/* Bottom-center, above the QuickLogBar: feedback lands next to the
+          buttons that caused it and never occludes the party status bar. */}
+      <Toaster
+        position="bottom-center"
+        offset={{ bottom: 96 }}
+        mobileOffset={{ bottom: 96 }}
+        richColors
+      />
       {status === 'ready' && model ? (
         <>
           <header className="flex items-center gap-3 border-b px-4 py-2">
@@ -1699,6 +1862,7 @@ export default function WorldPage() {
 
           <PartyStatusBar
             estado={estadoBar}
+            onCreateEstado={handleCreateEstado}
             fecha={fecha}
             locationName={ubicacion}
             locationPath={locationPath}
@@ -1758,10 +1922,23 @@ export default function WorldPage() {
             />
           )}
 
+          {/* Diagnóstico floats over the map instead of stacking a 4th card
+              into the right column (which collapsed it at small heights). */}
+          {diagnosticsOpen && (
+            <div
+              data-diagnostics-overlay
+              className="fixed right-3 top-36 z-40 flex max-h-[65vh] w-96 max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-xl shadow-lg"
+            >
+              <DiagnosticsPanel problemas={model.problemas} onCopyReport={handleCopyReport} />
+            </div>
+          )}
+
           <main className="flex min-h-0 flex-1 gap-3 p-3">
             <div
               ref={mapWrapRef}
-              className={mapCollapsed ? 'min-w-0 flex-1 self-start' : 'relative min-h-0 min-w-0 flex-1'}
+              className={
+                mapCollapsed ? 'min-w-0 shrink-0 self-start' : 'relative min-h-0 min-w-0 flex-1'
+              }
             >
               <StarMap
                 viewport={viewport}
@@ -1802,13 +1979,15 @@ export default function WorldPage() {
               </StarMap>
             </div>
 
-            <aside className="flex min-h-0 w-96 shrink-0 flex-col gap-2">
-              {diagnosticsOpen && (
-                <div className="min-h-0 flex-1">
-                  <DiagnosticsPanel problemas={model.problemas} onCopyReport={handleCopyReport} />
-                </div>
-              )}
-
+            {/* Collapsing the map is a request for panel room: the aside takes
+                the freed width instead of leaving a dead void. */}
+            <aside
+              className={
+                mapCollapsed
+                  ? 'flex min-h-0 min-w-0 flex-1 flex-col gap-2'
+                  : 'flex min-h-0 w-96 shrink-0 flex-col gap-2'
+              }
+            >
               {/* Right-panel tabs: Entidad / Pistas / Diario (plan Part B cockpit). */}
               <div role="tablist" aria-label="Panel lateral" className="flex shrink-0 gap-1 rounded-lg border bg-muted/40 p-1">
                 {(
@@ -1852,7 +2031,10 @@ export default function WorldPage() {
                       />
                     </div>
                   )}
-                  {selectedEntity && (
+                  {/* When the SiteList's lugar IS the selection (the common
+                      case right after "Entrar") the panel would duplicate the
+                      list's own header card — skip it (UX audit P1-2a). */}
+                  {selectedEntity && selectedEntity.id !== siteListPlace?.id && (
                     <div className="min-h-0 flex-1">
                       <EntityPanel
                         entity={selectedEntity as EntityPanelEntity}
@@ -1860,6 +2042,7 @@ export default function WorldPage() {
                         factionNames={factionNames}
                         leads={panelLeads}
                         interiorLeads={interiorLeads}
+                        isCurrentLocation={selectedEntity.id === ubicacion}
                         onDrillIn={
                           selectedIsContainer ? () => enterEntity(selectedEntity.id) : undefined
                         }
@@ -1867,17 +2050,6 @@ export default function WorldPage() {
                         actions={
                           canTravelToSelected || selectedPlayable ? (
                             <>
-                              {canTravelToSelected && (
-                                <Button
-                                  size="sm"
-                                  data-travel-here
-                                  onClick={handleOpenTravelDialog}
-                                  className="min-h-11"
-                                >
-                                  <Rocket />
-                                  Viajar aquí
-                                </Button>
-                              )}
                               {selectedPlayable && (
                                 <Button
                                   size="sm"
@@ -1888,6 +2060,18 @@ export default function WorldPage() {
                                 >
                                   <Play />
                                   Jugar
+                                </Button>
+                              )}
+                              {/* Primary action last: anchors the row's right edge. */}
+                              {canTravelToSelected && (
+                                <Button
+                                  size="sm"
+                                  data-travel-here
+                                  onClick={handleOpenTravelDialog}
+                                  className="min-h-11"
+                                >
+                                  <Rocket />
+                                  Viajar aquí
                                 </Button>
                               )}
                             </>
@@ -1930,6 +2114,13 @@ export default function WorldPage() {
                     entries={session.entries}
                     canUndo={canUndo}
                     onUndo={handleUndo}
+                    undoDisabledTitle={
+                      session.active && travel !== null
+                        ? 'No disponible mientras hay un viaje en curso — usa «Cancelar» en la banda de viaje y deshaz después'
+                        : session.active
+                          ? 'Nada que deshacer todavía'
+                          : 'Inicia sesión para registrar'
+                    }
                     sessionActive={session.active}
                     startedAt={session.startedAt}
                   />
@@ -1943,11 +2134,15 @@ export default function WorldPage() {
             creditos={creditos}
             medidores={medidores}
             medidorNames={model.manifest.medidores}
+            diaMundo={diaMundo}
             onMover={() => setMoverOpen(true)}
             onCreditos={handleCreditos}
             onMedidor={handleMedidor}
+            onDescanso={handleDescanso}
+            descansoDisabled={travel !== null}
             onPista={() => uiActions.setPanelTab('pistas')}
             onEvento={() => openEventDrawer('estancia', usePartyStore.getState().ubicacion)}
+            eventoDisabled={travel !== null}
             onNota={handleNota}
           />
 
@@ -1966,6 +2161,8 @@ export default function WorldPage() {
               if (!open) setTravelDialog(null);
             }}
             plan={travelDialog?.plan ?? null}
+            schedule={travelDialog?.schedule ?? []}
+            sessionActive={session.active}
             fromName={
               ubicacion ? (model.entidades.get(ubicacion)?.nombre ?? ubicacion) : 'desconocida'
             }

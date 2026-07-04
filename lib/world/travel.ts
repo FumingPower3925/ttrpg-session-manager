@@ -1,5 +1,6 @@
 /**
- * Pure travel-plan math (M4, plan Part B "Travel").
+ * Pure travel-plan math (M4, plan Part B "Travel"; economy redesign — see
+ * CONSUMPTION MODEL below).
  *
  * computeTravelPlan proposes a route + consumption for a trip between two
  * known entities:
@@ -14,16 +15,19 @@
  *     dias = ceil(euclidean(coords) * diasPorUnidad), root -> destination
  *     (skipped when the destination IS the root).
  *
- * Consumption (manifest suggestions — the app proposes, the GM confirms):
- *   - combustible: combustiblePorTramo on the SECTOR leg only; intra-system
- *     legs burn 0.
- *   - viveres: floor(totalDias / viveresCadaDias) for the WHOLE trip,
- *     carried by the LAST leg (a per-leg floor would undercount, e.g.
- *     1+4+1 days at "every 4" is 1 ration, not 0+1+0 recomputed per leg
- *     boundaries — the trip is one continuous stretch of days).
+ * CONSUMPTION MODEL (manifest suggestions — the app proposes, the GM
+ * confirms; two clean axes: food = calendar time, fuel = jump distance):
+ *   - combustible: ceil(leg.dias / combustibleCadaDias) per SECTOR leg
+ *     (jump-drive fuel); intra-system legs burn 0 — cheap local moves are
+ *     the sandbox's agency loop. combustibleCadaDias <= 0 -> 0.
+ *   - viveres: CALENDAR-anchored — 1 ration every viveresCadaDias-th
+ *     dia_mundo, so the total for a trip is viveresTicksBetween(d0, d0 +
+ *     totalDias): the same route costs 1 more or less depending on the
+ *     departure-day phase, and the TravelDialog previews the exact number.
+ *     The departure day itself never ticks (strictly (d0, d1]).
  *
- * Everything is pure over the WorldModel + a party gauge snapshot: no store
- * access, bun-testable without a DOM.
+ * Everything is pure over the WorldModel + a party snapshot (gauges +
+ * diaMundo): no store access, bun-testable without a DOM.
  *
  * The stepper-side helpers below (M4 integration) derive the PER-DAY view of
  * a plan:
@@ -33,17 +37,35 @@
  *     region anchoring) switches from the origin to the destination.
  */
 
-import { TravelLeg, TravelPlan, WorldEntityBase, WorldModel } from '@/types/world';
+import { TravelLeg, TravelPlan, WorldEntityBase, WorldManifest, WorldModel } from '@/types/world';
 import { ancestryChain, sectorNodeFor } from './worldNav';
 
-/** Current party gauges the plan's totals are checked against. */
+/** Current party gauges + calendar day the plan's totals are computed against. */
 export interface TravelSnapshot {
     medidores: Record<string, number>;
+    /** Departure dia_mundo — viveres ticks are calendar-anchored on it. */
+    diaMundo: number;
 }
 
 /** Exact warning strings (TravelDialog banners + e2e assert on these). */
 export const WARN_COMBUSTIBLE = 'Combustible insuficiente';
 export const WARN_VIVERES = 'Víveres insuficientes';
+
+/** Floored modulo (negative-safe): mod(-1, 4) === 3. */
+function mod(n: number, m: number): number {
+    return ((n % m) + m) % m;
+}
+
+/**
+ * Víveres ticks consumed when dia_mundo advances from d0 to d1 (exclusive of
+ * d0, inclusive of d1): one tick per multiple of `cada` crossed. dia_mundo is
+ * the only accumulator — no remainder state anywhere. `cada <= 0` or a
+ * non-advance returns 0.
+ */
+export function viveresTicksBetween(d0: number, d1: number, cada: number): number {
+    if (cada <= 0 || d1 <= d0) return 0;
+    return Math.floor(d1 / cada) - Math.floor(d0 / cada);
+}
 
 function isPortal(entity: WorldEntityBase | undefined): boolean {
     return (entity as { acceso?: string } | undefined)?.acceso === 'portal';
@@ -57,6 +79,12 @@ function coordsOf(entity: WorldEntityBase | undefined): { x: number; y: number }
 
 function leg(fromId: string, toId: string, dias: number, combustible: number): TravelLeg {
     return { fromId, toId, dias, combustible, viveres: 0 };
+}
+
+/** Sector-leg fuel: 1 unit per `cada` days of the leg, rounded up. */
+function sectorLegCombustible(dias: number, cada: number): number {
+    if (cada <= 0 || dias <= 0) return 0;
+    return Math.ceil(dias / cada);
 }
 
 /**
@@ -107,7 +135,9 @@ export function computeTravelPlan(
         }
         const distance = Math.hypot(toCoords.x - fromCoords.x, toCoords.y - fromCoords.y);
         const sectorDias = Math.ceil(distance * viaje.diasPorUnidad);
-        legs.push(leg(fromRoot, toRoot, sectorDias, viaje.combustiblePorTramo));
+        legs.push(
+            leg(fromRoot, toRoot, sectorDias, sectorLegCombustible(sectorDias, viaje.combustibleCadaDias))
+        );
         if (toId !== toRoot) {
             legs.push(leg(toRoot, toId, viaje.intrasistemaDias, 0));
         }
@@ -115,8 +145,12 @@ export function computeTravelPlan(
 
     const totalDias = legs.reduce((sum, current) => sum + current.dias, 0);
     const totalCombustible = legs.reduce((sum, current) => sum + current.combustible, 0);
-    const totalViveres =
-        viaje.viveresCadaDias > 0 ? Math.floor(totalDias / viaje.viveresCadaDias) : 0;
+    // Calendar-anchored: phase-dependent on the departure day (module doc).
+    const totalViveres = viveresTicksBetween(
+        party.diaMundo,
+        party.diaMundo + totalDias,
+        viaje.viveresCadaDias
+    );
     legs[legs.length - 1].viveres = totalViveres;
 
     const warnings: string[] = [];
@@ -139,26 +173,51 @@ export interface TravelDayConsumption {
 }
 
 /**
+ * 1-based leg days on which a leg burns fuel.
+ *
+ * When the leg's units equal ceil(dias / cada) — every computeTravelPlan leg —
+ * the burn lands on leg-days cada, 2·cada, … floor(D/cada)·cada plus one
+ * remainder tick on the leg's LAST day when D % cada != 0 (a 7-day jump at
+ * cada 4 burns on days 4 and 7; an 8-day jump on 4 and 8 — no phantom
+ * remainder). Hand-built plans whose units do not match the cadence keep the
+ * legacy even spread (unit i of C on leg-day ceil(i·D/C)) so per-day amounts
+ * still sum exactly to the leg total.
+ */
+function fuelTickDaysForLeg(dias: number, combustible: number, cada: number): number[] {
+    if (combustible <= 0 || dias <= 0) return [];
+    if (cada > 0 && combustible === Math.ceil(dias / cada)) {
+        const days: number[] = [];
+        for (let day = cada; day <= dias; day += cada) days.push(day);
+        if (dias % cada !== 0) days.push(dias);
+        return days;
+    }
+    return Array.from({ length: combustible }, (_, unit) =>
+        Math.ceil(((unit + 1) * dias) / combustible)
+    );
+}
+
+/**
  * Per-day consumption schedule for a plan, length plan.totalDias.
  *
  * DOCUMENTED CONSUMPTION MODEL (the stepper journals from this):
- *   - combustible: each leg's units are spread across THAT leg's days at
- *     evenly spaced boundaries — unit i of C lands on leg-day ceil(i·D/C).
- *     With the default combustible_por_tramo = 1 the single unit lands on the
- *     sector leg's LAST day (the burn is acknowledged on completing the jump).
+ *   - combustible: each leg's units spread inside THAT leg per
+ *     fuelTickDaysForLeg (cadence boundaries + remainder on the last day).
  *     A degenerate 0-day leg charges its units on the nearest existing day.
- *   - víveres: 1 ration on every viveresCadaDias-th day of the WHOLE trip
- *     (days are one continuous stretch, matching computeTravelPlan's
- *     floor(totalDias / viveresCadaDias) total); viveresCadaDias <= 0 = none.
+ *   - víveres: CALENDAR-anchored — travel day d (1-based) ticks iff
+ *     (diaMundo0 + d) is a multiple of viveresCadaDias (floored modulo, so
+ *     negative days behave). Ticks may land on intra-system leg days: the
+ *     cadence tracks dia_mundo, not the leg structure.
  *
  * Per-day amounts therefore sum EXACTLY to plan.totalCombustible /
- * plan.totalViveres — stepping every day equals resolving the rest in one
- * batch. (The per-leg `viveres` bookkeeping on plan.legs is ignored here on
- * purpose: the cadence is trip-global, only the totals must agree.)
+ * plan.totalViveres for plans computed with the same diaMundo0 — stepping
+ * every day equals resolving the rest in one batch. (The per-leg `viveres`
+ * bookkeeping on plan.legs is ignored here on purpose: the cadence is
+ * calendar-global, only the totals must agree.)
  */
 export function travelDaySchedule(
     plan: TravelPlan,
-    viveresCadaDias: number
+    viaje: Pick<WorldManifest['viaje'], 'combustibleCadaDias' | 'viveresCadaDias'>,
+    diaMundo0: number
 ): TravelDayConsumption[] {
     const days: TravelDayConsumption[] = Array.from({ length: Math.max(0, plan.totalDias) }, () => ({
         combustible: 0,
@@ -168,22 +227,23 @@ export function travelDaySchedule(
 
     let offset = 0; // 0-based index of the current leg's first day
     for (const current of plan.legs) {
-        if (current.combustible > 0) {
-            if (current.dias <= 0) {
-                days[Math.min(offset, days.length - 1)].combustible += current.combustible;
-            } else {
-                for (let unit = 1; unit <= current.combustible; unit++) {
-                    const dayInLeg = Math.ceil((unit * current.dias) / current.combustible);
-                    days[Math.min(offset + dayInLeg - 1, days.length - 1)].combustible += 1;
-                }
+        if (current.combustible > 0 && current.dias <= 0) {
+            days[Math.min(offset, days.length - 1)].combustible += current.combustible;
+        } else {
+            for (const dayInLeg of fuelTickDaysForLeg(
+                current.dias,
+                current.combustible,
+                viaje.combustibleCadaDias
+            )) {
+                days[Math.min(offset + dayInLeg - 1, days.length - 1)].combustible += 1;
             }
         }
         offset += Math.max(0, current.dias);
     }
 
-    if (viveresCadaDias > 0) {
-        for (let dia = viveresCadaDias; dia <= days.length; dia += viveresCadaDias) {
-            days[dia - 1].viveres += 1;
+    if (viaje.viveresCadaDias > 0) {
+        for (let dia = 1; dia <= days.length; dia++) {
+            if (mod(diaMundo0 + dia, viaje.viveresCadaDias) === 0) days[dia - 1].viveres += 1;
         }
     }
     return days;

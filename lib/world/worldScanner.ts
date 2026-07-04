@@ -451,6 +451,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * `viaje.combustible_cada_dias` with legacy-knob migration: the pre-economy
+ * `combustible_por_tramo` (flat units per jump) is dimensionally different
+ * from per-day cadence, so it is NEVER mapped numerically — a manifest still
+ * carrying it gets the default cadence plus an aviso (and when both keys are
+ * present, `combustible_cada_dias` wins, still with the aviso).
+ */
+function parseCombustibleCadaDias(
+    viaje: Record<string, unknown> | undefined,
+    fallback: WorldManifest,
+    problemas: ValidationIssue[]
+): number {
+    const cada = asNumber(viaje?.combustible_cada_dias) ?? fallback.viaje.combustibleCadaDias;
+    if (viaje !== undefined && viaje.combustible_por_tramo !== undefined) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: MANIFEST_PATH,
+            mensaje:
+                '«viaje.combustible_por_tramo» está obsoleto — usa «combustible_cada_dias» ' +
+                `(aplicado: ${cada})`,
+        });
+    }
+    return cada;
+}
+
 function parseManifest(content: string | null, problemas: ValidationIssue[]): WorldManifest {
     const fallback = defaultManifest();
 
@@ -516,8 +541,7 @@ function parseManifest(content: string | null, problemas: ValidationIssue[]): Wo
             diasPorUnidad: asNumber(viaje?.dias_por_unidad) ?? fallback.viaje.diasPorUnidad,
             intrasistemaDias:
                 asNumber(viaje?.intrasistema_dias) ?? fallback.viaje.intrasistemaDias,
-            combustiblePorTramo:
-                asNumber(viaje?.combustible_por_tramo) ?? fallback.viaje.combustiblePorTramo,
+            combustibleCadaDias: parseCombustibleCadaDias(viaje, fallback, problemas),
             viveresCadaDias:
                 asNumber(viaje?.viveres_cada_dias) ?? fallback.viaje.viveresCadaDias,
         },

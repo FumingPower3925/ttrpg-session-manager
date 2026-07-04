@@ -169,9 +169,6 @@ export function SystemView({
         />
       )}
 
-      {/* M4 slot: RoutePreview renders intra-system travel into this layer. */}
-      <g data-layer="routes" />
-
       {/* Central star: click selects the sistema, double-click backs out to the sector. */}
       <g
         data-entity-id={sistema.id}
