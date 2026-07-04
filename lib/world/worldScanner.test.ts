@@ -217,6 +217,45 @@ describe('scanWorldFolder — happy path', () => {
         expect(planet.playable).toBeUndefined();
     });
 
+    test('playable place with FLAT multi-act plan/: one Part per acto file, support on the first', async () => {
+        const tree = happyTree();
+        const mundo = tree.mundo as FileTree;
+        const lugares = mundo.lugares as FileTree;
+        const porto = lugares.porto_verne as FileTree;
+        porto.plan = {
+            'acto1_llegada.md': ':::leer\nLlegais.\n:::\n',
+            'acto2_el_mapa.md': ':::leer\nEl mapa se ilumina.\n:::\n',
+            'acto2b_desvio.md': ':::gm\nInterludio.\n:::\n',
+        };
+
+        const model = await scanWorldFolder(makeHandle('campaign', tree));
+        const config = (model.entidades.get('porto_verne') as PlaceEntity).playable!;
+
+        // one part per plan file, ordered by filename
+        expect(config.parts).toHaveLength(3);
+        expect(config.parts.map((p) => p.planFile?.path)).toEqual([
+            'mundo/lugares/porto_verne/plan/acto1_llegada.md',
+            'mundo/lugares/porto_verne/plan/acto2_el_mapa.md',
+            'mundo/lugares/porto_verne/plan/acto2b_desvio.md',
+        ]);
+        expect(config.parts.map((p) => p.name)).toEqual([
+            'Acto1 Llegada',
+            'Acto2 el Mapa',
+            'Acto2b Desvio',
+        ]);
+        // support content attaches to the FIRST part only (path-folder convention)
+        expect(config.parts[0].supportDocs.map((d) => d.path)).toContain(
+            'mundo/lugares/porto_verne/characters/kael.md'
+        );
+        expect(config.parts[0].bgmPlaylist).toHaveLength(1);
+        expect(config.parts[1].supportDocs).toHaveLength(0);
+        expect(config.parts[2].bgmPlaylist).toHaveLength(0);
+        // no plan file leaked into support docs
+        for (const part of config.parts) {
+            expect(part.supportDocs.every((d) => !d.path.includes('/plan/'))).toBe(true);
+        }
+    });
+
     test('parses eventos/ into model.tablas (M4), outside the entity map', async () => {
         const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
 
@@ -455,6 +494,30 @@ describe('scanWorldFolder — validation', () => {
         );
         expect(avisos).toHaveLength(1);
         expect(avisos[0].mensaje).toContain('huérfana');
+    });
+
+    test('no orphan aviso for a desconocido pnj ANCHORED via a resolving ubicacion', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    'mundo.md': FULL_MANIFEST,
+                    sistemas: {
+                        'base.md': '---\ncoordenadas: {x: 0, y: 0}\nconocimiento: visitado\n---\n',
+                    },
+                    pnjs: {
+                        // forward-seeded NPC: unknown to the party, waiting at a real place
+                        'agente_oculto.md':
+                            '---\nrol: comodin\nubicacion: base\nconocimiento: desconocido\n---\n',
+                        // truly dangling: unknown AND its ubicacion resolves nowhere
+                        'sin_ancla.md':
+                            '---\nrol: comodin\nubicacion: lugar_inexistente\nconocimiento: desconocido\n---\n',
+                    },
+                },
+            })
+        );
+
+        const orphanAvisos = model.problemas.filter((p) => p.mensaje.includes('huérfana'));
+        expect(orphanAvisos.map((p) => p.archivo)).toEqual(['mundo/pnjs/sin_ancla.md']);
     });
 
     test('missing mundo/ folder degrades into an error model', async () => {

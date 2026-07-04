@@ -391,7 +391,7 @@ async function scanPlaceFolder(
         const config = await scanSessionFolder(dirHandle);
         // A folder with lugar.md but no session content is just a plain place.
         if (config.parts.length > 0) {
-            playable = prefixSessionConfigPaths(config, `${folderPath}/`);
+            playable = prefixSessionConfigPaths(splitFlatPlanParts(config), `${folderPath}/`);
         }
     } catch {
         issues.push({
@@ -411,6 +411,40 @@ async function scanPlaceFolder(
         },
         issues,
     };
+}
+
+/**
+ * Splits the legacy single-part fallback of scanSessionFolder into one Part per
+ * plan/*.md file. A playable PLACE keeps its acts as flat files (plan/acto2.md,
+ * plan/acto2b.md, ...) and scanForSinglePart would bundle them into one "Part 1"
+ * with the extra acts demoted to support docs — wrong for the ActRunner, where
+ * each act must be its own selectable part with its own timer.
+ *
+ * Classic session mode is untouched: this transform runs only on world playable
+ * places, only on the exact single-part fallback shape, and support content
+ * (characters/threats/maps/music/images) stays attached to the FIRST part —
+ * the same convention branching path folders use.
+ */
+function splitFlatPlanParts(config: SessionConfig): SessionConfig {
+    if (config.parts.length !== 1) return config;
+    const [part] = config.parts;
+    if (!part.planFile || !part.planFile.path.startsWith('plan/')) return config;
+
+    const planDocs = part.supportDocs.filter((doc) => doc.path.startsWith('plan/'));
+    if (planDocs.length === 0) return config;
+    const otherDocs = part.supportDocs.filter((doc) => !doc.path.startsWith('plan/'));
+
+    const actFiles = [part.planFile, ...planDocs].sort((a, b) => a.path.localeCompare(b.path));
+    const parts = actFiles.map((ref, i) => ({
+        id: `${part.id}-acto${i}`,
+        name: fileNameToDisplayName(ref.name),
+        planFile: ref,
+        images: i === 0 ? part.images : [],
+        supportDocs: i === 0 ? otherDocs : [],
+        bgmPlaylist: i === 0 ? part.bgmPlaylist : [],
+        eventPlaylists: i === 0 ? part.eventPlaylists : [],
+    }));
+    return { ...config, parts };
 }
 
 function prefixFileReference<T extends FileReference>(ref: T, prefix: string): T {
@@ -1158,8 +1192,22 @@ function warnOrphans(
         for (const id of trama.facciones) referenced.add(id);
     }
 
+    // A pnj whose ubicacion resolves is ANCHORED to the map through its place —
+    // deliberately forward-seeded NPCs (unknown to the party, waiting at a
+    // not-yet-visited place) are not orphans and should not add Diagnóstico noise.
+    const anchoredPnjs = new Set<string>();
+    for (const pnj of pnjs) {
+        if (pnj.ubicacion !== undefined && entidades.has(pnj.ubicacion)) {
+            anchoredPnjs.add(pnj.id);
+        }
+    }
+
     for (const entity of [...sistemas, ...lugares, ...facciones, ...pnjs]) {
-        if (entity.conocimiento === 'desconocido' && !referenced.has(entity.id)) {
+        if (
+            entity.conocimiento === 'desconocido' &&
+            !referenced.has(entity.id) &&
+            !anchoredPnjs.has(entity.id)
+        ) {
             problemas.push({
                 nivel: 'aviso',
                 archivo: entity.filePath,
