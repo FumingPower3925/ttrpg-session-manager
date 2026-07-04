@@ -23,7 +23,6 @@ import {
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { History, MapPin } from 'lucide-react';
 
 const CONOCIMIENTO_LABEL: Record<Conocimiento, string> = {
@@ -130,7 +129,9 @@ export function MoverDialog({
               Sin destinos que coincidan
             </p>
           ) : (
-            <ScrollArea className="max-h-[50vh]">
+            // Native scroll: the shadcn ScrollArea root has no overflow-hidden,
+            // so a long destination list visually bled through the dialog.
+            <div className="max-h-[50vh] overflow-y-auto">
               <div className="space-y-3 pr-3">
                 {recientes.length > 0 && (
                   <Section
@@ -151,7 +152,7 @@ export function MoverDialog({
                   />
                 )}
               </div>
-            </ScrollArea>
+            </div>
           )}
         </div>
       </DialogContent>

@@ -138,7 +138,8 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
           )}
 
           {!isSearching && results.length > 0 && (
-            <ScrollArea className="max-h-[400px]">
+            // eslint-disable-next-line -- native scroll: ScrollArea root lacks overflow-hidden
+            <div className="max-h-[400px] overflow-y-auto">
               <div className="space-y-2 pr-4">
                 {results.map((result) => (
                   <button
@@ -162,7 +163,7 @@ export function WorldSearchDialog({ index, onResultSelect }: WorldSearchDialogPr
                   </button>
                 ))}
               </div>
-            </ScrollArea>
+            </div>
           )}
 
           {!query && (

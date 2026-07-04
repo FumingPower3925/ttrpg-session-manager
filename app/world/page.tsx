@@ -1836,6 +1836,30 @@ export default function WorldPage() {
             <h1 className="text-lg font-semibold">{model.manifest.nombre || 'Mundo'}</h1>
             <div className="ml-auto flex items-center gap-2">
               <WorldSearchDialog index={searchIndex} onResultSelect={navigateToEntity} />
+              {/* Manual rescan: the app never watches the filesystem (no FS Access
+                  watch API), so after the maintenance agent edits mundo/ — or after
+                  an app update changes the scanner — the GM refreshes here instead
+                  of hunting for a full page reload. Disabled mid-session: a rescan
+                  rebuilds the model and would visually revert live pista changes. */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-h-11"
+                disabled={session.active || worldFs === null}
+                title={
+                  session.active
+                    ? 'Termina la sesión para recargar el mundo'
+                    : 'Vuelve a escanear la carpeta mundo/'
+                }
+                aria-label="Recargar mundo"
+                onClick={() => {
+                  const handle = worldFs?.getDirectoryHandle();
+                  if (handle) void openWorld(handle);
+                }}
+              >
+                <RefreshCw />
+                Recargar
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
