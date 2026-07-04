@@ -1,4 +1,4 @@
-import { SessionConfig } from '@/types';
+import { AudioFile, EventPlaylist, SessionConfig } from '@/types';
 
 /**
  * World-mode domain types (M1).
@@ -308,4 +308,11 @@ export interface WorldModel {
   estadoGrupo: PartyState | null;
   /** Parsed journals from `diario/` (M3); unprocessed ones re-overlay state at scan. */
   diario: JournalDay[];
+  /**
+   * World-level music from `mundo/musica/` (optional folder): root audio
+   * files = the generic ambient/travel BGM rotation, each subfolder = a named
+   * event playlist. Empty arrays when the folder is absent — by design, never
+   * an aviso.
+   */
+  musica: { bgm: AudioFile[]; eventPlaylists: EventPlaylist[] };
 }

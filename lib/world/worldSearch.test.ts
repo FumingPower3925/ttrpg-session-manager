@@ -44,6 +44,7 @@ function makeModel(entities: WorldEntityBase[]): WorldModel {
         childrenOf: new Map(),
         estadoGrupo: null,
         diario: [],
+        musica: { bgm: [], eventPlaylists: [] },
     };
 }
 

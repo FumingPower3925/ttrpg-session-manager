@@ -44,6 +44,13 @@ export const ENTITY_DIRS = {
 /** File inside a playable place folder `lugares/<id>/` that holds the entity. */
 export const PLACE_FOLDER_FILE = 'lugar.md';
 
+/**
+ * Optional world-level music folder under `mundo/`: audio files at its root
+ * are the world BGM rotation, each subfolder a named event playlist. Not an
+ * entity dir — its contents are listed (never read) by the scanner.
+ */
+export const MUSIC_DIR = 'musica';
+
 /** Party-state file inside `mundo/estado/`. */
 export const PARTY_STATE_FILE = 'grupo.md';
 

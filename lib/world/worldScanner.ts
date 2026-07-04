@@ -26,7 +26,14 @@ import {
     WorldModel,
 } from '@/types/world';
 import { scanSessionFolder } from '@/lib/sessionScanner';
-import { fileNameToDisplayName, getSubdirectory, readFileContent } from '@/lib/fsScanUtils';
+import {
+    createAudioFile,
+    fileNameToDisplayName,
+    getFilesFromDirectory,
+    getSubdirectory,
+    readFileContent,
+} from '@/lib/fsScanUtils';
+import { SUPPORTED_AUDIO_EXTENSIONS } from '@/lib/fileSystem';
 import { buildCondContext, evalConditions, isParseableCondition } from './conditions';
 import { parseEventTable } from './eventEngine';
 import { parseJournal, parseLlegadaPayload, parseSabePayload } from './logEntries';
@@ -51,6 +58,7 @@ import {
     ESTADOS_TRAMA,
     MANIFEST_DEFAULTS,
     MANIFEST_FILE,
+    MUSIC_DIR,
     NIVELES_PRESENCIA,
     PARTY_STATE_FILE,
     PLACE_FOLDER_FILE,
@@ -105,7 +113,7 @@ export async function scanWorldFolder(
             mensaje: `No se encontró la carpeta "${WORLD_DIR}/" en la carpeta de campaña`,
         });
         onProgress?.(1, 1);
-        return assembleModel(defaultManifest(), [], problemas, null);
+        return assembleModel(defaultManifest(), [], problemas, null, emptyMusica());
     }
 
     // Enumerate first (cheap directory listings), then read contents in batches.
@@ -129,6 +137,10 @@ export async function scanWorldFolder(
     done = 2;
     onProgress?.(done, totalReads);
 
+    // World-level music (musica/): directory listings only, never file reads,
+    // so it stays outside the read-progress accounting.
+    const musica = await scanWorldMusic(mundoDir);
+
     // Entity reads, batched
     const records: RawEntityFile[] = [];
     for (let i = 0; i < tasks.length; i += READ_BATCH_SIZE) {
@@ -143,7 +155,73 @@ export async function scanWorldFolder(
     }
 
     const manifest = parseManifest(manifestContent, problemas);
-    return assembleModel(manifest, records, problemas, estadoGrupo);
+    return assembleModel(manifest, records, problemas, estadoGrupo, musica);
+}
+
+// ── World-level music (musica/) ─────────────────────────────────────────────
+
+function emptyMusica(): WorldModel['musica'] {
+    return { bgm: [], eventPlaylists: [] };
+}
+
+/**
+ * Scans the OPTIONAL `mundo/musica/` folder: audio files at its root are the
+ * world BGM rotation (generic ambient/travel beds), each subfolder a named
+ * event playlist (folder name -> display name, files inside -> its tracks).
+ * Markdown prompt docs living there are excluded by the audio-extension
+ * filter; the usual ignore rules apply on top (`_`-prefixed files/dirs,
+ * ALL-CAPS dirs). An absent folder yields empty arrays and NO aviso — the
+ * folder is optional by design. Paths arrive prefixed `mundo/musica/...` so
+ * the world fs manager (campaign root) resolves them directly.
+ */
+async function scanWorldMusic(
+    mundoDir: FileSystemDirectoryHandle
+): Promise<WorldModel['musica']> {
+    const musica = emptyMusica();
+    const musicaDir = await getSubdirectory(mundoDir, MUSIC_DIR);
+    if (!musicaDir) return musica;
+
+    const basePath = `${WORLD_DIR}/${MUSIC_DIR}`;
+    const rootFiles = await getFilesFromDirectory(
+        musicaDir,
+        basePath,
+        SUPPORTED_AUDIO_EXTENSIONS
+    );
+    musica.bgm = rootFiles
+        .filter((file) => !isIgnoredFile(file.name))
+        .map((file) => createAudioFile(file));
+
+    // Subfolders (same dir ignore rules as listEntries), name-sorted so the
+    // playlist order is stable across scans and platforms.
+    const subdirs: Array<{ name: string; handle: FileSystemDirectoryHandle }> = [];
+    for await (const [name, entryHandle] of musicaDir.entries()) {
+        if (entryHandle.kind !== 'directory') continue;
+        if (isIgnoredDir(name) || name.startsWith('_')) continue;
+        subdirs.push({ name, handle: entryHandle as FileSystemDirectoryHandle });
+    }
+    subdirs.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const subdir of subdirs) {
+        const tracks = await getFilesFromDirectory(
+            subdir.handle,
+            `${basePath}/${subdir.name}`,
+            SUPPORTED_AUDIO_EXTENSIONS
+        );
+        const kept = tracks
+            .filter((file) => !isIgnoredFile(file.name))
+            .map((file) => createAudioFile(file));
+        // Empty subfolders never become playlists (same rule as sessionScanner),
+        // and the folder name doubles as a stable, deterministic playlist id.
+        if (kept.length > 0) {
+            musica.eventPlaylists.push({
+                id: subdir.name,
+                name: fileNameToDisplayName(subdir.name),
+                tracks: kept,
+            });
+        }
+    }
+
+    return musica;
 }
 
 /** NotFoundError as thrown by the real FS Access API (DOMException) or the test mock. */
@@ -869,7 +947,8 @@ function assembleModel(
     manifest: WorldManifest,
     records: RawEntityFile[],
     problemas: ValidationIssue[],
-    estadoGrupo: PartyState | null
+    estadoGrupo: PartyState | null,
+    musica: WorldModel['musica']
 ): WorldModel {
     const entidades = new Map<string, WorldEntityBase>();
     const sistemas: SystemEntity[] = [];
@@ -976,6 +1055,7 @@ function assembleModel(
         childrenOf,
         estadoGrupo,
         diario,
+        musica,
     };
 
     // Unprocessed journals re-overlay in-session knowledge BEFORE the

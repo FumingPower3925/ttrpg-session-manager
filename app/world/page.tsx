@@ -127,6 +127,24 @@
  *     medidor desconocido <nombre>") + warning toast instead of silently
  *     creating an invisible gauge no widget renders.
  *
+ * WORLD-LEVEL MUSIC (mundo/musica/ — generic ambient/travel beds OUTSIDE
+ * places):
+ *   - One page-level AudioManager exists while status is ready AND
+ *     model.musica carries at least one track (BGM rotation from the folder
+ *     root + event playlists from subfolders — see worldScanner). It binds to
+ *     the worldStore fs manager and is disposed (fade-to-silence, then
+ *     cleanup — same pattern as ActRunner's unmount) whenever the model or fs
+ *     changes or the page unmounts.
+ *   - The WorldAudioDock (bottom-left, above the QuickLogBar) mounts the
+ *     EXISTING play AudioControls behind a music toggle button; zero tracks =
+ *     no manager = no dock at all (silence is fine, no hint rendered).
+ *   - ACTRUNNER HANDOFF: opening a place's runner ducks the world audio OUT
+ *     (fade + pause) so the act music owns the room; closing it resumes the
+ *     world audio ONLY if it was playing when the runner opened
+ *     (worldAudioWasPlayingRef). The dock stays mounted but hidden meanwhile,
+ *     so its open/closed state survives the round-trip. No double audio: the
+ *     duck starts the instant the overlay mounts.
+ *
  * SCAN-OVERLAY ASYMMETRY (M4 decision — documented, not a bug):
  *   worldScanner.overlayUnprocessedJournals re-derives ONLY knowledge (sabe)
  *   and location knowledge (llegada) from journals with procesado: false.
@@ -141,6 +159,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Toaster, toast } from 'sonner';
 import { FileSystemManager } from '@/lib/fileSystem';
+import { AudioManager } from '@/lib/audioManager';
 import { loadStoredDirHandle, reconnectDirHandle, rememberDirHandle } from '@/lib/dirHandle';
 import {
   clearSessionMirror,
@@ -208,6 +227,7 @@ import { TravelDialog } from '@/components/world/TravelDialog';
 import { TravelStepper } from '@/components/world/TravelStepper';
 import { RoutePreview } from '@/components/world/RoutePreview';
 import { ActRunner } from '@/components/world/ActRunner';
+import { WorldAudioDock } from '@/components/world/WorldAudioDock';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -352,6 +372,54 @@ function diasLabel(dias: number): string {
   return dias === 1 ? '1 día' : `${dias} días`;
 }
 
+// ── World-level audio fades (mirrors ActRunner's close-fade pattern) ─────────
+
+const WORLD_AUDIO_FADE_MS = 800;
+const WORLD_AUDIO_FADE_INTERVAL_MS = 50;
+
+/**
+ * Runs a volume ramp detached from React (the interval may outlive the render
+ * that started it). Returns the interval id so callers can cancel a fade that
+ * a newer one supersedes (fast runner open/close would otherwise leave two
+ * intervals fighting over the volume knob).
+ */
+function rampWorldVolume(
+  audio: AudioManager,
+  volumeAt: (progress: number) => number,
+  onDone: () => void
+): ReturnType<typeof setInterval> {
+  const steps = Math.ceil(WORLD_AUDIO_FADE_MS / WORLD_AUDIO_FADE_INTERVAL_MS);
+  let step = 0;
+  const interval = setInterval(() => {
+    step++;
+    audio.setVolume(volumeAt(Math.min(1, step / steps)));
+    if (step >= steps) {
+      clearInterval(interval);
+      onDone();
+    }
+  }, WORLD_AUDIO_FADE_INTERVAL_MS);
+  return interval;
+}
+
+/**
+ * Disposal fade for the world AudioManager: volume to silence, THEN release
+ * the element (cleanup pauses + revokes the object URL). Same contract as the
+ * ActRunner's fadeOutAndCleanup — a model change or page unmount never cuts
+ * the music hard. Silent/paused audio is released immediately.
+ */
+function fadeOutAndCleanupWorldAudio(audio: AudioManager): void {
+  const startVolume = audio.getVolume();
+  if (!audio.isPlaying() || startVolume <= 0) {
+    audio.cleanup();
+    return;
+  }
+  rampWorldVolume(
+    audio,
+    (progress) => startVolume * (1 - progress),
+    () => audio.cleanup()
+  );
+}
+
 export default function WorldPage() {
   const status = useWorldStore((s) => s.status);
   const model = useWorldStore((s) => s.model);
@@ -417,6 +485,15 @@ export default function WorldPage() {
   // GM is currently on (for the "Acto cerrado" nota — see module doc M5).
   const [actPlaceId, setActPlaceId] = useState<string | null>(null);
   const actPartNameRef = useRef<string | null>(null);
+  // World-level music (module doc "WORLD-LEVEL MUSIC"): page-owned manager +
+  // the handoff bookkeeping. wasPlaying is a ref (not state): it only matters
+  // at the open/close instants and must never trigger a render.
+  const [worldAudio, setWorldAudio] = useState<AudioManager | null>(null);
+  const worldAudioWasPlayingRef = useRef(false);
+  /** Live duck/restore ramp — cancelled before a newer ramp takes over. */
+  const worldAudioRampRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** GM-set volume captured at duck time; restore resumes at this level. */
+  const worldAudioVolumeRef = useRef(0);
   /** Contexto + place anchor of the current drawer opening (redraw reuses them). */
   const eventSourceRef = useRef<{ contexto: 'viaje' | 'estancia'; anchorId: string | null }>({
     contexto: 'estancia',
@@ -1303,6 +1380,80 @@ export default function WorldPage() {
   const handleActChange = useCallback((actName: string) => {
     actPartNameRef.current = actName;
   }, []);
+
+  // ── World-level music (mundo/musica/ — module doc "WORLD-LEVEL MUSIC") ────
+
+  /** Mirrors the render condition of the ActRunner overlay below. */
+  const actRunnerOpen = actRunnerPlace !== null && worldFs !== null;
+
+  // One AudioManager per ready model WITH tracks, bound to the worldStore fs
+  // (same constructor/lifecycle contract as the ActRunner's per-opening
+  // manager). Cleanup fades to silence detached from React, so re-scans and
+  // navigation never cut the music hard. Zero tracks = no manager = no dock.
+  useEffect(() => {
+    if (status !== 'ready' || !model || !worldFs) return;
+    const { bgm, eventPlaylists } = model.musica;
+    const trackCount =
+      bgm.length + eventPlaylists.reduce((total, playlist) => total + playlist.tracks.length, 0);
+    if (trackCount === 0) return;
+    const manager = new AudioManager(worldFs);
+    manager.loadBGM(bgm);
+    manager.loadEventPlaylists(eventPlaylists);
+    setWorldAudio(manager);
+    return () => {
+      worldAudioWasPlayingRef.current = false;
+      setWorldAudio(null);
+      fadeOutAndCleanupWorldAudio(manager);
+    };
+  }, [status, model, worldFs]);
+
+  const cancelWorldAudioRamp = useCallback(() => {
+    if (worldAudioRampRef.current !== null) {
+      clearInterval(worldAudioRampRef.current);
+      worldAudioRampRef.current = null;
+    }
+  }, []);
+
+  // ACTRUNNER HANDOFF: duck the world audio OUT when the runner mounts (fade
+  // to silence, pause, restore the volume knob for later) and bring it back
+  // when the runner unmounts — ONLY if it was playing at open time. Runs on
+  // the same commit that mounts/unmounts the overlay, so the act music never
+  // plays on top of an un-ducked world bed.
+  useEffect(() => {
+    if (!worldAudio) return;
+    // A fast open→close→open supersedes the previous ramp; when one was
+    // in-flight, getVolume() is mid-fade — the GM's real level lives in
+    // worldAudioVolumeRef (captured when the first duck started).
+    const rampWasActive = worldAudioRampRef.current !== null;
+    cancelWorldAudioRamp();
+    if (actRunnerOpen) {
+      worldAudioWasPlayingRef.current = worldAudio.isPlaying();
+      if (!worldAudioWasPlayingRef.current) return;
+      const fadeFrom = worldAudio.getVolume();
+      if (!rampWasActive) worldAudioVolumeRef.current = fadeFrom;
+      worldAudioRampRef.current = rampWorldVolume(
+        worldAudio,
+        (progress) => fadeFrom * (1 - progress),
+        () => {
+          worldAudioRampRef.current = null;
+          worldAudio.pause();
+          worldAudio.setVolume(worldAudioVolumeRef.current);
+        }
+      );
+    } else if (worldAudioWasPlayingRef.current) {
+      worldAudioWasPlayingRef.current = false;
+      const targetVolume = worldAudioVolumeRef.current;
+      worldAudio.setVolume(0);
+      void worldAudio.resume();
+      worldAudioRampRef.current = rampWorldVolume(
+        worldAudio,
+        (progress) => targetVolume * progress,
+        () => {
+          worldAudioRampRef.current = null;
+        }
+      );
+    }
+  }, [actRunnerOpen, worldAudio, cancelWorldAudioRamp]);
 
   const endSummaryPreview = useMemo(() => {
     if (!session.active) return undefined;
@@ -2214,6 +2365,17 @@ export default function WorldPage() {
             appliedEffects={eventApplied}
             canRedraw={eventDraw !== null && eventDrawCount < 2}
           />
+
+          {/* World music dock: exists only while the manager does (>=1 track);
+              concealed (state kept) while the ActRunner owns the room. */}
+          {worldAudio && (
+            <WorldAudioDock
+              audioManager={worldAudio}
+              bgm={model.musica.bgm}
+              eventPlaylists={model.musica.eventPlaylists}
+              concealed={actRunnerOpen}
+            />
+          )}
 
           {actRunnerPlace?.playable && worldFs && (
             <ActRunner

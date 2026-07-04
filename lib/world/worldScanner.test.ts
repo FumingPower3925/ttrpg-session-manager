@@ -1073,6 +1073,109 @@ describe('scanWorldFolder — diario', () => {
     });
 });
 
+// ── musica/ → model.musica (world-level music) ──────────────────────────────
+
+describe('scanWorldFolder — musica', () => {
+    /** Minimal world plus a musica/ tree (the manifest keeps avisos small). */
+    function musicaTree(musica: FileTree): FileTree {
+        return { mundo: { 'mundo.md': FULL_MANIFEST, musica } };
+    }
+
+    test('root audio files become the BGM rotation, name-sorted', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', {
+                mundo: {
+                    'mundo.md': FULL_MANIFEST,
+                    // Insertion order is deliberately unsorted.
+                    musica: {
+                        'viaje_nucleo.mp3': 'mp3-bytes',
+                        'ambiente_mundo.ogg': 'ogg-bytes',
+                        'viaje_corredor.mp3': 'mp3-bytes',
+                    },
+                },
+            })
+        );
+
+        expect(model.musica.bgm.map((t) => t.path)).toEqual([
+            'mundo/musica/ambiente_mundo.ogg',
+            'mundo/musica/viaje_corredor.mp3',
+            'mundo/musica/viaje_nucleo.mp3',
+        ]);
+        expect(model.musica.bgm.every((t) => t.type === 'audio')).toBe(true);
+        expect(model.musica.eventPlaylists).toEqual([]);
+    });
+
+    test('subfolders become named event playlists; empty ones are skipped', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                musicaTree({
+                    'viaje_nucleo.mp3': 'mp3-bytes',
+                    tension: { 'tension_creciente.mp3': 'mp3-bytes' },
+                    eventos_generales: {
+                        'evento_averia.mp3': 'mp3-bytes',
+                        'evento_alto.mp3': 'mp3-bytes',
+                    },
+                    vacia: {},
+                })
+            )
+        );
+
+        expect(model.musica.eventPlaylists.map((p) => p.id)).toEqual([
+            'eventos_generales',
+            'tension',
+        ]);
+        const [eventos, tension] = model.musica.eventPlaylists;
+        expect(eventos.name).toBe('Eventos Generales');
+        expect(eventos.tracks.map((t) => t.path)).toEqual([
+            'mundo/musica/eventos_generales/evento_alto.mp3',
+            'mundo/musica/eventos_generales/evento_averia.mp3',
+        ]);
+        expect(tension.name).toBe('Tension');
+        expect(tension.tracks.map((t) => t.path)).toEqual([
+            'mundo/musica/tension/tension_creciente.mp3',
+        ]);
+    });
+
+    test('markdown prompt docs and ignore rules (_ files, _/CAPS dirs) are skipped', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                musicaTree({
+                    '_instrucciones.md': '# qué generar y soltar aquí',
+                    'notas.md': '# apuntes del GM',
+                    '_maqueta.mp3': 'mp3-bytes',
+                    'viaje_frontera.mp3': 'mp3-bytes',
+                    _borradores: { 'wip.mp3': 'mp3-bytes' },
+                    ARCHIVO: { 'vieja.mp3': 'mp3-bytes' },
+                    eventos: { 'evento_pecio.mp3': 'mp3-bytes', 'leeme.md': 'doc' },
+                })
+            )
+        );
+
+        expect(model.musica.bgm.map((t) => t.path)).toEqual([
+            'mundo/musica/viaje_frontera.mp3',
+        ]);
+        expect(model.musica.eventPlaylists.map((p) => p.id)).toEqual(['eventos']);
+        expect(model.musica.eventPlaylists[0].tracks.map((t) => t.name)).toEqual([
+            'evento_pecio.mp3',
+        ]);
+        // The ignored content produced no diagnostics either.
+        expect(model.problemas.some((p) => p.archivo.includes('musica'))).toBe(false);
+    });
+
+    test('absent musica/ folder yields empty arrays and NO aviso (optional by design)', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', { mundo: { 'mundo.md': FULL_MANIFEST } })
+        );
+
+        expect(model.musica.bgm).toEqual([]);
+        expect(model.musica.eventPlaylists).toEqual([]);
+        expect(model.problemas.some((p) => p.archivo.includes('musica'))).toBe(false);
+        expect(model.problemas.some((p) => p.mensaje.includes('musica'))).toBe(false);
+    });
+});
+
 // ── Stores (headless zustand) ───────────────────────────────────────────────
 
 describe('worldStore', () => {

@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { MUNDO_CAMPAIGN, MUNDO_CAMPAIGN_CON_ESTADO } from './fixtures/mundoCampaign';
+import {
+    MUNDO_CAMPAIGN,
+    MUNDO_CAMPAIGN_CON_ESTADO,
+    MUNDO_CAMPAIGN_CON_MUSICA,
+} from './fixtures/mundoCampaign';
 import type { FileTree } from './fixtures/mundoCampaign';
 import { listOPFSDir, materializeIntoOPFS, openWorldViaOPFS, readOPFSFile } from './helpers/opfs';
 
@@ -723,6 +727,82 @@ test.describe('World Mode - ActRunner', () => {
         await expect
             .poll(() => readOPFSFile(page, journalPath))
             .toMatch(/- \[\d{2}:\d{2}\] nota: Acto cerrado: Part 1 @ Porto Verne/);
+    });
+});
+
+// ── World-level music (mundo/musica/ -> bottom-left audio dock) ─────────────
+//
+// The dock lists tracks and toggles open/closed; NOTHING here presses play —
+// Playwright cannot verify sound and the fixture "mp3"s are fake bytes that
+// would only error on decode. All assertions ride on data attributes /
+// aria-pressed (the ActRunner-handoff contract in app/world/page.tsx).
+
+test.describe('World Mode - Música del mundo', () => {
+    test('the dock lists the BGM rotation and the event playlist', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_MUSICA);
+        await openWorldViaOPFS(page);
+
+        // Closed by default: just the toggle button above the QuickLogBar.
+        const toggle = page.locator('[data-world-audio="toggle"]');
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+        await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
+
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        const panel = page.locator('[data-world-audio="panel"]');
+        await expect(panel).toBeVisible();
+
+        // 2 root mp3s -> BGM rotation; 1 subfolder -> 1 playlist; the
+        // _instrucciones.md prompt doc counts for neither.
+        await expect(panel.locator('[data-world-audio-bgm-count="2"]')).toBeVisible();
+        await expect(panel.locator('[data-world-audio-playlist-count="1"]')).toBeVisible();
+        await expect(panel).toContainText('2 pistas · 1 lista');
+
+        // The reused AudioControls renders the playlist selector: the BGM
+        // entry plus the eventos_generales subfolder under its display name.
+        await expect(panel.getByRole('button', { name: 'Background Music' })).toBeVisible();
+        await expect(panel.getByRole('button', { name: 'Eventos Generales' })).toBeVisible();
+
+        // Toggle back off: panel gone, button released.
+        await toggle.click();
+        await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    test('a world without mundo/musica/ renders no dock at all', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN); // no musica/ folder
+        await openWorldViaOPFS(page);
+
+        await expect(page.locator('[data-world-status="ready"]')).toBeAttached();
+        await expect(page.locator('[data-world-audio="toggle"]')).toHaveCount(0);
+        await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
+    });
+
+    test('the ActRunner conceals the dock and closing restores it with its state', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_MUSICA);
+        await openWorldViaOPFS(page);
+
+        // Leave the dock OPEN so the round-trip proves state survival.
+        const toggle = page.locator('[data-world-audio="toggle"]');
+        await toggle.click();
+        await expect(page.locator('[data-world-audio="panel"]')).toBeVisible();
+
+        // Runner open: the world dock is concealed (still mounted, hidden) —
+        // the act music owns the room per the handoff contract.
+        await openPortoVerneRunner(page);
+        await expect(toggle).toBeHidden();
+        await expect(page.locator('[data-world-audio="panel"]')).toBeHidden();
+
+        // Runner closed: dock back, still open (aria-pressed survived).
+        await page.locator('[data-act-close]').click();
+        await expect(page.locator('[data-act-runner]')).toHaveCount(0);
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('[data-world-audio="panel"]')).toBeVisible();
     });
 });
 

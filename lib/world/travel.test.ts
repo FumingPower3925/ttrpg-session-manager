@@ -110,6 +110,7 @@ function makeModel(viaje: Partial<WorldManifest['viaje']> = {}): WorldModel {
         childrenOf: new Map(),
         estadoGrupo: null,
         diario: [],
+        musica: { bgm: [], eventPlaylists: [] },
     };
 }
 

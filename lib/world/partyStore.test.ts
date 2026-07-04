@@ -97,6 +97,7 @@ function makeModel(estadoGrupo: PartyState | null, diario: JournalDay[] = []): W
         childrenOf: new Map(),
         estadoGrupo,
         diario,
+        musica: { bgm: [], eventPlaylists: [] },
     };
 }
 

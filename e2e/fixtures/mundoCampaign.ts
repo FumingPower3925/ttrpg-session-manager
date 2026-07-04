@@ -16,6 +16,11 @@
  *
  * MUNDO_CAMPAIGN_CON_ESTADO adds estado/grupo.md (party at porto_verne) for the
  * M2 party-readout tests: PartyStatusBar values + marker roll-up across tiers.
+ *
+ * MUNDO_CAMPAIGN_CON_MUSICA adds mundo/musica/ (world-level music): 2 root
+ * mp3s = BGM rotation + eventos_generales/ = 1 named event playlist + a
+ * markdown prompt doc the scanner must ignore. The base fixture deliberately
+ * has NO musica/ folder — the no-dock test depends on that.
  */
 
 export type FileTree = { [name: string]: string | FileTree };
@@ -432,5 +437,23 @@ export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     const mundo = clone.mundo as FileTree;
     (mundo.estado as FileTree)['grupo.md'] = GRUPO_MD;
     (mundo.pistas as FileTree)['deuda_kael_zara.md'] = DEUDA_KAEL_ZARA_CON_REQUISITOS;
+    return clone;
+})();
+
+/**
+ * Same campaign, plus mundo/musica/ — world-level music for the cockpit dock.
+ * The "mp3" bytes are fake: the app only LISTS the files until one is played,
+ * and the audio-dock tests never press play (Playwright cannot verify sound).
+ */
+export const MUNDO_CAMPAIGN_CON_MUSICA: FileTree = (() => {
+    const clone = JSON.parse(JSON.stringify(MUNDO_CAMPAIGN)) as FileTree;
+    (clone.mundo as FileTree).musica = {
+        'viaje_nucleo.mp3': 'fake-mp3-bytes-nucleo',
+        'viaje_frontera.mp3': 'fake-mp3-bytes-frontera',
+        '_instrucciones.md': '# Prompts — el scanner debe ignorar este markdown',
+        eventos_generales: {
+            'evento_averia.mp3': 'fake-mp3-bytes-averia',
+        },
+    };
     return clone;
 })();
