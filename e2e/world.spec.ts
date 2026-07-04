@@ -781,6 +781,28 @@ test.describe('World Mode - Eventos en curso & combate', () => {
         await expect(page.getByText('Chesco', { exact: true }).first()).toBeVisible();
     });
 
+    test('(e) Revelar lights a ghost entity so it becomes conocido + Mover-able', async ({ page }) => {
+        await startSession(page); // sabe: must be journaled
+
+        // sistema_umbral starts desconocido (a ghost at the sector tier).
+        const umbral = page.locator('[data-entity-id="sistema_umbral"]');
+        await expect(umbral).toHaveAttribute('data-knowledge', 'desconocido');
+        await umbral.click();
+        const panel = page.locator('[data-entity-panel="sistema_umbral"]');
+        await expect(panel).toBeVisible();
+
+        // Revelar bumps it to conocido (logs sabe:).
+        await panel.locator('[data-reveal]').click();
+        await expect(page.locator('[data-entity-id="sistema_umbral"]')).toHaveAttribute(
+            'data-knowledge',
+            'conocido'
+        );
+
+        // Now it is a valid Mover destination (Mover excludes desconocido).
+        await page.locator('[data-quicklog="mover"]').click();
+        await expect(page.locator('[data-mover-id="sistema_umbral"]')).toBeVisible();
+    });
+
     test('(d) Terminar -> Descartar wipes the test session (journal gone, estado reverted)', async ({ page }) => {
         await startSession(page);
         await expect

@@ -319,7 +319,7 @@ import type {
   WorldEvent,
   WorldModel,
 } from '@/types/world';
-import { FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, Swords, TriangleAlert } from 'lucide-react';
+import { Eye, FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, Swords, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -1425,6 +1425,32 @@ export default function WorldPage() {
   }, [handleEventOutcome]);
 
   /**
+   * REVELAR: raise a desconocido/rumoreado entity to `conocido` (logs `sabe:`),
+   * so it becomes a Mover destination and its pistas can derive accionable.
+   * The GM uses this during the acto2 Archivo beat to "light" the ghost nodes.
+   * Session-gated (it must be journaled to survive a rescan).
+   */
+  const handleReveal = useCallback(
+    (id: string) => {
+      const currentModel = useWorldStore.getState().model;
+      if (!currentModel) return;
+      const entity = currentModel.entidades.get(id);
+      if (!entity) return;
+      const from = entity.conocimiento;
+      if (from === 'conocido' || from === 'visitado') return;
+      if (!usePartyStore.getState().actions.log(makeEntry.sabe(id, from, 'conocido'))) {
+        toast.error('Inicia sesión para revelar');
+        return;
+      }
+      bumpConocimientoInMemory(entity, 'conocido');
+      touchModel();
+      rederiveLeads();
+      toast.success(`Revelado: ${entity.nombre}`);
+    },
+    [touchModel, rederiveLeads]
+  );
+
+  /**
    * Optional Eventos-tab shortcut: resolve a parked event WITHOUT reopening the
    * drawer (journals `resuelto` for that id, dropping it from ongoing).
    */
@@ -2017,6 +2043,13 @@ export default function WorldPage() {
     return selectedEntity.tipo === 'sistema' || isPlace(selectedEntity);
   }, [model, selectedEntity, ubicacion, travel]);
 
+  /** A selected entity the GM can still "reveal" (not yet conocido/visitado). */
+  const canRevealSelected = Boolean(
+    selectedEntity &&
+      selectedEntity.conocimiento !== 'conocido' &&
+      selectedEntity.conocimiento !== 'visitado'
+  );
+
   /**
    * Event-context place anchor mid-travel: origin until the sector leg
    * completes, then the destination (module doc REGION OF ROUTE).
@@ -2542,8 +2575,21 @@ export default function WorldPage() {
                         }
                         onClose={() => uiActions.selectEntity(null)}
                         actions={
-                          canTravelToSelected || selectedPlayable ? (
+                          canTravelToSelected || selectedPlayable || canRevealSelected ? (
                             <>
+                              {canRevealSelected && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  data-reveal
+                                  onClick={() => handleReveal(selectedEntity!.id)}
+                                  className="min-h-11"
+                                  title="Marcar como conocido (el grupo ahora sabe de este sitio)"
+                                >
+                                  <Eye />
+                                  Revelar
+                                </Button>
+                              )}
                               {selectedPlayable && (
                                 <Button
                                   size="sm"
