@@ -27,8 +27,17 @@
  * Bottom sheet: fixed bottom panel + translate-y transition, no new deps.
  * Test hooks: data-event-drawer (data-state open|closed), per-effect
  * data-event-effect-N (+ data-event-effect={N}), data-event-outcome on the
- * three outcome buttons (Complicación first expands the nota input; its
- * confirm button carries data-event-outcome-confirm), data-event-redraw.
+ * outcome buttons (En curso / Resuelto / Ignorado / Complicación; Complicación
+ * expands the nota input, its confirm button carries data-event-outcome-confirm),
+ * data-event-combat (Abrir combate), data-event-redraw.
+ *
+ * OUTCOMES (feature 1 "En curso"): the three closing outcomes (resuelto /
+ * ignorado / complicacion) journal the resolution AND close the drawer,
+ * dropping the event from the ongoing list. "En curso" instead PARKS the event
+ * (reports outcome en_curso, no nota) so the GM can reopen it later from the
+ * Eventos tab — it is set apart from the three closers on the outcome row.
+ * "Abrir combate" (feature 2) parks the event en_curso AND reveals the cockpit
+ * initiative affordance (onOpenCombat, wired by the page).
  *
  * draw === null while OPEN renders the empty state (data-event-empty): no
  * applicable table / empty pool — the button that opened the drawer stays
@@ -49,13 +58,15 @@ import {
   Dices,
   Image as ImageIcon,
   Music,
+  Pause,
   ScrollText,
   StickyNote,
+  Swords,
   TriangleAlert,
   X,
 } from 'lucide-react';
 
-export type EventOutcome = 'resuelto' | 'ignorado' | 'complicacion';
+export type EventOutcome = 'en_curso' | 'resuelto' | 'ignorado' | 'complicacion';
 
 export interface EventDrawerDraw {
   /** Display name of the table the event was drawn from. */
@@ -72,6 +83,11 @@ interface EventDrawerProps {
   onRedraw: () => void;
   /** Journal the resolution; nota only accompanies 'complicacion'. */
   onOutcome: (outcome: EventOutcome, nota?: string) => void;
+  /**
+   * Bridge to combat (feature 2): parks the draw en_curso, reveals the cockpit
+   * initiative affordance and closes the drawer. The page owns all three.
+   */
+  onOpenCombat: () => void;
   /** Convert one `:::efecto` line into a journal entry (caller owns makeEntry). */
   onApplyEffect: (effect: EventEffect) => void;
   /** Indexes into draw.event.efectos already applied (check + disabled). */
@@ -256,6 +272,7 @@ export function EventDrawer({
   draw,
   onRedraw,
   onOutcome,
+  onOpenCombat,
   onApplyEffect,
   appliedEffects,
   canRedraw,
@@ -289,6 +306,12 @@ export function EventDrawer({
 
   const resolve = (outcome: EventOutcome, outcomeNota?: string) => {
     onOutcome(outcome, outcomeNota);
+    onOpenChange(false);
+  };
+
+  /** Park as ongoing (no nota) and close — the thread stays reopenable. */
+  const park = () => {
+    onOutcome('en_curso');
     onOpenChange(false);
   };
 
@@ -406,8 +429,33 @@ export function EventDrawer({
             </div>
 
             <footer className="border-t px-4 py-3">
-              {/* min-h-11 = 44px tap targets on the outcome row (M5 sweep). */}
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              {/* min-h-11 = 44px tap targets on the outcome row (M5 sweep).
+                  Left group PARKS the thread (En curso / Abrir combate); right
+                  group CLOSES it (Resuelto / Ignorado / Complicación). */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    data-event-outcome="en_curso"
+                    onClick={park}
+                    className="min-h-11"
+                  >
+                    <Pause aria-hidden />
+                    En curso
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    data-event-combat
+                    onClick={onOpenCombat}
+                    className="min-h-11"
+                  >
+                    <Swords aria-hidden />
+                    Abrir combate
+                  </Button>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button
                   type="button"
                   data-event-outcome="resuelto"
@@ -436,6 +484,7 @@ export function EventDrawer({
                   <TriangleAlert aria-hidden />
                   Complicación
                 </Button>
+                </div>
               </div>
               {complicacionOpen && (
                 <div className="mt-2 flex items-center gap-2">

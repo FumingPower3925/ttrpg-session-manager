@@ -678,6 +678,119 @@ test.describe('World Mode - Travel & events', () => {
     });
 });
 
+// ── Feature 1 + 2: Ongoing events ("En curso") + cockpit combat ─────────────
+//
+// estancia_porto#e01 "Encargo de descarga" is the single estancia event in
+// region nucleo (drawn from the QuickLogBar "evento" button at porto_verne).
+// The CON_ESTADO fixture carries personajes: [Xiao, Chesco] for the cockpit
+// initiative tracker.
+
+test.describe('World Mode - Eventos en curso & combate', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+    });
+
+    /** Starts a session and returns the diario path (single file, sesion 1). */
+    async function startSession(page: import('@playwright/test').Page): Promise<string> {
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        return `mundo/diario/${journalName}`;
+    }
+
+    test('(a) En curso parks the event; the Eventos tab lists it, reopen + Resuelto closes it', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        // Draw an estancia event and PARK it "En curso".
+        await page.locator('[data-quicklog="evento"]').click();
+        const drawer = page.locator('[data-event-drawer]');
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+        await expect(drawer).toContainText('Encargo de descarga');
+        await drawer.locator('[data-event-outcome="en_curso"]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'closed');
+
+        // Journal carries the "en curso" comentario (exact string).
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] evento: estancia_porto#e01 \| en curso/);
+
+        // Eventos tab badge = 1 and the row is visible.
+        const eventosTab = page.locator('[data-panel-tab="eventos"]');
+        await expect(eventosTab.locator('[data-eventos-badge="1"]')).toBeVisible();
+        await eventosTab.click();
+        const row = page.locator('[data-ongoing-event="estancia_porto#e01"]');
+        await expect(row).toBeVisible();
+        await expect(row).toContainText('Encargo de descarga');
+
+        // Clicking the row (data-ongoing-open is on the row button itself)
+        // reopens the event drawer with that event.
+        await expect(row).toHaveAttribute('data-ongoing-open');
+        await row.click();
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+        await expect(drawer).toContainText('Encargo de descarga');
+
+        // Pick Resuelto: drawer closes, the event drops from ongoing, badge gone.
+        await drawer.locator('[data-event-outcome="resuelto"]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'closed');
+        await expect(page.locator('[data-eventos-badge]')).toHaveCount(0);
+        await expect(page.locator('[data-ongoing-event="estancia_porto#e01"]')).toHaveCount(0);
+        await expect(page.locator('[data-eventos-empty]')).toBeVisible();
+
+        // Journal shows both states for the id: "en curso" then "resuelto".
+        const journal = await readOPFSFile(page, journalPath);
+        expect(journal).toMatch(/- \[\d{2}:\d{2}\] evento: estancia_porto#e01 \| en curso/);
+        expect(journal).toMatch(/- \[\d{2}:\d{2}\] evento: estancia_porto#e01 \| resuelto/);
+    });
+
+    test('(b) Abrir combate parks the event and reveals the initiative affordance', async ({ page }) => {
+        const journalPath = await startSession(page);
+
+        await page.locator('[data-quicklog="evento"]').click();
+        const drawer = page.locator('[data-event-drawer]');
+        await expect(drawer).toHaveAttribute('data-state', 'open');
+
+        // "Abrir combate": parks en_curso + reveals initiative + closes drawer.
+        await drawer.locator('[data-event-combat]').click();
+        await expect(drawer).toHaveAttribute('data-state', 'closed');
+
+        // The event is parked (Eventos tab shows it).
+        await expect(page.locator('[data-panel-tab="eventos"] [data-eventos-badge="1"]')).toBeVisible();
+        await page.locator('[data-panel-tab="eventos"]').click();
+        await expect(page.locator('[data-ongoing-event="estancia_porto#e01"]')).toBeVisible();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] evento: estancia_porto#e01 \| en curso/);
+
+        // The initiative affordance is present (the cockpit tracker is mounted;
+        // it renders its own left-edge pull-tab). data-combat-open stays too.
+        await expect(page.locator('[data-combat-open]')).toBeVisible();
+    });
+
+    test('(c) cockpit initiative shows the PC names from personajes', async ({ page }) => {
+        await startSession(page);
+
+        // No ActRunner open -> revealing combat mounts the COCKPIT tracker.
+        await page.locator('[data-combat-open]').click();
+
+        // The tracker seeds one PC entry per personajes name. Collapsed it shows
+        // a left-edge semi-circle pull-tab; hovering it expands the full panel
+        // where the PC rows (Xiao / Chesco) render. It is left-edge fixed.
+        const pullTab = page.locator('div.fixed.left-0.cursor-pointer').first();
+        await expect(pullTab).toBeVisible();
+        await pullTab.hover();
+        // The expanded panel lists one row per personajes name (the tracker also
+        // keeps its compact pull-tab mounted, so the name can resolve twice —
+        // .first() suffices to prove the roster reached the tracker).
+        await expect(page.getByText('Xiao', { exact: true }).first()).toBeVisible();
+        await expect(page.getByText('Chesco', { exact: true }).first()).toBeVisible();
+    });
+});
+
 // ── M5: ActRunner (scripted acts inside /world) ─────────────────────────────
 //
 // porto_verne is the fixture's playable place: lugares/porto_verne/ holds

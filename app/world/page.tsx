@@ -174,6 +174,39 @@
  *     which flips panelTab) unmounts the board and clears it — no page
  *     wiring needed.
  *
+ * ONGOING EVENTS ("En curso" — feature 1):
+ *   - A drawn event's outcome journals an `evento` entry whose comentario is
+ *     the resolution. The new "En curso" outcome parks it with comentario
+ *     EXACTLY "en curso" (no nota) instead of closing the thread; the drawer
+ *     still closes. handleEventOutcome branches on en_curso for this.
+ *   - The ongoing list is DERIVED (never stored): deriveOngoing(session.entries,
+ *     model.tablas) keeps the latest comentario per evento id — "en curso" =>
+ *     ongoing, anything else => resolved/dropped — and resolves each to a live
+ *     WorldEvent (ids missing from the model are skipped). It rebuilds after
+ *     crash recovery because the session entries are restored. The Eventos tab
+ *     shows the list (count badge = ongoingEvents.length); reopenEvent re-arms
+ *     the drawer on that WorldEvent (estancia @ current ubicacion, redraw off)
+ *     so the GM applies more efectos or picks a final outcome (dropping it).
+ *
+ * COCKPIT COMBAT (feature 2):
+ *   - Combat can break out from a world event, so the EXISTING play
+ *     InitiativeTracker (components/play, UNMODIFIED) is mounted on the cockpit,
+ *     fed the party roster (partyStore.personajes, hydrated from
+ *     estado/grupo.md `personajes:` and round-tripped by serializePartyState so
+ *     a session write never drops it) with pcStats={[]}.
+ *   - DOUBLE-MOUNT GUARD: the ActRunner already mounts its OWN InitiativeTracker
+ *     on the SAME localStorage key (initiativeTrackerState — intentional
+ *     cockpit<->act combat continuity) and renders as a fullscreen overlay OVER
+ *     the cockpit, so the cockpit tracker mounts ONLY while actRunnerPlace ===
+ *     null. (The pre-existing /play page also shares that key — out of scope.)
+ *   - "Abrir combate" in the EventDrawer bridges event -> combat: it parks the
+ *     draw en_curso (fight lands in the ongoing list), reveals the tracker and
+ *     closes the drawer. A cockpit "Combate" button (data-combat-open) reveals
+ *     the tracker so the GM can find it. LIMITATION: the tracker owns its
+ *     expanded/pinned state internally and exposes NO open prop, so neither the
+ *     button nor onOpenCombat can force the panel open — they MOUNT the tracker,
+ *     which self-shows its left-edge pull-tab; the GM expands it from there.
+ *
  * SCAN-OVERLAY ASYMMETRY (M4 decision — documented, not a bug):
  *   worldScanner.overlayUnprocessedJournals re-derives ONLY knowledge (sabe)
  *   and location knowledge (llegada) from journals with procesado: false.
@@ -259,6 +292,9 @@ import { SessionRecoveryBanner } from '@/components/world/SessionRecoveryBanner'
 import { LeadsBoard } from '@/components/world/LeadsBoard';
 import { EventDrawer } from '@/components/world/EventDrawer';
 import type { EventOutcome } from '@/components/world/EventDrawer';
+import { EventosPanel } from '@/components/world/EventosPanel';
+import { deriveOngoing, EN_CURSO_COMENTARIO } from '@/lib/world/ongoingEvents';
+import { InitiativeTracker } from '@/components/play/InitiativeTracker';
 import { TravelDialog } from '@/components/world/TravelDialog';
 import { TravelStepper } from '@/components/world/TravelStepper';
 import { RoutePreview } from '@/components/world/RoutePreview';
@@ -283,7 +319,7 @@ import type {
   WorldEvent,
   WorldModel,
 } from '@/types/world';
-import { FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
+import { FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, Swords, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -478,6 +514,7 @@ export default function WorldPage() {
   const rumbo = usePartyStore((s) => s.rumbo);
   const creditos = usePartyStore((s) => s.creditos);
   const medidores = usePartyStore((s) => s.medidores);
+  const personajes = usePartyStore((s) => s.personajes);
   const session = usePartyStore((s) => s.session);
 
   const [entry, setEntry] = useState<EntryMode>('checking');
@@ -517,6 +554,11 @@ export default function WorldPage() {
   );
   const [eventApplied, setEventApplied] = useState<number[]>([]);
   const [eventDrawCount, setEventDrawCount] = useState(0);
+  // Cockpit combat (feature 2): once revealed the left-edge InitiativeTracker
+  // is mounted. It self-hides until it has entries but always shows its own
+  // pull-tab once mounted; "Combate" flips this on (the tracker manages its own
+  // expanded/pinned state internally — the page cannot force it open via props).
+  const [combatOpen, setCombatOpen] = useState(false);
   // M6: resolved object URL currently zoomed in the player-safe fullscreen
   // viewer (null = closed). The URL belongs to the page-owned image cache.
   const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
@@ -1299,12 +1341,17 @@ export default function WorldPage() {
     (outcome: EventOutcome, nota?: string) => {
       const draw = eventDraw;
       if (!draw) return;
+      // en_curso PARKS the event as ongoing: comentario is EXACTLY "en curso"
+      // (the deriveOngoing contract) — no nota. The three closers journal their
+      // resolution and drop the event from the ongoing list.
       const comentario =
-        outcome === 'complicacion'
-          ? nota
-            ? `complicación: ${nota}`
-            : 'complicación'
-          : outcome;
+        outcome === 'en_curso'
+          ? EN_CURSO_COMENTARIO
+          : outcome === 'complicacion'
+            ? nota
+              ? `complicación: ${nota}`
+              : 'complicación'
+            : outcome;
       if (
         !usePartyStore
           .getState()
@@ -1316,6 +1363,50 @@ export default function WorldPage() {
     },
     [eventDraw]
   );
+
+  /**
+   * Feature 1 "En curso" — reopen a PARKED event from the Eventos tab. Finds
+   * the WorldEvent in the live model, re-anchors the drawer on the current
+   * location (estancia @ ubicacion) so redraws/effects use a live CondContext,
+   * resets applied effects, and opens the drawer. From there the GM applies
+   * more efectos or picks a final outcome (which drops it from ongoing).
+   * Redraw is disabled on a reopened event (it is a specific parked thread,
+   * not a fresh draw) via eventDrawCount = 2.
+   */
+  const reopenEvent = useCallback((tabla: string, id: string) => {
+    const currentModel = useWorldStore.getState().model;
+    const table = currentModel?.tablas.find((t) => t.id === tabla);
+    const event = table?.eventos.find((e) => e.id === id);
+    if (!table || !event) return;
+    const anchorId = usePartyStore.getState().ubicacion;
+    eventSourceRef.current = { contexto: 'estancia', anchorId };
+    setEventDraw({ table, event });
+    setEventApplied([]);
+    setEventDrawCount(2); // a reopened parked event never offers "Otra tirada"
+    setEventOpen(true);
+  }, []);
+
+  /**
+   * Feature 2 bridge — "Abrir combate": park the current draw en_curso (so the
+   * fight lands in the ongoing list), reveal the cockpit initiative affordance
+   * and close the drawer. Any event -> combat -> parked -> resolve later.
+   */
+  const handleOpenCombat = useCallback(() => {
+    handleEventOutcome('en_curso');
+    setCombatOpen(true);
+    setEventOpen(false);
+  }, [handleEventOutcome]);
+
+  /**
+   * Optional Eventos-tab shortcut: resolve a parked event WITHOUT reopening the
+   * drawer (journals `resuelto` for that id, dropping it from ongoing).
+   */
+  const handleResolveQuickOngoing = useCallback((tabla: string, id: string) => {
+    const currentModel = useWorldStore.getState().model;
+    const event = currentModel?.tablas.find((t) => t.id === tabla)?.eventos.find((e) => e.id === id);
+    if (!usePartyStore.getState().actions.log(makeEntry.evento(tabla, id, 'resuelto'))) return;
+    toast.success(`Evento «${event?.titulo ?? id}»: resuelto`);
+  }, []);
 
   /**
    * One `:::efecto` line -> one journal entry via makeEntry against CURRENT
@@ -1570,6 +1661,17 @@ export default function WorldPage() {
     );
   }, [session]);
 
+  /**
+   * Feature 1 — ONGOING (parked) events, derived purely from the live session
+   * journal: latest comentario per evento id; "en curso" => ongoing, any other
+   * state => resolved/dropped. Ids missing from the model are skipped. Rebuilds
+   * correctly after crash recovery (entries are restored into session).
+   */
+  const ongoingEvents = useMemo(
+    () => (model ? deriveOngoing(session.entries, model.tablas) : []),
+    [model, session.entries]
+  );
+
   // ── Derived map data ──────────────────────────────────────────────────────
 
   /** Focused sistema at the system tier; a stale/invalid focus degrades to the sector tier. */
@@ -1683,6 +1785,8 @@ export default function WorldPage() {
       rumbo,
       creditos,
       medidores,
+      // The status bar never renders the roster; [] satisfies the type.
+      personajes: [],
       bodyMd: '',
       filePath: model.estadoGrupo.filePath,
     };
@@ -2301,7 +2405,8 @@ export default function WorldPage() {
                   : 'flex min-h-0 w-96 shrink-0 flex-col gap-2'
               }
             >
-              {/* Right-panel tabs: Entidad / Pistas / Diario (plan Part B cockpit). */}
+              {/* Right-panel tabs: Entidad / Pistas / Diario / Eventos (plan
+                  Part B cockpit + feature 1). Eventos carries the ongoing count. */}
               <div role="tablist" aria-label="Panel lateral" className="flex shrink-0 gap-1 rounded-lg border bg-muted/40 p-1">
                 {(
                   [
@@ -2327,6 +2432,31 @@ export default function WorldPage() {
                     {label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  role="tab"
+                  data-panel-tab="eventos"
+                  aria-selected={panelTab === 'eventos'}
+                  onClick={() => uiActions.setPanelTab('eventos')}
+                  className={`min-h-11 flex-1 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                    panelTab === 'eventos'
+                      ? 'bg-background font-medium shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <span className="inline-flex items-center justify-center gap-1.5">
+                    Eventos
+                    {ongoingEvents.length > 0 && (
+                      <Badge
+                        variant="secondary"
+                        data-eventos-badge={ongoingEvents.length}
+                        className="h-4 min-w-4 justify-center px-1 text-[10px]"
+                      >
+                        {ongoingEvents.length}
+                      </Badge>
+                    )}
+                  </span>
+                </button>
               </div>
 
               {panelTab === 'entidad' && (
@@ -2462,6 +2592,18 @@ export default function WorldPage() {
                   />
                 </Card>
               )}
+
+              {panelTab === 'eventos' && (
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <EventosPanel
+                    eventos={ongoingEvents}
+                    onReopen={reopenEvent}
+                    onResolveQuick={
+                      session.active ? handleResolveQuickOngoing : undefined
+                    }
+                  />
+                </div>
+              )}
             </aside>
           </main>
 
@@ -2522,6 +2664,7 @@ export default function WorldPage() {
             }
             onRedraw={handleEventRedraw}
             onOutcome={handleEventOutcome}
+            onOpenCombat={handleOpenCombat}
             onApplyEffect={handleApplyEffect}
             appliedEffects={eventApplied}
             canRedraw={eventDraw !== null && eventDrawCount < 2}
@@ -2547,6 +2690,50 @@ export default function WorldPage() {
               onClose={handleCloseActRunner}
               onActChange={handleActChange}
             />
+          )}
+
+          {/* Feature 2 — cockpit combat. The EXISTING play InitiativeTracker
+              (unmodified) is fed the party roster; it persists to localStorage
+              key initiativeTrackerState and renders its own left-edge
+              pinned/expanded panel with a pull-tab. Mounted only once the GM
+              reveals it (combatOpen) AND only while the ActRunner is CLOSED:
+              the ActRunner mounts its OWN InitiativeTracker on the same
+              localStorage key (intentional cockpit<->act combat continuity),
+              and it is a fullscreen overlay OVER the cockpit — rendering both
+              at once would double-mount the same key. See the module docstring
+              "COCKPIT COMBAT". */}
+          {combatOpen && actRunnerPlace === null && (
+            <InitiativeTracker playerCharacters={personajes} pcStats={[]} />
+          )}
+
+          {/* "Combate" affordance: a GM needs a way to FIND the tracker (it
+              self-hides until it has entries). This reveals/mounts it; the
+              tracker then owns its own left-edge pull-tab. LIMITATION: the
+              tracker manages its expanded/pinned state internally and exposes
+              no open prop, so this cannot force the panel open — it mounts the
+              tracker (which shows its pull-tab) and points the GM there. Hidden
+              while the ActRunner overlay owns the screen (it has its own
+              tracker). */}
+          {actRunnerPlace === null && (
+            <Button
+              type="button"
+              size="sm"
+              variant={combatOpen ? 'secondary' : 'outline'}
+              data-combat-open
+              aria-pressed={combatOpen}
+              onClick={() => setCombatOpen(true)}
+              title={
+                combatOpen
+                  ? 'Combate activo — el rastreador de iniciativa está en el borde izquierdo'
+                  : 'Abrir el rastreador de iniciativa (combate)'
+              }
+              // Bottom-RIGHT, clear of the bottom-left WorldAudioDock and the
+              // bottom-center toaster; above the QuickLogBar band.
+              className="fixed bottom-20 right-3 z-30 min-h-11 shadow-lg"
+            >
+              <Swords aria-hidden />
+              Combate
+            </Button>
           )}
 
           {/* M6: player-safe fullscreen for entity images (z above everything;

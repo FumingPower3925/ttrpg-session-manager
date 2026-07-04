@@ -221,6 +221,13 @@ export interface PartyState {
   creditos: number;
   /** Gauge name -> value 0-5 (`medidores`), e.g. viveres/combustible/nave. */
   medidores: Record<string, number>;
+  /**
+   * Party PC names (`personajes`) — the roster fed to the cockpit initiative
+   * tracker. Agent/GM-owned data the app never mutates via the log, but the
+   * app-owned frontmatter rewrite MUST round-trip it so a session write never
+   * drops the roster. Default [] when absent.
+   */
+  personajes: string[];
   /** Agent-owned markdown body below the frontmatter, byte-for-byte. */
   bodyMd: string;
   /** Path relative to the campaign folder; null when estado/grupo.md is absent. */

@@ -404,6 +404,7 @@ medidores:
   viveres: 3
   combustible: 2
   nave: 2
+personajes: [Xiao, Chesco]
 ---
 ## Inventario
 

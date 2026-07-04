@@ -237,6 +237,13 @@ export interface PartyStoreState {
     rumbo: { destino: string; llegadaDia: number } | null;
     creditos: number;
     medidores: Record<string, number>;
+    /**
+     * Party PC names (roster). Hydrated from estado/grupo.md; NEVER mutated by
+     * the log — but held here so serializePartyState (called from currentPartyState
+     * on every write) round-trips it and a session write never drops the roster.
+     * Feeds the cockpit InitiativeTracker.
+     */
+    personajes: string[];
     /** Agent-owned estado body, preserved byte-for-byte on every write. */
     bodyMd: string;
     /** Path of estado/grupo.md relative to the campaign folder (bookkeeping). */
@@ -313,6 +320,7 @@ function partyInitial() {
         rumbo: defaults.rumbo,
         creditos: defaults.creditos,
         medidores: defaults.medidores,
+        personajes: defaults.personajes,
         bodyMd: defaults.bodyMd,
         estadoFilePath: null as string | null,
         session: { ...SESSION_INITIAL, entries: [] as JournalEntry[] },
@@ -396,6 +404,7 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
             rumbo: s.rumbo === null ? null : { ...s.rumbo },
             creditos: s.creditos,
             medidores: { ...s.medidores },
+            personajes: [...s.personajes],
             bodyMd: s.bodyMd,
             filePath: s.estadoFilePath,
         };
@@ -496,6 +505,7 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
                     rumbo: estado.rumbo === null ? null : { ...estado.rumbo },
                     creditos: estado.creditos,
                     medidores: { ...estado.medidores },
+                    personajes: [...estado.personajes],
                     bodyMd: estado.bodyMd,
                     estadoFilePath: estado.filePath,
                 });
@@ -678,6 +688,9 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
                 estadoStatus = 'ok';
                 set({
                     ...snapshotToFields(snapshot),
+                    // Roster is file-owned (not in the mirror); re-take it from the
+                    // fresh scan so a recovered session still writes it back.
+                    personajes: estado ? [...estado.personajes] : [],
                     bodyMd: estado?.bodyMd ?? '',
                     estadoFilePath: estado?.filePath ?? null,
                     session: {
@@ -749,7 +762,7 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
 // ── uiStore ─────────────────────────────────────────────────────────────────
 
 export type MapTier = 'sector' | 'system';
-export type PanelTab = 'entidad' | 'pistas' | 'diario';
+export type PanelTab = 'entidad' | 'pistas' | 'diario' | 'eventos';
 
 /** Map viewport transform — structurally identical to StarMap's MapViewport. */
 export interface UiViewport {
@@ -866,7 +879,12 @@ export function readPersistedUi(storage: UiStorage | null = sessionStorageOrNull
         const value = p[key];
         if (typeof value === 'string' || value === null) out[key] = value;
     }
-    if (p.panelTab === 'entidad' || p.panelTab === 'pistas' || p.panelTab === 'diario') {
+    if (
+        p.panelTab === 'entidad' ||
+        p.panelTab === 'pistas' ||
+        p.panelTab === 'diario' ||
+        p.panelTab === 'eventos'
+    ) {
         out.panelTab = p.panelTab;
     }
     if (typeof p.mapCollapsed === 'boolean') out.mapCollapsed = p.mapCollapsed;

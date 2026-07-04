@@ -13,7 +13,7 @@
 import { stringify as stringifyYaml } from 'yaml';
 import { PartyState, ValidationIssue, WorldManifest } from '@/types/world';
 import { DEFAULT_MEDIDORES } from './constants';
-import { asNumber, asString, normalizeKeys, parseFrontmatter } from './frontmatter';
+import { asNumber, asString, asStringArray, normalizeKeys, parseFrontmatter } from './frontmatter';
 
 export interface ParsePartyStateResult {
     state: PartyState;
@@ -32,6 +32,7 @@ export function defaultPartyState(filePath: string | null = null): PartyState {
         rumbo: null,
         creditos: 0,
         medidores: { ...DEFAULT_MEDIDORES },
+        personajes: [],
         bodyMd: '',
         filePath,
     };
@@ -146,6 +147,13 @@ export function parsePartyState(content: string, filePath: string): ParsePartySt
         }
     }
 
+    if (data.personajes !== undefined && data.personajes !== null) {
+        // asStringArray tolerates a lone scalar and drops uncoercible items;
+        // an empty/omitted list simply stays [] (never an aviso — a party may
+        // have no roster recorded yet).
+        state.personajes = asStringArray(data.personajes);
+    }
+
     return { state, issues };
 }
 
@@ -173,7 +181,8 @@ function yamlScalar(value: string | number | boolean): string {
  *
  * Frontmatter key order (stable, human-friendly — documented contract):
  *   tipo, actualizado, sesion_activa, dia_mundo, ubicacion,
- *   rumbo (nested destino / llegada_dia, or null), creditos, medidores.
+ *   rumbo (nested destino / llegada_dia, or null), creditos, medidores,
+ *   personajes (roster — round-tripped so a session write never drops it).
  *
  * `actualizado` is write-time metadata (ISO timestamp) — parsePartyState
  * ignores it by design.
@@ -205,6 +214,17 @@ export function serializePartyState(state: PartyState, nowIso: string): string {
         lines.push('medidores:');
         for (const [nombre, valor] of medidores) {
             lines.push(`  ${yamlScalar(nombre)}: ${yamlScalar(valor)}`);
+        }
+    }
+
+    // Roster: app never edits it, but MUST preserve it byte-equivalently so a
+    // session write does not erase the PCs the cockpit initiative needs.
+    if (state.personajes.length === 0) {
+        lines.push('personajes: []');
+    } else {
+        lines.push('personajes:');
+        for (const nombre of state.personajes) {
+            lines.push(`  - ${yamlScalar(nombre)}`);
         }
     }
 

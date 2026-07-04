@@ -74,6 +74,12 @@ describe('uiStore persistence (persistUi/readPersistedUi)', () => {
         });
     });
 
+    test('eventos is a valid persisted panelTab (feature 1 migration)', () => {
+        const storage = fakeStorage();
+        persistUi({ ...SLICE, panelTab: 'eventos' }, storage);
+        expect(readPersistedUi(storage).panelTab).toBe('eventos');
+    });
+
     test('a throwing storage never propagates', () => {
         const throwing: UiStorage = {
             getItem: () => {

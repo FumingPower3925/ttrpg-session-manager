@@ -407,6 +407,7 @@ describe('serializePartyState', () => {
                 '  viveres: 3',
                 '  combustible: 3',
                 '  nave: 3',
+                'personajes: []',
                 '---',
                 '',
             ].join('\n')
@@ -527,6 +528,54 @@ describe('hydrate', () => {
         actions().log(makeEntry.gasto(100, undefined, CLOCK));
         actions().hydrate(makeModel(makeEstado({ creditos: 9999 })));
         expect(usePartyStore.getState().creditos).toBe(400);
+    });
+
+    test('loads the personajes roster from estado', () => {
+        actions().reset();
+        actions().setDeps(makeDeps().deps);
+        actions().hydrate(makeModel(makeEstado({ personajes: ['Xiao', 'Chesco'] })));
+        expect(usePartyStore.getState().personajes).toEqual(['Xiao', 'Chesco']);
+    });
+});
+
+// ── personajes preservation through the session write path ──────────────────
+
+describe('personajes', () => {
+    test('every estado write preserves the hydrated roster (never dropped by log)', async () => {
+        actions().reset();
+        const f = makeDeps();
+        actions().setDeps(f.deps);
+        actions().hydrate(makeModel(makeEstado({ personajes: ['Xiao', 'Chesco'] })));
+
+        actions().startSession([], TODAY);
+        actions().log(makeEntry.gasto(200, undefined, CLOCK));
+        await new Promise((r) => setTimeout(r, 5));
+        await actions().flushEstado();
+
+        // The roster the log never touches still round-trips into estado/grupo.md.
+        const estado = f.estadoWrites[f.estadoWrites.length - 1];
+        expect(estado).toContain('personajes:');
+        const { state } = parsePartyState(estado, 'mundo/estado/grupo.md');
+        expect(state.personajes).toEqual(['Xiao', 'Chesco']);
+        // ...and the log still mutated the party numbers as usual.
+        expect(state.creditos).toBe(300);
+    });
+
+    test('recoverSession re-takes the roster from the fresh scan', () => {
+        actions().reset();
+        const f = makeDeps();
+        actions().setDeps(f.deps);
+        actions().hydrate(makeModel(makeEstado({ personajes: ['Xiao'] })));
+        actions().startSession([], TODAY);
+        actions().log(makeEntry.gasto(50, undefined, CLOCK));
+        const mirror = readSessionMirror(f.storage);
+
+        actions().reset();
+        const fresh = makeDeps();
+        actions().setDeps(fresh.deps);
+        // The fresh scan holds the CURRENT roster (file-owned, not in the mirror).
+        actions().recoverSession(mirror!, makeModel(makeEstado({ personajes: ['Xiao', 'Chesco'] })));
+        expect(usePartyStore.getState().personajes).toEqual(['Xiao', 'Chesco']);
     });
 });
 

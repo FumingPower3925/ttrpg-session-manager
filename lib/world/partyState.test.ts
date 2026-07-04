@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 import { test, expect, describe } from 'bun:test';
 import { WorldManifest } from '@/types/world';
-import { defaultPartyState, formatFecha, parsePartyState } from './partyState';
+import { defaultPartyState, formatFecha, parsePartyState, serializePartyState } from './partyState';
 
 const FILE_PATH = 'mundo/estado/grupo.md';
 
@@ -22,6 +22,7 @@ medidores:
   combustible: 1
   nave: 4
   moral: 5
+personajes: [Xiao, Chesco, Soy]
 ---
 ## Inventario
 
@@ -38,6 +39,7 @@ medidores:
         expect(state.rumbo).toEqual({ destino: 'sistema_kovar', llegadaDia: 110 });
         expect(state.creditos).toBe(850);
         expect(state.medidores).toEqual({ viveres: 2, combustible: 1, nave: 4, moral: 5 });
+        expect(state.personajes).toEqual(['Xiao', 'Chesco', 'Soy']);
         expect(state.filePath).toBe(FILE_PATH);
         expect(state.bodyMd).toBe('## Inventario\n\n- 3 cargas de mineral\n');
     });
@@ -54,6 +56,7 @@ describe('parsePartyState — tolerant defaults', () => {
         expect(state.rumbo).toBeNull();
         expect(state.creditos).toBe(0);
         expect(state.medidores).toEqual({ viveres: 3, combustible: 3, nave: 3 });
+        expect(state.personajes).toEqual([]);
     });
 
     test('defaultPartyState: filePath null when the file is absent', () => {
@@ -64,6 +67,7 @@ describe('parsePartyState — tolerant defaults', () => {
         expect(state.diaMundo).toBe(1);
         expect(state.creditos).toBe(0);
         expect(state.medidores).toEqual({ viveres: 3, combustible: 3, nave: 3 });
+        expect(state.personajes).toEqual([]);
         expect(state.bodyMd).toBe('');
     });
 
@@ -181,6 +185,52 @@ describe('parsePartyState — body preserved byte-for-byte', () => {
         const { state } = parsePartyState('---\ncreditos: 1\n---\n', FILE_PATH);
 
         expect(state.bodyMd).toBe('');
+    });
+});
+
+// ── personajes (roster) round-trip + serialize preservation ─────────────────
+
+describe('personajes roster', () => {
+    const NOW_ISO = '2026-07-04T12:00:00.000Z';
+
+    test('parses a bracketed list and a lone scalar; omitted stays []', () => {
+        expect(parsePartyState('---\npersonajes: [Xiao, Chesco]\n---\n', FILE_PATH).state.personajes)
+            .toEqual(['Xiao', 'Chesco']);
+        // A lone scalar tolerates `personajes: Xiao` (asStringArray).
+        expect(parsePartyState('---\npersonajes: Xiao\n---\n', FILE_PATH).state.personajes)
+            .toEqual(['Xiao']);
+        // Omitted / null / empty list -> [] (never an aviso).
+        expect(parsePartyState('---\ntipo: estado_grupo\n---\n', FILE_PATH).state.personajes)
+            .toEqual([]);
+        expect(parsePartyState('---\npersonajes: null\n---\n', FILE_PATH).state.personajes)
+            .toEqual([]);
+        expect(parsePartyState('---\npersonajes: []\n---\n', FILE_PATH).state.personajes)
+            .toEqual([]);
+    });
+
+    test('serialize -> parse round-trips the roster', () => {
+        const state = defaultPartyState(FILE_PATH);
+        state.personajes = ['Xiao', 'Chesco', 'Soy'];
+        const text = serializePartyState(state, NOW_ISO);
+        expect(text).toContain('personajes:');
+        expect(parsePartyState(text, FILE_PATH).state.personajes).toEqual(['Xiao', 'Chesco', 'Soy']);
+    });
+
+    test('an empty roster serializes as personajes: [] and round-trips', () => {
+        const text = serializePartyState(defaultPartyState(FILE_PATH), NOW_ISO);
+        expect(text).toContain('personajes: []');
+        expect(parsePartyState(text, FILE_PATH).state.personajes).toEqual([]);
+    });
+
+    test('roster survives a serialize even when every OTHER field is rewritten', () => {
+        // Preservation-through-write: a state carrying only the roster (defaults
+        // elsewhere) must NOT lose it after serialize (the app-owned rewrite).
+        const state = defaultPartyState(FILE_PATH);
+        state.personajes = ['Xiao', 'Chesco'];
+        state.creditos = 999;
+        const reparsed = parsePartyState(serializePartyState(state, NOW_ISO), FILE_PATH).state;
+        expect(reparsed.personajes).toEqual(['Xiao', 'Chesco']);
+        expect(reparsed.creditos).toBe(999);
     });
 });
 
