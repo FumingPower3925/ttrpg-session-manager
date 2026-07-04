@@ -145,6 +145,35 @@
  *     so its open/closed state survives the round-trip. No double audio: the
  *     duck starts the instant the overlay mounts.
  *
+ * M6 GM surfaces — entity images, pnj dossier, pista detail:
+ *   - PROFILE IMAGES: `mundo/imagenes/<entity_id>.<ext>` attaches
+ *     WorldEntityBase.imagen at scan time (worldScanner.scanEntityImages).
+ *     The page owns ONE object-URL cache keyed by path
+ *     (entityImageUrlCacheRef), resolved lazily through worldFs.getFileURL —
+ *     revoked whenever the model/fs changes and on unmount (the ActRunner
+ *     imageUrlCache pattern, including its revoke-on-cleanup fix). The
+ *     EntityPanel banner and PnjCard portrait open the PLAYER-SAFE
+ *     FullscreenImage viewer (solid black, the image and NOTHING else — the
+ *     GM projects it to players); ActRunner image tabs now use the same
+ *     viewer because play's ImageViewer overlays the filename, a GM-only
+ *     leak on the shared screen (play mode keeps ImageViewer unchanged).
+ *   - PNJ SURFACE: a place's panel lists the pnjs whose ubicacion is the
+ *     place ("Personajes"; unmet ones — conocimiento desconocido — carry a
+ *     muted hint). DESIGN DECISION: clicking one selects the pnj through the
+ *     EXISTING selectedEntityId (no parallel selectedPnjId state) — pnjs ARE
+ *     entities in the entidades map and tierTargetFor returns null for them,
+ *     so selection leaves the map untouched, nothing extra needs clearing on
+ *     tab/entity changes, and search results / ?e= deep links land on the
+ *     same PnjCard for free. The render branch swaps EntityPanel for PnjCard
+ *     whenever the selection resolves to a pnj; its back button navigates to
+ *     the pnj's ubicacion (or just clears the selection when it dangles).
+ *   - PISTA DETAIL: row-body clicks inside LeadsBoard open a LeadDetail view
+ *     (estado/donde/plazo chips, human-readable requisitos, recompensa and
+ *     the pista BODY — previously invisible here). The open-detail state is
+ *     LOCAL to LeadsBoard: leaving the Pistas tab (or selecting an entity,
+ *     which flips panelTab) unmounts the board and clears it — no page
+ *     wiring needed.
+ *
  * SCAN-OVERLAY ASYMMETRY (M4 decision — documented, not a bug):
  *   worldScanner.overlayUnprocessedJournals re-derives ONLY knowledge (sabe)
  *   and location knowledge (llegada) from journals with procesado: false.
@@ -207,12 +236,19 @@ import {
 } from '@/lib/world/worldNav';
 import { StarMap, useMapScale } from '@/components/world/StarMap';
 import type { BreadcrumbItem, MapViewport } from '@/components/world/StarMap';
+import type { FileReference } from '@/types';
 import { SectorView, WORLD_SCALE } from '@/components/world/SectorView';
 import { SystemView, systemFitRadius } from '@/components/world/SystemView';
 import { SiteList } from '@/components/world/SiteList';
 import { PartyStatusBar } from '@/components/world/PartyStatusBar';
 import { EntityPanel } from '@/components/world/EntityPanel';
-import type { EntityPanelEntity, EntityPanelLead } from '@/components/world/EntityPanel';
+import type {
+  EntityPanelEntity,
+  EntityPanelLead,
+  EntityPanelPersonaje,
+} from '@/components/world/EntityPanel';
+import { PnjCard } from '@/components/world/PnjCard';
+import { FullscreenImage } from '@/components/world/FullscreenImage';
 import { DiagnosticsPanel } from '@/components/world/DiagnosticsPanel';
 import { WorldSearchDialog } from '@/components/world/WorldSearchDialog';
 import { QuickLogBar } from '@/components/world/QuickLogBar';
@@ -481,6 +517,9 @@ export default function WorldPage() {
   );
   const [eventApplied, setEventApplied] = useState<number[]>([]);
   const [eventDrawCount, setEventDrawCount] = useState(0);
+  // M6: resolved object URL currently zoomed in the player-safe fullscreen
+  // viewer (null = closed). The URL belongs to the page-owned image cache.
+  const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
   // M5: place whose ActRunner overlay is open (null = closed) + the part the
   // GM is currently on (for the "Acto cerrado" nota — see module doc M5).
   const [actPlaceId, setActPlaceId] = useState<string | null>(null);
@@ -518,6 +557,38 @@ export default function WorldPage() {
     );
     setModelRev((rev) => rev + 1);
   }, []);
+
+  /**
+   * M6: object URLs for entity profile images, keyed by path — one cache per
+   * page lifetime, resolved lazily via worldFs.getFileURL (same pattern as
+   * the ActRunner's imageUrlCache). Revoked when the model or fs changes and
+   * on unmount (the effect below), so stale blobs never leak across scans.
+   */
+  const entityImageUrlCacheRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    void model;
+    void worldFs;
+    const cache = entityImageUrlCacheRef.current;
+    return () => {
+      cache.forEach((url) => URL.revokeObjectURL(url));
+      cache.clear();
+      // A zoomed URL from the previous model is dead after the revoke.
+      setZoomedImageUrl(null);
+    };
+  }, [model, worldFs]);
+
+  /** Resolve-and-cache an entity image object URL (fs read at call time). */
+  const loadEntityImageUrl = useCallback(async (ref: FileReference): Promise<string> => {
+    const cached = entityImageUrlCacheRef.current.get(ref.path);
+    if (cached !== undefined) return cached;
+    const fsm = useWorldStore.getState().fs;
+    if (!fsm) throw new Error('No hay carpeta de campaña abierta');
+    const url = await fsm.getFileURL(ref.path);
+    entityImageUrlCacheRef.current.set(ref.path, url);
+    return url;
+  }, []);
+
+  const handleImageZoom = useCallback((url: string) => setZoomedImageUrl(url), []);
 
   const mapWrapRef = useRef<HTMLDivElement>(null);
   const fittedRef = useRef<{
@@ -1693,6 +1764,48 @@ export default function WorldPage() {
     );
   }, [model, selectedEntity]);
 
+  /**
+   * M6: the selection when it is a pnj — the panel renders a PnjCard instead
+   * of the EntityPanel. Membership in model.pnjs is the guard (the scanner's
+   * kind is authoritative; `tipo` is an open string).
+   */
+  const selectedPnj = useMemo(
+    () =>
+      model && selectedEntityId
+        ? (model.pnjs.find((pnj) => pnj.id === selectedEntityId) ?? null)
+        : null,
+    [model, selectedEntityId]
+  );
+
+  /**
+   * M6: pnjs located AT the selected entity (Personajes section). GM-only
+   * panel, so ALL of them list — the unmet ones (conocimiento desconocido)
+   * just carry a muted hint.
+   */
+  const panelPersonajes = useMemo<EntityPanelPersonaje[]>(() => {
+    void modelRev; // llegada/sabe bump conocimiento in place
+    if (!model || !selectedEntity) return [];
+    return model.pnjs
+      .filter((pnj) => pnj.ubicacion === selectedEntity.id)
+      .map((pnj) => ({
+        id: pnj.id,
+        nombre: pnj.nombre,
+        rol: pnj.rol,
+        desconocido: pnj.conocimiento === 'desconocido',
+      }));
+  }, [model, selectedEntity, modelRev]);
+
+  /** PnjCard back: to the pnj's ubicacion place (or clear a dangling one). */
+  const handlePnjBack = useCallback(() => {
+    const currentModel = useWorldStore.getState().model;
+    const pnj = selectedPnj;
+    if (pnj?.ubicacion && currentModel?.entidades.has(pnj.ubicacion)) {
+      navigateToEntity(pnj.ubicacion);
+    } else {
+      uiActions.selectEntity(null);
+    }
+  }, [selectedPnj, navigateToEntity, uiActions]);
+
   /** M5: the selection when it is a playable place (offers "Jugar"). */
   const selectedPlayable = useMemo(
     () => (isPlace(selectedEntity) && selectedEntity.playable ? selectedEntity : null),
@@ -2206,10 +2319,29 @@ export default function WorldPage() {
                       />
                     </div>
                   )}
+                  {/* M6: a pnj selection renders its dossier card instead of
+                      the generic panel (selection route documented in the
+                      module doc "PNJ SURFACE"). */}
+                  {selectedPnj && (
+                    <div className="min-h-0 flex-1">
+                      <PnjCard
+                        pnj={selectedPnj}
+                        faccionNombre={
+                          selectedPnj.faccion
+                            ? (model.entidades.get(selectedPnj.faccion)?.nombre ??
+                              selectedPnj.faccion)
+                            : undefined
+                        }
+                        loadImageUrl={loadEntityImageUrl}
+                        onImageZoom={handleImageZoom}
+                        onBack={handlePnjBack}
+                      />
+                    </div>
+                  )}
                   {/* When the SiteList's lugar IS the selection (the common
                       case right after "Entrar") the panel would duplicate the
                       list's own header card — skip it (UX audit P1-2a). */}
-                  {selectedEntity && selectedEntity.id !== siteListPlace?.id && (
+                  {!selectedPnj && selectedEntity && selectedEntity.id !== siteListPlace?.id && (
                     <div className="min-h-0 flex-1">
                       <EntityPanel
                         entity={selectedEntity as EntityPanelEntity}
@@ -2218,6 +2350,10 @@ export default function WorldPage() {
                         leads={panelLeads}
                         interiorLeads={interiorLeads}
                         isCurrentLocation={selectedEntity.id === ubicacion}
+                        personajes={panelPersonajes}
+                        onSelectPnj={selectEntity}
+                        loadImageUrl={loadEntityImageUrl}
+                        onImageZoom={handleImageZoom}
                         onDrillIn={
                           selectedIsContainer ? () => enterEntity(selectedEntity.id) : undefined
                         }
@@ -2385,6 +2521,12 @@ export default function WorldPage() {
               onClose={handleCloseActRunner}
               onActChange={handleActChange}
             />
+          )}
+
+          {/* M6: player-safe fullscreen for entity images (z above everything;
+              the URL lives in the page cache — never revoked here). */}
+          {zoomedImageUrl && (
+            <FullscreenImage imageUrl={zoomedImageUrl} onClose={() => setZoomedImageUrl(null)} />
           )}
         </>
       ) : (

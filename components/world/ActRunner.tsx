@@ -10,11 +10,14 @@
  * `mundo/lugares/<id>/`, so the world fs manager (campaign root) resolves
  * them directly. Composition mirrors app/play/page.tsx — the selected part's
  * plan renders through ActPanels when it is `:::` act format (MarkdownViewer
- * otherwise), and AudioControls / PartTimer / InitiativeTracker / ImageViewer
- * are the EXISTING play components mounted unmodified (they position
- * themselves `fixed`, which inside this overlay still paints above the
- * overlay background because they are its DOM children). Support docs and
- * images ride on the same Tabs pattern as play.
+ * otherwise), and AudioControls / PartTimer / InitiativeTracker are the
+ * EXISTING play components mounted unmodified (they position themselves
+ * `fixed`, which inside this overlay still paints above the overlay
+ * background because they are its DOM children). Support docs and images
+ * ride on the same Tabs pattern as play — but images display through the
+ * world FullscreenImage viewer, NOT play's ImageViewer: the play viewer
+ * overlays the image title, a GM-only filename leak on the shared screen the
+ * GM projects during sessions. Play mode keeps ImageViewer untouched.
  *
  * Deliberate differences from /play (kept lean on purpose):
  *   - The part selector is a local header tab row (`data-act-part` items):
@@ -45,7 +48,7 @@ import { MarkdownViewer } from '@/components/play/MarkdownViewer';
 import { AudioControls } from '@/components/play/AudioControls';
 import { PartTimer } from '@/components/play/PartTimer';
 import { InitiativeTracker } from '@/components/play/InitiativeTracker';
-import { ImageViewer } from '@/components/play/ImageViewer';
+import { FullscreenImage } from '@/components/world/FullscreenImage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { X } from 'lucide-react';
@@ -388,7 +391,7 @@ function RunnerMarkdown({
   );
 }
 
-/** Image pane: resolves the object URL, then hands off to ImageViewer. */
+/** Image pane: resolves the object URL, then hands off to the player-safe viewer. */
 function RunnerImage({
   file,
   loadImageUrl,
@@ -424,5 +427,5 @@ function RunnerImage({
     );
   }
 
-  return <ImageViewer imageUrl={imageUrl} imageName={file.name} onClose={onClose} />;
+  return <FullscreenImage imageUrl={imageUrl} onClose={onClose} />;
 }

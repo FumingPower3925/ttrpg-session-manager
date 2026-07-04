@@ -1176,6 +1176,109 @@ describe('scanWorldFolder — musica', () => {
     });
 });
 
+// ── Entity profile images (imagenes/) ───────────────────────────────────────
+
+describe('scanWorldFolder — imagenes', () => {
+    /** happyTree plus a mundo/imagenes/ folder. */
+    function treeWithImages(imagenes: FileTree): FileTree {
+        const tree = happyTree();
+        (tree.mundo as FileTree).imagenes = imagenes;
+        return tree;
+    }
+
+    test('attaches imagen by id across entity kinds and extension variety', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                treeWithImages({
+                    'porto_verne.png': 'png-bytes',
+                    'sistema_verne.webp': 'webp-bytes',
+                    'kael_zara.jpeg': 'jpeg-bytes',
+                    'consorcio_tetrad.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+                })
+            )
+        );
+
+        expect(model.entidades.get('porto_verne')?.imagen).toEqual({
+            path: 'mundo/imagenes/porto_verne.png',
+            name: 'porto_verne.png',
+            type: 'image',
+        });
+        expect(model.entidades.get('sistema_verne')?.imagen?.path).toBe(
+            'mundo/imagenes/sistema_verne.webp'
+        );
+        expect(model.entidades.get('kael_zara')?.imagen?.path).toBe(
+            'mundo/imagenes/kael_zara.jpeg'
+        );
+        expect(model.entidades.get('consorcio_tetrad')?.imagen?.path).toBe(
+            'mundo/imagenes/consorcio_tetrad.svg'
+        );
+        // Entities without a matching file stay imagen-less.
+        expect(model.entidades.get('kovar_iii')?.imagen).toBeUndefined();
+        // Matching images add zero diagnostics (happyTree's own aviso aside).
+        expect(model.problemas.some((p) => p.mensaje.includes('Imagen sin entidad'))).toBe(false);
+    });
+
+    test('an image whose basename matches no entity id earns an aviso (probable typo)', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                treeWithImages({
+                    'porto_vern.png': 'png-bytes', // typo: missing final e
+                })
+            )
+        );
+
+        const aviso = model.problemas.find((p) => p.mensaje.includes('Imagen sin entidad'));
+        expect(aviso).toBeDefined();
+        expect(aviso!.nivel).toBe('aviso');
+        expect(aviso!.archivo).toBe('mundo/imagenes/porto_vern.png');
+        expect(aviso!.mensaje).toContain('"porto_vern.png"');
+        expect(model.entidades.get('porto_verne')?.imagen).toBeUndefined();
+    });
+
+    test('absent imagenes/ folder yields no imagen and NO aviso (optional by design)', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+
+        for (const entity of model.entidades.values()) {
+            expect(entity.imagen).toBeUndefined();
+        }
+        expect(model.problemas.some((p) => p.archivo.includes('imagenes'))).toBe(false);
+        expect(model.problemas.some((p) => p.mensaje.includes('Imagen'))).toBe(false);
+    });
+
+    test('ignore rules and non-image files apply: no attach, no aviso', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                treeWithImages({
+                    '_porto_verne.png': 'png-bytes', // _-prefixed -> ignored
+                    'notas.md': '# no es una imagen', // wrong extension -> ignored
+                    'porto_verne.txt': 'tampoco', // wrong extension -> ignored
+                })
+            )
+        );
+
+        expect(model.entidades.get('porto_verne')?.imagen).toBeUndefined();
+        expect(model.problemas.some((p) => p.archivo.includes('imagenes'))).toBe(false);
+    });
+
+    test('duplicate basenames: the first in name-sorted order wins', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                treeWithImages({
+                    'porto_verne.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>',
+                    'porto_verne.png': 'png-bytes',
+                })
+            )
+        );
+
+        // getFilesFromDirectory sorts by name: .png < .svg.
+        expect(model.entidades.get('porto_verne')?.imagen?.name).toBe('porto_verne.png');
+    });
+});
+
 // ── Stores (headless zustand) ───────────────────────────────────────────────
 
 describe('worldStore', () => {

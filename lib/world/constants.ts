@@ -51,6 +51,14 @@ export const PLACE_FOLDER_FILE = 'lugar.md';
  */
 export const MUSIC_DIR = 'musica';
 
+/**
+ * Optional entity profile-image folder under `mundo/`: a file named
+ * `<entity_id>.<ext>` (any supported image extension) is the profile image of
+ * the entity with that id. Not an entity dir — its contents are listed (never
+ * read) by the scanner.
+ */
+export const IMAGES_DIR = 'imagenes';
+
 /** Party-state file inside `mundo/estado/`. */
 export const PARTY_STATE_FILE = 'grupo.md';
 

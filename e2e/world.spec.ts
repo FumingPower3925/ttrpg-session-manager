@@ -915,3 +915,126 @@ test.describe('World Mode - Console hygiene', () => {
         expect(issues).toEqual([]);
     });
 });
+
+// ── Profile images · player-safe fullscreen · pista detail (M6) ─────────────
+//
+// Player-safety is the headline: the GM projects the fullscreen viewer to the
+// table, so [data-fullscreen-image] must contain the image and NOTHING ELSE
+// (no title, no filename, no chrome) — every test below asserts its trimmed
+// innerText is empty. The CON_ESTADO fixture carries mundo/imagenes/
+// (kovar_iii.svg, kael_voss.svg), a pnj at porto_verne, a porto_verne act
+// image (muelle_7.svg) and a pista with body + recompensa.
+
+test.describe('World Mode - Perfiles, imagen segura y detalle de pistas', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+    });
+
+    /** Asserts the fullscreen overlay shows the image and no other visible content. */
+    async function expectPlayerSafeFullscreen(page: import('@playwright/test').Page): Promise<void> {
+        const overlay = page.locator('[data-fullscreen-image]');
+        await expect(overlay).toBeVisible();
+        // NOTHING but the image may reach the projected screen.
+        expect((await overlay.innerText()).trim()).toBe('');
+        await expect(overlay.locator('img')).toHaveCount(1);
+        await expect(overlay.locator('button')).toHaveCount(0);
+    }
+
+    test('entity panel shows a profile thumbnail that opens the player-safe fullscreen', async ({ page }) => {
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await page.locator('[data-entity-id="kovar_iii"]').click();
+
+        const panel = page.locator('[data-entity-panel="kovar_iii"]');
+        await expect(panel).toBeVisible();
+        const thumb = panel.locator('[data-entity-image]');
+        await expect(thumb).toBeVisible();
+
+        await thumb.click();
+        await expectPlayerSafeFullscreen(page);
+        // Projecting: the document is flagged so GM toasts are CSS-suppressed
+        // (sonner renders above the overlay's z-index otherwise).
+        await expect(page.locator('html[data-projecting]')).toHaveCount(1);
+
+        // Closes on Escape and on a click on the overlay.
+        await page.keyboard.press('Escape');
+        await expect(page.locator('[data-fullscreen-image]')).toHaveCount(0);
+        await expect(page.locator('html[data-projecting]')).toHaveCount(0);
+        await thumb.click();
+        await page.locator('[data-fullscreen-image]').click();
+        await expect(page.locator('[data-fullscreen-image]')).toHaveCount(0);
+    });
+
+    test('place panel lists Personajes and opens a PnjCard dossier', async ({ page }) => {
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await page.locator('[data-entity-id="porto_verne"]').click();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+
+        // Kael Voss lives at porto_verne (ubicacion) -> Personajes link.
+        await page.locator('[data-pnj-link="kael_voss"]').click();
+        const card = page.locator('[data-pnj-card="kael_voss"]');
+        await expect(card).toBeVisible();
+        await expect(card).toContainText('quince anos en los muelles'); // dossier body
+
+        // His portrait opens the same player-safe fullscreen.
+        await card.locator('[data-entity-image]').click();
+        await expectPlayerSafeFullscreen(page);
+        await page.keyboard.press('Escape');
+
+        // Back returns to the place panel.
+        await card.locator('[data-pnj-back]').click();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+    });
+
+    test('ActRunner images display through the player-safe fullscreen (no filename leak)', async ({ page }) => {
+        await openPortoVerneRunner(page);
+
+        // The act carries muelle_7.svg -> its image tab renders the fullscreen viewer.
+        await page.getByRole('tab', { name: 'muelle_7.svg' }).click();
+        await expectPlayerSafeFullscreen(page);
+
+        // Escape returns to the act without leaking the filename onto the screen.
+        await page.keyboard.press('Escape');
+        await expect(page.locator('[data-fullscreen-image]')).toHaveCount(0);
+        await expect(page.locator('[data-act-runner]')).toBeVisible();
+    });
+
+    test('pista row opens a detail view with body + recompensa; transitions do not', async ({ page }) => {
+        // Session active so the transition journals a pista line.
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        const journalPath = `mundo/diario/${journalName}`;
+
+        await page.locator('[data-panel-tab="pistas"]').click();
+        const row = page.locator('[data-lead-id="deuda_kael_zara"]');
+        await expect(row).toBeVisible();
+
+        // A transition on the row must NOT open the detail (stopPropagation).
+        await row.locator('[data-lead-transition="en_curso"]').click();
+        await expect(page.locator('[data-lead-detail]')).toHaveCount(0);
+        await expect(row).toHaveAttribute('data-lead-estado', 'en_curso');
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] pista: deuda_kael_zara activa->en_curso/);
+
+        // Clicking the row body (data-lead-open is on the row itself) opens the
+        // detail with the previously-invisible body. Corner click avoids the
+        // interactive children (transition buttons / donde chip).
+        await row.click({ position: { x: 5, y: 5 } });
+        const detail = page.locator('[data-lead-detail="deuda_kael_zara"]');
+        await expect(detail).toBeVisible();
+        await expect(detail).toContainText('400 creditos'); // recompensa
+        await expect(detail).toContainText('paquete'); // body text
+        await expect(detail).toContainText('creditos>=800'); // requisito verbatim
+
+        // Back returns to the list.
+        await detail.locator('[data-lead-back]').click();
+        await expect(page.locator('[data-leads-panel]')).toBeVisible();
+        await expect(page.locator('[data-lead-detail]')).toHaveCount(0);
+    });
+});

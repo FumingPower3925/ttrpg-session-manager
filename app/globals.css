@@ -132,3 +132,12 @@ body[data-scroll-locked] {
   overflow: hidden !important;
   padding-right: 0 !important;
 }
+
+
+/* Player-safe projection: while a fullscreen image is shown to the table
+   (components/world/FullscreenImage.tsx sets html[data-projecting]), hide
+   GM-only sonner toasts, which render at z-index 999999999 — above the
+   z-[200] fullscreen overlay — and would otherwise leak onto the screen. */
+html[data-projecting] [data-sonner-toaster] {
+  display: none !important;
+}

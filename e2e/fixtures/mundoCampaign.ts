@@ -16,6 +16,10 @@
  *
  * MUNDO_CAMPAIGN_CON_ESTADO adds estado/grupo.md (party at porto_verne) for the
  * M2 party-readout tests: PartyStatusBar values + marker roll-up across tiers.
+ * It also adds (M6) mundo/imagenes/ profile images (SVG on purpose: text-based
+ * bytes survive the OPFS utf-8 write) for kovar_iii and the kael_voss pnj, and
+ * an images/ file inside the porto_verne playable folder so the ActRunner
+ * grows an image tab (player-safe fullscreen regression test).
  *
  * MUNDO_CAMPAIGN_CON_MUSICA adds mundo/musica/ (world-level music): 2 root
  * mp3s = BGM rotation + eventos_generales/ = 1 named event playlist + a
@@ -430,13 +434,31 @@ Kael necesita que alguien entregue un paquete sin que el consorcio se
 entere. Si sale bien, Zara Hollis le perdona parte de la deuda.
 `;
 
-/** Same campaign, plus estado/grupo.md — the party is docked at porto_verne. */
+/** Tiny valid SVG (text bytes — OPFS writes utf-8, binary formats would corrupt). */
+function fixtureSvg(fill: string): string {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="${fill}"/></svg>`;
+}
+
+/**
+ * Same campaign, plus estado/grupo.md — the party is docked at porto_verne —
+ * plus entity profile images and an ActRunner image (M6, see header doc).
+ */
 export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     // FileTree is JSON-safe (plain strings/objects), so a JSON round-trip clones it.
     const clone = JSON.parse(JSON.stringify(MUNDO_CAMPAIGN)) as FileTree;
     const mundo = clone.mundo as FileTree;
     (mundo.estado as FileTree)['grupo.md'] = GRUPO_MD;
     (mundo.pistas as FileTree)['deuda_kael_zara.md'] = DEUDA_KAEL_ZARA_CON_REQUISITOS;
+    // M6: profile images by convention (basename = entity id) — a lugar and
+    // the pnj located at porto_verne (pnjs/kael_voss.md, ubicacion already set).
+    mundo.imagenes = {
+        'kovar_iii.svg': fixtureSvg('#3aa675'),
+        'kael_voss.svg': fixtureSvg('#7a5cc7'),
+    };
+    // M6: an image inside the playable place folder -> ActRunner image tab.
+    ((mundo.lugares as FileTree).porto_verne as FileTree).images = {
+        'muelle_7.svg': fixtureSvg('#c7823a'),
+    };
     return clone;
 })();
 

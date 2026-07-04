@@ -28,12 +28,13 @@ import {
 import { scanSessionFolder } from '@/lib/sessionScanner';
 import {
     createAudioFile,
+    createFileReference,
     fileNameToDisplayName,
     getFilesFromDirectory,
     getSubdirectory,
     readFileContent,
 } from '@/lib/fsScanUtils';
-import { SUPPORTED_AUDIO_EXTENSIONS } from '@/lib/fileSystem';
+import { SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS } from '@/lib/fileSystem';
 import { buildCondContext, evalConditions, isParseableCondition } from './conditions';
 import { parseEventTable } from './eventEngine';
 import { parseJournal, parseLlegadaPayload, parseSabePayload } from './logEntries';
@@ -55,6 +56,7 @@ import {
     DEFAULT_CONOCIMIENTO,
     ENTITY_DIRS,
     ESTADOS_PISTA,
+    IMAGES_DIR,
     ESTADOS_TRAMA,
     MANIFEST_DEFAULTS,
     MANIFEST_FILE,
@@ -113,7 +115,7 @@ export async function scanWorldFolder(
             mensaje: `No se encontró la carpeta "${WORLD_DIR}/" en la carpeta de campaña`,
         });
         onProgress?.(1, 1);
-        return assembleModel(defaultManifest(), [], problemas, null, emptyMusica());
+        return assembleModel(defaultManifest(), [], problemas, null, emptyMusica(), new Map());
     }
 
     // Enumerate first (cheap directory listings), then read contents in batches.
@@ -141,6 +143,9 @@ export async function scanWorldFolder(
     // so it stays outside the read-progress accounting.
     const musica = await scanWorldMusic(mundoDir);
 
+    // Entity profile images (imagenes/): one directory listing, never read.
+    const imagenes = await scanEntityImages(mundoDir);
+
     // Entity reads, batched
     const records: RawEntityFile[] = [];
     for (let i = 0; i < tasks.length; i += READ_BATCH_SIZE) {
@@ -155,7 +160,40 @@ export async function scanWorldFolder(
     }
 
     const manifest = parseManifest(manifestContent, problemas);
-    return assembleModel(manifest, records, problemas, estadoGrupo, musica);
+    return assembleModel(manifest, records, problemas, estadoGrupo, musica, imagenes);
+}
+
+// ── Entity profile images (imagenes/) ───────────────────────────────────────
+
+/**
+ * Lists the OPTIONAL `mundo/imagenes/` folder ONCE (directory listing only —
+ * image bytes are never read; the page resolves object URLs lazily): a file
+ * `<entity_id>.<ext>` with a supported image extension becomes the profile
+ * image of the entity with that id, whatever its kind. The usual ignore rules
+ * apply (`_`-prefixed files); an absent folder yields an empty map and NO
+ * aviso — the folder is optional by design. When two files share a basename
+ * (e.g. `kovar_iii.png` + `kovar_iii.svg`) the first in name-sorted order
+ * wins, deterministically. Basenames matching no entity id are flagged in
+ * assembleModel (probable typo) once the entity map exists.
+ */
+async function scanEntityImages(
+    mundoDir: FileSystemDirectoryHandle
+): Promise<Map<string, FileReference>> {
+    const byId = new Map<string, FileReference>();
+    const imagenesDir = await getSubdirectory(mundoDir, IMAGES_DIR);
+    if (!imagenesDir) return byId;
+
+    const files = await getFilesFromDirectory(
+        imagenesDir,
+        `${WORLD_DIR}/${IMAGES_DIR}`,
+        SUPPORTED_IMAGE_EXTENSIONS
+    );
+    for (const file of files) {
+        if (isIgnoredFile(file.name)) continue;
+        const id = file.name.replace(/\.[^.]+$/, '');
+        if (!byId.has(id)) byId.set(id, createFileReference(file, 'image'));
+    }
+    return byId;
 }
 
 // ── World-level music (musica/) ─────────────────────────────────────────────
@@ -948,7 +986,8 @@ function assembleModel(
     records: RawEntityFile[],
     problemas: ValidationIssue[],
     estadoGrupo: PartyState | null,
-    musica: WorldModel['musica']
+    musica: WorldModel['musica'],
+    imagenes: Map<string, FileReference>
 ): WorldModel {
     const entidades = new Map<string, WorldEntityBase>();
     const sistemas: SystemEntity[] = [];
@@ -1034,6 +1073,22 @@ function assembleModel(
 
     sortDiario(diario);
     warnStaleDiario(diario, problemas);
+
+    // Profile images attach to ANY entity kind by id; a basename matching no
+    // entity is almost always a typo in the filename — surface it as an aviso
+    // so the GM finds out why the portrait never shows.
+    for (const [id, ref] of imagenes) {
+        const entity = entidades.get(id);
+        if (entity) {
+            entity.imagen = ref;
+        } else {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: ref.path,
+                mensaje: `Imagen sin entidad: "${ref.name}" no coincide con ningún id (posible errata)`,
+            });
+        }
+    }
 
     checkDanglingRefs(entidades, lugares, pnjs, pistas, problemas);
     checkPartyStateRefs(entidades, estadoGrupo, problemas);

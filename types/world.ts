@@ -1,4 +1,4 @@
-import { AudioFile, EventPlaylist, SessionConfig } from '@/types';
+import { AudioFile, EventPlaylist, FileReference, SessionConfig } from '@/types';
 
 /**
  * World-mode domain types (M1).
@@ -27,6 +27,12 @@ export interface WorldEntityBase {
   raw: Record<string, unknown>;
   /** Markdown body below the frontmatter fence. */
   body: string;
+  /**
+   * Profile image by convention: `mundo/imagenes/<id>.<ext>` (any supported
+   * image extension) is the entity's portrait/banner. Attached by the scanner
+   * for ANY entity kind (lugares, sistemas, pnjs, facciones, ...).
+   */
+  imagen?: FileReference;
 }
 
 export interface SystemEntity extends WorldEntityBase {

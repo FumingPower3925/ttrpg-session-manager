@@ -1,13 +1,15 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Conocimiento, Lead, PlaceEntity, WorldEntityBase } from '@/types/world';
+import type { FileReference } from '@/types';
+import { Conocimiento, Lead, NpcEntity, PlaceEntity, WorldEntityBase } from '@/types/world';
 import { MarkdownViewer } from '@/components/play/MarkdownViewer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Star, X, ZoomIn } from 'lucide-react';
+import { Star, User, X, ZoomIn } from 'lucide-react';
 
 const CONOCIMIENTO_LABEL: Record<Conocimiento, string> = {
   desconocido: 'Desconocido',
@@ -41,6 +43,70 @@ export interface EntityPanelLead {
   accionable: boolean | 'manual';
 }
 
+/** One row of the "Personajes" section: a pnj whose ubicacion is the entity. */
+export interface EntityPanelPersonaje {
+  id: string;
+  nombre: string;
+  rol: NpcEntity['rol'];
+  /** True when the party has not met the pnj yet (conocimiento desconocido). */
+  desconocido: boolean;
+}
+
+/**
+ * Rounded profile-image banner shared by EntityPanel and PnjCard: resolves
+ * the object URL through the page-owned cache (loadImageUrl) and opens the
+ * player-safe FullscreenImage viewer through onZoom. Renders nothing until
+ * the URL resolves (and nothing at all on a failed load).
+ */
+export function EntityImageBanner({
+  imagen,
+  nombre,
+  loadImageUrl,
+  onZoom,
+}: {
+  imagen: FileReference;
+  nombre: string;
+  loadImageUrl: (ref: FileReference) => Promise<string>;
+  onZoom: (url: string) => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setUrl(null);
+    loadImageUrl(imagen).then(
+      (resolved) => {
+        if (!cancelled) setUrl(resolved);
+      },
+      (error) => {
+        console.error(`Error al cargar la imagen ${imagen.path}:`, error);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [imagen, loadImageUrl]);
+
+  if (url === null) return null;
+
+  return (
+    <button
+      type="button"
+      aria-label={`Ampliar imagen de ${nombre}`}
+      className="block w-full cursor-zoom-in"
+      onClick={() => onZoom(url)}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element -- object URL */}
+      <img
+        src={url}
+        alt=""
+        data-entity-image
+        className="max-h-40 w-full rounded-lg object-cover"
+      />
+    </button>
+  );
+}
+
 interface EntityPanelProps {
   entity: EntityPanelEntity;
   /** Display names of the entity's children (`en:` inverse), pre-resolved. */
@@ -55,6 +121,17 @@ interface EntityPanelProps {
   interiorLeads?: EntityPanelLead[];
   /** True when the entity is the party's current location ("Estáis aquí"). */
   isCurrentLocation?: boolean;
+  /**
+   * Pnjs located AT the entity (ubicacion === entity.id) — GM-only view, so
+   * ALL of them list, with a muted "(desconocido)" hint on the unmet ones.
+   */
+  personajes?: EntityPanelPersonaje[];
+  /** Click on a personaje row — the page switches the panel to its PnjCard. */
+  onSelectPnj?: (id: string) => void;
+  /** Resolves an entity image to an object URL (page-owned cache). */
+  loadImageUrl?: (ref: FileReference) => Promise<string>;
+  /** Opens the player-safe FullscreenImage viewer with a resolved URL. */
+  onImageZoom?: (url: string) => void;
   onDrillIn?: () => void;
   onClose: () => void;
   /** Page-provided action buttons (Viajar / Entrar / Jugar). */
@@ -68,6 +145,10 @@ export function EntityPanel({
   leads,
   interiorLeads = [],
   isCurrentLocation = false,
+  personajes = [],
+  onSelectPnj,
+  loadImageUrl,
+  onImageZoom,
   onDrillIn,
   onClose,
   actions,
@@ -103,6 +184,15 @@ export function EntityPanel({
 
       <ScrollArea className="min-h-0 flex-1">
         <CardContent className="flex flex-col gap-4 py-4">
+          {entity.imagen && loadImageUrl && onImageZoom && (
+            <EntityImageBanner
+              imagen={entity.imagen}
+              nombre={entity.nombre}
+              loadImageUrl={loadImageUrl}
+              onZoom={onImageZoom}
+            />
+          )}
+
           {entity.etiquetas.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {entity.etiquetas.map((etiqueta) => (
@@ -159,6 +249,35 @@ export function EntityPanel({
           {interiorLeads.length > 0 && (
             <Section title="Pistas en el interior">
               <LeadList leads={interiorLeads} />
+            </Section>
+          )}
+
+          {personajes.length > 0 && onSelectPnj && (
+            <Section title="Personajes">
+              <ul className="flex flex-col gap-1">
+                {personajes.map((pnj) => (
+                  <li key={pnj.id}>
+                    <button
+                      type="button"
+                      data-pnj-link={pnj.id}
+                      onClick={() => onSelectPnj(pnj.id)}
+                      // min-h-11 = 44px tap target (M5 sweep).
+                      className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                    >
+                      <User className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      <span className="min-w-0 truncate">{pnj.nombre}</span>
+                      {pnj.desconocido && (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          (desconocido)
+                        </span>
+                      )}
+                      <Badge variant="outline" className="ml-auto shrink-0 text-muted-foreground">
+                        {pnj.rol}
+                      </Badge>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </Section>
           )}
 
