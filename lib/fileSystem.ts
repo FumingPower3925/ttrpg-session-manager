@@ -220,6 +220,37 @@ export class FileSystemManager {
   }
 
   /**
+   * Deletes a file at a relative path. Walks to the parent directory and
+   * removes the entry. A file that is already gone (NotFoundError anywhere on
+   * the walk) resolves to a no-op — deletion is idempotent — while any other
+   * error propagates. Used by the world "Descartar (prueba)" flow to drop a
+   * test session's journal.
+   */
+  async deleteFile(relativePath: string): Promise<void> {
+    if (!this.directoryHandle) {
+      throw new Error('No directory selected');
+    }
+
+    const parts = relativePath.split('/').filter(Boolean);
+    if (parts.length === 0) {
+      throw new Error('Cannot delete: empty path');
+    }
+
+    try {
+      let currentDir = this.directoryHandle;
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentDir = await currentDir.getDirectoryHandle(parts[i]);
+      }
+      await currentDir.removeEntry(parts[parts.length - 1]);
+    } catch (error) {
+      // Idempotent: a missing parent dir or a missing file is already the
+      // desired end state. Anything else (permissions, type mismatch) throws.
+      if ((error as Error).name === 'NotFoundError') return;
+      throw error;
+    }
+  }
+
+  /**
    * Queries write permission on a handle (defaults to the root directory handle)
    */
   async queryWritePermission(handle?: FileSystemDirectoryHandle): Promise<PermissionState> {

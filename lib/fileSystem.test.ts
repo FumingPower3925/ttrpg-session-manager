@@ -67,6 +67,35 @@ describe('exists', () => {
     });
 });
 
+describe('deleteFile', () => {
+    test('removes a file from a nested directory', async () => {
+        const { fsm, root } = managerFor({
+            mundo: { diario: { '2026-07-12_s01.md': 'contenido' } },
+        });
+
+        await fsm.deleteFile('mundo/diario/2026-07-12_s01.md');
+
+        expect(root.readFile('mundo/diario/2026-07-12_s01.md')).toBeNull();
+        // The parent directory survives — only the entry is gone.
+        expect(await fsm.exists('mundo/diario')).toBe(true);
+    });
+
+    test('is a no-op when the file is already gone', async () => {
+        const { fsm } = managerFor({ mundo: { diario: {} } });
+        await expect(fsm.deleteFile('mundo/diario/never.md')).resolves.toBeUndefined();
+    });
+
+    test('is a no-op when an intermediate directory is missing', async () => {
+        const { fsm } = managerFor({ mundo: {} });
+        await expect(fsm.deleteFile('mundo/diario/never.md')).resolves.toBeUndefined();
+    });
+
+    test('throws without a directory selected', async () => {
+        const fsm = new FileSystemManager();
+        await expect(fsm.deleteFile('a.md')).rejects.toThrow('No directory selected');
+    });
+});
+
 describe('readTextFile round-trip', () => {
     test('reads back what was written', async () => {
         const { fsm } = managerFor({ mundo: {} });

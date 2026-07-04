@@ -10,6 +10,13 @@
 
 export type FileTree = { [name: string]: string | FileTree };
 
+/** Builds an Error whose `.name` matches the real FS Access DOMException. */
+function namedError(name: string, message: string): Error {
+    const error = new Error(`${name}: ${message}`);
+    error.name = name;
+    return error;
+}
+
 export class MockFileHandle {
     kind = 'file' as const;
     constructor(public name: string, public content: string) {}
@@ -58,25 +65,34 @@ export class MockDirectoryHandle {
     async getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<MockDirectoryHandle> {
         const child = this.children.get(name);
         if (child && child.kind === 'directory') return child;
-        if (child) throw new Error(`TypeMismatchError: "${name}" is a file in "${this.name}"`);
+        if (child) throw namedError('TypeMismatchError', `"${name}" is a file in "${this.name}"`);
         if (options?.create) {
             const dir = new MockDirectoryHandle(name);
             this.children.set(name, dir);
             return dir;
         }
-        throw new Error(`NotFoundError: directory "${name}" not found in "${this.name}"`);
+        throw namedError('NotFoundError', `directory "${name}" not found in "${this.name}"`);
     }
 
     async getFileHandle(name: string, options?: { create?: boolean }): Promise<MockFileHandle> {
         const child = this.children.get(name);
         if (child && child.kind === 'file') return child;
-        if (child) throw new Error(`TypeMismatchError: "${name}" is a directory in "${this.name}"`);
+        if (child) throw namedError('TypeMismatchError', `"${name}" is a directory in "${this.name}"`);
         if (options?.create) {
             const file = new MockFileHandle(name, '');
             this.children.set(name, file);
             return file;
         }
-        throw new Error(`NotFoundError: file "${name}" not found in "${this.name}"`);
+        throw namedError('NotFoundError', `file "${name}" not found in "${this.name}"`);
+    }
+
+    async removeEntry(name: string, _options?: { recursive?: boolean }): Promise<void> {
+        // Mirrors FileSystemDirectoryHandle.removeEntry: a missing entry throws
+        // a NotFoundError (the app's deleteFile catches it as a no-op).
+        if (!this.children.has(name)) {
+            throw namedError('NotFoundError', `entry "${name}" not found in "${this.name}"`);
+        }
+        this.children.delete(name);
     }
 
     /** Test helper: read a file's content by slash-separated path. */

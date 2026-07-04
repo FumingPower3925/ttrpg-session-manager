@@ -75,6 +75,8 @@ interface PartyStatusBarProps {
   /** Missing handler keeps the Iniciar button disabled (unwired page). */
   onStartSession?: () => void;
   onEndSession?: () => void;
+  /** Discards a TEST session: deletes its journal + rolls estado back. */
+  onDiscardSession?: () => void;
   /** Elapsed session time; the page owns the ticking interval. */
   sessionElapsedMs?: number;
   writeStatus?: SessionRuntime['writeStatus'];
@@ -96,6 +98,7 @@ export function PartyStatusBar({
   sessionActive = false,
   onStartSession,
   onEndSession,
+  onDiscardSession,
   sessionElapsedMs = 0,
   writeStatus = 'ok',
   onRetryWrites,
@@ -231,7 +234,11 @@ export function PartyStatusBar({
                 Reintentar
               </Button>
             )}
-            <EndSessionButton onEndSession={onEndSession} endSummaryPreview={endSummaryPreview} />
+            <EndSessionButton
+              onEndSession={onEndSession}
+              onDiscardSession={onDiscardSession}
+              endSummaryPreview={endSummaryPreview}
+            />
           </>
         ) : (
           <Button
@@ -253,11 +260,12 @@ export function PartyStatusBar({
 
 interface EndSessionButtonProps {
   onEndSession?: () => void;
+  onDiscardSession?: () => void;
   endSummaryPreview?: string;
 }
 
 /** "Terminar sesión" with an upward confirm popover (summary + Terminar/Cancelar). */
-function EndSessionButton({ onEndSession, endSummaryPreview }: EndSessionButtonProps) {
+function EndSessionButton({ onEndSession, onDiscardSession, endSummaryPreview }: EndSessionButtonProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -302,28 +310,40 @@ function EndSessionButton({ onEndSession, endSummaryPreview }: EndSessionButtonP
           {endSummaryPreview && (
             <p className="mt-1 text-xs text-muted-foreground">{endSummaryPreview}</p>
           )}
-          <div className="mt-3 flex justify-end gap-2">
+          <div className="mt-3 flex flex-col gap-2">
             <Button
               type="button"
-              variant="outline"
               size="sm"
-              onClick={() => setConfirmOpen(false)}
-              className="min-h-11"
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              data-session-end-confirm-button
+              data-session-save
               onClick={() => {
                 setConfirmOpen(false);
                 onEndSession?.();
               }}
-              className="min-h-11"
+              className="min-h-11 w-full"
             >
-              Terminar
+              Guardar sesión
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-session-discard
+              onClick={() => {
+                setConfirmOpen(false);
+                onDiscardSession?.();
+              }}
+              className="min-h-11 w-full border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              Descartar (prueba)
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmOpen(false)}
+              className="min-h-11 w-full"
+            >
+              Cancelar
             </Button>
           </div>
         </div>

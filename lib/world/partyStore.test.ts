@@ -37,22 +37,30 @@ interface FakeDeps {
     estadoWrites: string[];
     journalTexts: string[];
     opened: { path: string; text: string }[];
+    deletedPaths: string[];
     storage: ReturnType<typeof makeFakeStorage>;
     failEstado: { value: boolean };
     failFlush: { value: boolean };
+    failDelete: { value: boolean };
 }
 
 function makeDeps(): FakeDeps {
     const estadoWrites: string[] = [];
     const journalTexts: string[] = [];
     const opened: { path: string; text: string }[] = [];
+    const deletedPaths: string[] = [];
     const storage = makeFakeStorage();
     const failEstado = { value: false };
     const failFlush = { value: false };
+    const failDelete = { value: false };
     const deps: PartyStoreDeps = {
         writeEstado: async (text: string) => {
             if (failEstado.value) throw new Error('NotAllowedError');
             estadoWrites.push(text);
+        },
+        deleteFile: async (path: string) => {
+            if (failDelete.value) throw new Error('NotAllowedError');
+            deletedPaths.push(path);
         },
         journal: {
             open: (path: string, text: string) => {
@@ -71,7 +79,17 @@ function makeDeps(): FakeDeps {
         debounceMs: 0, // debounce fires on the next macrotask
         mirrorStorage: storage,
     };
-    return { deps, estadoWrites, journalTexts, opened, storage, failEstado, failFlush };
+    return {
+        deps,
+        estadoWrites,
+        journalTexts,
+        opened,
+        deletedPaths,
+        storage,
+        failEstado,
+        failFlush,
+        failDelete,
+    };
 }
 
 const MANIFEST: WorldManifest = {
@@ -359,6 +377,69 @@ describe('endSession', () => {
 });
 
 // ── serializePartyState round-trip ──────────────────────────────────────────
+
+describe('discardSession', () => {
+    beforeEach(() => {
+        // Hydrate with a roster so we can prove it survives the rollback.
+        actions().hydrate(makeModel(makeEstado({ personajes: ['Xiao', 'Chesco'] })));
+    });
+
+    test('deletes the journal, rolls estado back to the snapshot, reverts live fields', async () => {
+        actions().startSession([], TODAY);
+        const journalPath = usePartyStore.getState().session.journalPath!;
+        // Play: spend credits + change a gauge (would persist without discard).
+        actions().log(makeEntry.gasto(200, undefined, CLOCK));
+        actions().log(makeEntry.medidor('combustible', 3, 1, undefined, CLOCK));
+        expect(usePartyStore.getState().creditos).toBe(300);
+
+        const result = await actions().discardSession();
+
+        expect(result).toEqual({ ok: true });
+        // journal deleted (exactly its path)
+        expect(fake.deletedPaths).toEqual([journalPath]);
+        // estado restored to the pre-session snapshot, session closed
+        const estado = fake.estadoWrites[fake.estadoWrites.length - 1];
+        expect(estado).toContain('sesion_activa: false');
+        expect(estado).toContain('creditos: 500'); // back to pre-session
+        expect(estado).toContain('combustible: 3'); // gauge reverted
+        // roster + agent body preserved through the rollback write
+        expect(estado).toContain('personajes:\n  - Xiao\n  - Chesco');
+        expect(estado).toContain('## Inventario');
+        // live fields reverted + session inactive + mirror cleared
+        const st = usePartyStore.getState();
+        expect(st.creditos).toBe(500);
+        expect(st.medidores.combustible).toBe(3);
+        expect(st.session.active).toBe(false);
+        expect(fake.storage.getItem(SESSION_MIRROR_KEY)).toBeNull();
+    });
+
+    test('a subsequent session numbers as if the discarded one never existed', async () => {
+        actions().startSession([], TODAY);
+        await actions().discardSession();
+        const day = actions().startSession([], TODAY);
+        expect(day!.sesion).toBe(1); // not 2 — no leftover journal
+    });
+
+    test('deleteFile failure leaves the session ACTIVE and estado untouched', async () => {
+        actions().startSession([], TODAY);
+        actions().log(makeEntry.gasto(200, undefined, CLOCK));
+        const estadoWritesBefore = fake.estadoWrites.length;
+        fake.failDelete.value = true;
+
+        const result = await actions().discardSession();
+
+        expect(result).toEqual({ ok: false });
+        expect(usePartyStore.getState().session.active).toBe(true);
+        expect(usePartyStore.getState().creditos).toBe(300); // NOT rolled back
+        // no rollback estado write happened after the failed delete
+        expect(fake.estadoWrites.length).toBe(estadoWritesBefore);
+    });
+
+    test('no-op with a clear result when no session is active', async () => {
+        expect(await actions().discardSession()).toEqual({ ok: false });
+        expect(fake.deletedPaths).toHaveLength(0);
+    });
+});
 
 describe('serializePartyState', () => {
     const NOW_ISO = '2026-07-12T14:05:00.000Z';

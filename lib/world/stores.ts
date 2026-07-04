@@ -134,6 +134,12 @@ export interface PartyStoreDeps {
      * worldWriter — enforces the diario/+estado/ write surface).
      */
     writeEstado: (text: string) => Promise<void>;
+    /**
+     * Deletes a file relative to the campaign folder. Used by discardSession
+     * to drop a TEST session's journal (page binds it to fsm.deleteFile). The
+     * store enforces the mundo/diario/ surface before calling it.
+     */
+    deleteFile: (path: string) => Promise<void>;
     journal: PartyStoreJournal;
     now: () => Date;
     /** Estado write debounce in ms; default DEFAULT_ESTADO_DEBOUNCE_MS. */
@@ -281,6 +287,29 @@ export interface PartyStoreState {
          * denied, mirror kept) and null is returned — retry after retryWrites.
          */
         endSession: () => Promise<SessionSummary | null>;
+        /**
+         * DISCARD (test session): deletes the session journal and ROLLS BACK
+         * estado to the session-start snapshot, then deactivates — the opposite
+         * of endSession's SAVE. Because the journal is written incrementally and
+         * estado is debounce-written DURING play, both are already on disk by the
+         * time the GM ends, so discard must actively undo them.
+         *
+         *   - Guard: only while session.active (else {ok:false}).
+         *   - Deletes session.journalPath (enforces the mundo/diario/ surface;
+         *     a path outside it, or a delete that throws, returns {ok:false}
+         *     WITHOUT touching anything so the GM can retry — the session stays
+         *     active and estado is left as-is).
+         *   - Cancels the pending debounced estado write FIRST (so a queued
+         *     mid-session write cannot land after the rollback), then forces an
+         *     estado write equal to the snapshot with sesion_activa:false and the
+         *     unchanged roster/body preserved.
+         *   - Clears the crash mirror, reverts the LIVE party fields to the
+         *     snapshot (so the UI reverts immediately) and deactivates.
+         *
+         * The page then re-scans so in-memory knowledge/pista bumps vanish and
+         * the diario reloads without the deleted file.
+         */
+        discardSession: () => Promise<{ ok: boolean }>;
         /**
          * Rebuilds an active session from a crash mirror: live fields =
          * mirror.entries replayed over mirror.snapshot (see SessionMirror
@@ -659,6 +688,84 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
                 clearSessionMirror(mirrorStorage());
                 journalDay = null;
                 return summary;
+            },
+
+            async discardSession(): Promise<{ ok: boolean }> {
+                const s = get();
+                if (!s.session.active || deps === null || s.session.snapshot === null) {
+                    console.warn('[world] discardSession ignorado: no hay sesión activa');
+                    return { ok: false };
+                }
+                const d = deps;
+                const snapshot = cloneSnapshot(s.session.snapshot);
+                const journalPath = s.session.journalPath;
+                // Surface guard: only ever delete inside mundo/diario/. A path
+                // outside it is corrupt state — refuse without touching anything.
+                const diarioPrefix = `${WORLD_DIR}/${ENTITY_DIRS.diario}/`;
+                if (journalPath === null || !journalPath.startsWith(diarioPrefix)) {
+                    console.warn('[world] discardSession ignorado: journalPath fuera de mundo/diario/');
+                    return { ok: false };
+                }
+                // Delete the journal. On any failure stay ACTIVE and untouched so
+                // the GM can retry (estado is not rolled back either).
+                try {
+                    await d.deleteFile(journalPath);
+                } catch (error) {
+                    console.warn('[world] no se pudo borrar el diario de la sesión de prueba', error);
+                    return { ok: false };
+                }
+                // Cancel the pending debounced estado write FIRST so a queued
+                // mid-session write cannot land after the rollback below.
+                if (debounceTimer !== null) {
+                    clearTimeout(debounceTimer);
+                    debounceTimer = null;
+                }
+                // Roll estado back to the session-start snapshot (sesion_activa
+                // false), preserving the roster + agent body the log never edits.
+                const restored: PartyState = {
+                    sesionActiva: false,
+                    diaMundo: snapshot.diaMundo,
+                    ubicacion: snapshot.ubicacion,
+                    rumbo: snapshot.rumbo === null ? null : { ...snapshot.rumbo },
+                    creditos: snapshot.creditos,
+                    medidores: { ...snapshot.medidores },
+                    personajes: [...s.personajes],
+                    bodyMd: s.bodyMd,
+                    filePath: s.estadoFilePath,
+                };
+                estadoStatus = 'pending';
+                pushStatus();
+                estadoChain = estadoChain.then(() =>
+                    d.writeEstado(serializePartyState(restored, d.now().toISOString()))
+                );
+                try {
+                    await estadoChain;
+                    estadoStatus = 'ok';
+                } catch (error) {
+                    // Journal is already gone; a denied estado write leaves the
+                    // pre-session state on disk (nothing was ever overwritten by
+                    // the discard). Surface denied but still deactivate — the
+                    // test session is over regardless.
+                    console.warn('[world] fallo al restaurar estado tras descartar', error);
+                    estadoStatus = 'denied';
+                }
+                estadoChain = estadoChain.catch(() => {});
+                clearSessionMirror(mirrorStorage());
+                journalDay = null;
+                journalStatus = 'ok';
+                // Revert the LIVE party fields + deactivate so the UI reverts now.
+                set({
+                    ...snapshotToFields(snapshot),
+                    session: {
+                        active: false,
+                        journalPath: null,
+                        startedAt: null,
+                        entries: [],
+                        snapshot: null,
+                        writeStatus: estadoStatus,
+                    },
+                });
+                return { ok: true };
             },
 
             recoverSession(mirror: SessionMirror, model: WorldModel) {

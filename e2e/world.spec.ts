@@ -372,7 +372,7 @@ test.describe('World Mode - Session recorder', () => {
         // (g) Terminar sesión -> fin line + dia_fin + estado frontmatter updated
         // with the agent-owned body preserved byte-for-byte.
         await page.locator('[data-session-end]').click();
-        await page.locator('[data-session-end-confirm-button]').click();
+        await page.locator('[data-session-save]').click();
         await expect(page.locator('[data-session-start]')).toBeVisible();
 
         const journalFinal = await readOPFSFile(page, journalPath);
@@ -771,23 +771,49 @@ test.describe('World Mode - Eventos en curso & combate', () => {
         await expect(page.locator('[data-combat-open]')).toBeVisible();
     });
 
-    test('(c) cockpit initiative shows the PC names from personajes', async ({ page }) => {
+    test('(c) Combate force-opens the initiative panel with the PC roster', async ({ page }) => {
         await startSession(page);
 
-        // No ActRunner open -> revealing combat mounts the COCKPIT tracker.
+        // No ActRunner open -> Combate mounts the COCKPIT tracker AND force-opens
+        // the full panel via openSignal — the PC rows render WITHOUT a hover.
         await page.locator('[data-combat-open]').click();
-
-        // The tracker seeds one PC entry per personajes name. Collapsed it shows
-        // a left-edge semi-circle pull-tab; hovering it expands the full panel
-        // where the PC rows (Xiao / Chesco) render. It is left-edge fixed.
-        const pullTab = page.locator('div.fixed.left-0.cursor-pointer').first();
-        await expect(pullTab).toBeVisible();
-        await pullTab.hover();
-        // The expanded panel lists one row per personajes name (the tracker also
-        // keeps its compact pull-tab mounted, so the name can resolve twice —
-        // .first() suffices to prove the roster reached the tracker).
         await expect(page.getByText('Xiao', { exact: true }).first()).toBeVisible();
         await expect(page.getByText('Chesco', { exact: true }).first()).toBeVisible();
+    });
+
+    test('(d) Terminar -> Descartar wipes the test session (journal gone, estado reverted)', async ({ page }) => {
+        await startSession(page);
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+
+        // Spend credits during the test session (would persist if saved).
+        await page.locator('[data-quicklog="creditos"]').click();
+        await page.locator('[data-quicklog-creditos-custom]').fill('-200');
+        await page.locator('[data-quicklog-creditos-custom]').press('Enter');
+        await expect(page.locator('[data-party-bar] [data-creditos="1040"]')).toBeVisible();
+
+        // Terminar -> Descartar (prueba).
+        await page.locator('[data-session-end]').click();
+        await page.locator('[data-session-discard]').click();
+
+        // Journal deleted; estado rolled back to the pre-session snapshot.
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(0);
+        const estado = await readOPFSFile(page, 'mundo/estado/grupo.md');
+        expect(estado).toContain('sesion_activa: false');
+        expect(estado).toContain('creditos: 1240'); // reverted
+        expect(estado).toMatch(/personajes:\s*\n?\s*(\[Xiao|-\s*Xiao)/); // roster preserved
+        // UI reverted: session over, credits back.
+        await expect(page.locator('[data-session-start]')).toBeVisible();
+        await expect(page.locator('[data-party-bar] [data-creditos="1240"]')).toBeVisible();
+
+        // A fresh session numbers as s01 again — the discarded one left no trace.
+        await page.locator('[data-session-start]').click();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario'))[0] ?? '')
+            .toMatch(/_s01\.md$/);
     });
 });
 
@@ -1067,7 +1093,7 @@ test.describe('World Mode - Console hygiene', () => {
 
         // End session (journal flush + forced estado write).
         await page.locator('[data-session-end]').click();
-        await page.locator('[data-session-end-confirm-button]').click();
+        await page.locator('[data-session-save]').click();
         await expect(page.locator('[data-session-start]')).toBeVisible();
 
         expect(issues).toEqual([]);

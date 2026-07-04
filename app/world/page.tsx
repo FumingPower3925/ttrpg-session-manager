@@ -201,11 +201,11 @@
  *     null. (The pre-existing /play page also shares that key — out of scope.)
  *   - "Abrir combate" in the EventDrawer bridges event -> combat: it parks the
  *     draw en_curso (fight lands in the ongoing list), reveals the tracker and
- *     closes the drawer. A cockpit "Combate" button (data-combat-open) reveals
- *     the tracker so the GM can find it. LIMITATION: the tracker owns its
- *     expanded/pinned state internally and exposes NO open prop, so neither the
- *     button nor onOpenCombat can force the panel open — they MOUNT the tracker,
- *     which self-shows its left-edge pull-tab; the GM expands it from there.
+ *     closes the drawer. A cockpit "Combate" button (data-combat-open) mounts
+ *     the tracker AND force-opens the full panel via its openSignal prop (a
+ *     counter the button/onOpenCombat bump; the tracker expands on increment).
+ *     openSignal is world-only — /play passes nothing and keeps the tracker's
+ *     self-managed hover-to-expand behavior unchanged.
  *
  * SCAN-OVERLAY ASYMMETRY (M4 decision — documented, not a bug):
  *   worldScanner.overlayUnprocessedJournals re-derives ONLY knowledge (sabe)
@@ -555,10 +555,11 @@ export default function WorldPage() {
   const [eventApplied, setEventApplied] = useState<number[]>([]);
   const [eventDrawCount, setEventDrawCount] = useState(0);
   // Cockpit combat (feature 2): once revealed the left-edge InitiativeTracker
-  // is mounted. It self-hides until it has entries but always shows its own
-  // pull-tab once mounted; "Combate" flips this on (the tracker manages its own
-  // expanded/pinned state internally — the page cannot force it open via props).
+  // is mounted. "Combate" (and "Abrir combate" from an event) flip combatOpen
+  // on AND bump combatOpenSignal, which the tracker's openSignal prop uses to
+  // force the full panel open (not just the pull-tab).
   const [combatOpen, setCombatOpen] = useState(false);
+  const [combatOpenSignal, setCombatOpenSignal] = useState(0);
   // M6: resolved object URL currently zoomed in the player-safe fullscreen
   // viewer (null = closed). The URL belongs to the page-owned image cache.
   const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
@@ -647,6 +648,10 @@ export default function WorldPage() {
   const openWorld = useCallback(async (handle: FileSystemDirectoryHandle) => {
     await useWorldStore.getState().actions.scan(handle);
     const scanned = useWorldStore.getState().model;
+    // A fresh scan reloads model.diario from disk, so the in-tab session-number
+    // tracker is now obsolete — clear it (else a discarded session's JournalDay
+    // would keep inflating the next session's number after a rescan).
+    extraDiarioRef.current = [];
     // Hydrate the live party fields from estado/grupo.md (no-op mid-session).
     if (scanned) usePartyStore.getState().actions.hydrate(scanned);
   }, []);
@@ -812,6 +817,11 @@ export default function WorldPage() {
         writeEstado: (text) => writeFile(ESTADO_PATH, text),
         journal: writer,
         now: () => new Date(),
+        deleteFile: (path) => {
+          const current = useWorldStore.getState().fs;
+          if (!current) return Promise.reject(new Error('No hay carpeta de campaña abierta'));
+          return current.deleteFile(path);
+        },
       });
     }
     return journalWriterRef.current;
@@ -857,6 +867,22 @@ export default function WorldPage() {
         `${pistasCount} ${pistasCount === 1 ? 'pista' : 'pistas'}`
     );
   }, [sesionNum]);
+
+  /**
+   * DISCARD SESSION (test run): delete the session journal + roll estado back to
+   * the session-start snapshot, then rescan so in-memory knowledge/pista bumps
+   * revert and model.diario drops the deleted file. Leaves zero trace.
+   */
+  const handleDiscardSession = useCallback(async () => {
+    const { ok } = await usePartyStore.getState().actions.discardSession();
+    if (!ok) {
+      toast.error('No se pudo descartar la sesión');
+      return;
+    }
+    toast.success('Sesión de prueba descartada — sin cambios');
+    const handle = worldFs?.getDirectoryHandle();
+    if (handle) await openWorld(handle);
+  }, [worldFs, openWorld]);
 
   /** Denied writes need a fresh gesture-scoped permission before retrying. */
   const handleRetryWrites = useCallback(async () => {
@@ -1394,6 +1420,7 @@ export default function WorldPage() {
   const handleOpenCombat = useCallback(() => {
     handleEventOutcome('en_curso');
     setCombatOpen(true);
+    setCombatOpenSignal((n) => n + 1);
     setEventOpen(false);
   }, [handleEventOutcome]);
 
@@ -2288,6 +2315,7 @@ export default function WorldPage() {
             sessionActive={session.active}
             onStartSession={handleStartSession}
             onEndSession={handleEndSession}
+            onDiscardSession={handleDiscardSession}
             sessionElapsedMs={sessionElapsedMs}
             writeStatus={session.writeStatus}
             onRetryWrites={handleRetryWrites}
@@ -2703,17 +2731,16 @@ export default function WorldPage() {
               at once would double-mount the same key. See the module docstring
               "COCKPIT COMBAT". */}
           {combatOpen && actRunnerPlace === null && (
-            <InitiativeTracker playerCharacters={personajes} pcStats={[]} />
+            <InitiativeTracker
+              playerCharacters={personajes}
+              pcStats={[]}
+              openSignal={combatOpenSignal}
+            />
           )}
 
-          {/* "Combate" affordance: a GM needs a way to FIND the tracker (it
-              self-hides until it has entries). This reveals/mounts it; the
-              tracker then owns its own left-edge pull-tab. LIMITATION: the
-              tracker manages its expanded/pinned state internally and exposes
-              no open prop, so this cannot force the panel open — it mounts the
-              tracker (which shows its pull-tab) and points the GM there. Hidden
-              while the ActRunner overlay owns the screen (it has its own
-              tracker). */}
+          {/* "Combate" affordance: mounts the tracker AND force-opens it via
+              openSignal (the full panel, not just the pull-tab). Hidden while
+              the ActRunner overlay owns the screen (it has its own tracker). */}
           {actRunnerPlace === null && (
             <Button
               type="button"
@@ -2721,12 +2748,11 @@ export default function WorldPage() {
               variant={combatOpen ? 'secondary' : 'outline'}
               data-combat-open
               aria-pressed={combatOpen}
-              onClick={() => setCombatOpen(true)}
-              title={
-                combatOpen
-                  ? 'Combate activo — el rastreador de iniciativa está en el borde izquierdo'
-                  : 'Abrir el rastreador de iniciativa (combate)'
-              }
+              onClick={() => {
+                setCombatOpen(true);
+                setCombatOpenSignal((n) => n + 1);
+              }}
+              title="Abrir el rastreador de iniciativa (combate)"
               // Bottom-RIGHT, clear of the bottom-left WorldAudioDock and the
               // bottom-center toaster; above the QuickLogBar band.
               className="fixed bottom-20 right-3 z-30 min-h-11 shadow-lg"

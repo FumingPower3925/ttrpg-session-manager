@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,6 +23,13 @@ interface InitiativeEntry {
 interface InitiativeTrackerProps {
   playerCharacters: string[];
   pcStats?: PlayerCharacterStats[];
+  /**
+   * World-mode only: a monotonically increasing counter. Each time it changes
+   * the tracker force-expands (unpins + opens the full panel) so a "Combate"
+   * button can pop it open. Undefined (the /play default) = no effect: the
+   * tracker keeps its self-managed hover-to-expand behavior, byte-unchanged.
+   */
+  openSignal?: number;
 }
 
 interface CombatState {
@@ -33,7 +40,7 @@ interface CombatState {
 
 const STORAGE_KEY = 'initiativeTrackerState';
 
-export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrackerProps) {
+export function InitiativeTracker({ playerCharacters, pcStats, openSignal }: InitiativeTrackerProps) {
   const [entries, setEntries] = useState<InitiativeEntry[]>([]);
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0);
   const [roundCount, setRoundCount] = useState(1);
@@ -44,6 +51,18 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
   const [isPinned, setIsPinned] = useState(false);
   const [newStatusInput, setNewStatusInput] = useState<Record<string, string>>({});
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
+
+  // World-mode force-open: expand the full panel when openSignal increments.
+  // The initial mount value is ignored (no spurious auto-open); /play never
+  // passes openSignal so this is inert there.
+  const prevOpenSignal = useRef<number | undefined>(openSignal);
+  useEffect(() => {
+    if (openSignal === undefined) return;
+    if (prevOpenSignal.current === openSignal) return;
+    prevOpenSignal.current = openSignal;
+    setIsPinned(false);
+    setIsExpanded(true);
+  }, [openSignal]);
 
   useEffect(() => {
     const savedState = localStorage.getItem(STORAGE_KEY);
