@@ -3192,14 +3192,14 @@ export default function WorldPage() {
               rendering mundo/resumen.md through the existing MarkdownViewer. */}
           {model.resumen !== null && (
             <Dialog open={resumenOpen} onOpenChange={setResumenOpen}>
-              <DialogContent data-resumen-dialog className="max-h-[80vh] overflow-hidden sm:max-w-2xl">
+              <DialogContent data-resumen-dialog className="flex max-h-[80vh] flex-col overflow-hidden sm:max-w-2xl">
                 <DialogHeader>
                   <DialogTitle>Anteriormente…</DialogTitle>
                   <DialogDescription className="sr-only">
                     Resumen de la sesión anterior
                   </DialogDescription>
                 </DialogHeader>
-                <div className="min-h-0 overflow-y-auto">
+                <div className="max-h-[calc(80vh-5rem)] min-h-0 flex-1 overflow-y-auto">
                   <MarkdownViewer content={model.resumen} className="prose-sm" />
                 </div>
               </DialogContent>
@@ -3216,14 +3216,14 @@ export default function WorldPage() {
                 if (!open) setGuiaAbierta(null);
               }}
             >
-              <DialogContent data-guia-dialog className="max-h-[80vh] overflow-hidden sm:max-w-2xl">
+              <DialogContent data-guia-dialog className="flex max-h-[80vh] flex-col overflow-hidden sm:max-w-2xl">
                 <DialogHeader>
                   <DialogTitle>{guiaAbierta.titulo}</DialogTitle>
                   <DialogDescription className="sr-only">
                     Guía del GM: {guiaAbierta.titulo}
                   </DialogDescription>
                 </DialogHeader>
-                <div className="min-h-0 overflow-y-auto">
+                <div className="max-h-[calc(80vh-5rem)] min-h-0 flex-1 overflow-y-auto">
                   <MarkdownViewer content={guiaAbierta.content} className="prose-sm" />
                 </div>
               </DialogContent>
