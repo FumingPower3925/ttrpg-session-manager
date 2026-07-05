@@ -113,6 +113,7 @@ function makeModel(viaje: Partial<WorldManifest['viaje']> = {}): WorldModel {
         musica: { bgm: [], eventPlaylists: [] },
         tiendas: new Map(),
         resumen: null,
+        guias: [],
     };
 }
 

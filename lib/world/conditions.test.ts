@@ -300,6 +300,7 @@ function makeModel(entities: WorldEntityBase[]): WorldModel {
         musica: { bgm: [], eventPlaylists: [] },
         tiendas: new Map(),
         resumen: null,
+        guias: [],
     };
 }
 

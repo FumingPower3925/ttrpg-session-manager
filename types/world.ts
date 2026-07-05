@@ -384,4 +384,22 @@ export interface WorldModel {
    * the file is absent.
    */
   resumen: string | null;
+  /**
+   * Curated GM play-aid sheets ("guías") read from the `mundo/` root via the
+   * GUIA_FILES allowlist (each plain markdown, one read, never an entity).
+   * Empty array when none of the allowlisted files are present.
+   */
+  guias: Guia[];
+}
+
+/**
+ * One GM play-aid sheet surfaced by the header "Guías" menu. `titulo` is the
+ * file's first `# heading` when present, else the GUIA_FILES fallback; `content`
+ * is the whole markdown, rendered read-only through MarkdownViewer.
+ */
+export interface Guia {
+  /** Stable id (the allowlisted filename without its `.md` extension). */
+  id: string;
+  titulo: string;
+  content: string;
 }

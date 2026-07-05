@@ -13,6 +13,7 @@ import {
     EventTable,
     FactionEntity,
     FactionPresence,
+    Guia,
     JournalDay,
     Lead,
     NpcEntity,
@@ -58,6 +59,7 @@ import {
     DEFAULT_CONOCIMIENTO,
     ENTITY_DIRS,
     ESTADOS_PISTA,
+    GUIA_FILES,
     IMAGES_DIR,
     ESTADOS_TRAMA,
     MANIFEST_DEFAULTS,
@@ -119,7 +121,16 @@ export async function scanWorldFolder(
             mensaje: `No se encontró la carpeta "${WORLD_DIR}/" en la carpeta de campaña`,
         });
         onProgress?.(1, 1);
-        return assembleModel(defaultManifest(), [], problemas, null, emptyMusica(), new Map(), null);
+        return assembleModel(
+            defaultManifest(),
+            [],
+            problemas,
+            null,
+            emptyMusica(),
+            new Map(),
+            null,
+            []
+        );
     }
 
     // Enumerate first (cheap directory listings), then read contents in batches.
@@ -154,6 +165,10 @@ export async function scanWorldFolder(
     // markdown, null when absent, never an entity and never an aviso.
     const resumen = await readResumen(mundoDir);
 
+    // GM play-aid sheets (GUIA_FILES allowlist): a handful of optional reads at
+    // the mundo/ root, each tolerant like the recap — absent files are skipped.
+    const guias = await readGuias(mundoDir);
+
     // Entity reads, batched
     const records: RawEntityFile[] = [];
     for (let i = 0; i < tasks.length; i += READ_BATCH_SIZE) {
@@ -168,7 +183,16 @@ export async function scanWorldFolder(
     }
 
     const manifest = parseManifest(manifestContent, problemas);
-    return assembleModel(manifest, records, problemas, estadoGrupo, musica, imagenes, resumen);
+    return assembleModel(
+        manifest,
+        records,
+        problemas,
+        estadoGrupo,
+        musica,
+        imagenes,
+        resumen,
+        guias
+    );
 }
 
 /**
@@ -184,6 +208,41 @@ async function readResumen(mundoDir: FileSystemDirectoryHandle): Promise<string 
     } catch {
         return null;
     }
+}
+
+/**
+ * Reads the curated GUIA_FILES allowlist at the `mundo/` root — the GM play-aid
+ * sheets (run of show, thread map, cast). Each read is tolerant like readResumen
+ * (absent → skip, unreadable → skip, never throws); the allowlist keeps design
+ * docs out of the header menu. The display title prefers the file's first
+ * markdown `# heading`, falling back to the mapping's `titulo`. Returns the
+ * present guías in allowlist order (empty array when none exist).
+ */
+async function readGuias(mundoDir: FileSystemDirectoryHandle): Promise<Guia[]> {
+    const guias: Guia[] = [];
+    for (const { file, titulo } of GUIA_FILES) {
+        try {
+            const handle = await mundoDir.getFileHandle(file);
+            const content = await (await handle.getFile()).text();
+            guias.push({
+                id: file.replace(/\.md$/i, ''),
+                titulo: firstHeading(content) ?? titulo,
+                content,
+            });
+        } catch {
+            // Absent or unreadable — skip silently (each guía is optional).
+        }
+    }
+    return guias;
+}
+
+/** First markdown `# heading` text (single leading `#`), or null when none. */
+function firstHeading(markdown: string): string | null {
+    for (const line of markdown.split('\n')) {
+        const match = /^#\s+(.+?)\s*$/.exec(line);
+        if (match) return match[1];
+    }
+    return null;
 }
 
 // ── Entity profile images (imagenes/) ───────────────────────────────────────
@@ -1047,7 +1106,8 @@ function assembleModel(
     estadoGrupo: PartyState | null,
     musica: WorldModel['musica'],
     imagenes: Map<string, FileReference>,
-    resumen: string | null
+    resumen: string | null,
+    guias: Guia[]
 ): WorldModel {
     const entidades = new Map<string, WorldEntityBase>();
     const sistemas: SystemEntity[] = [];
@@ -1180,6 +1240,7 @@ function assembleModel(
         musica,
         tiendas,
         resumen,
+        guias,
     };
 
     // Unprocessed journals re-overlay in-session knowledge BEFORE the

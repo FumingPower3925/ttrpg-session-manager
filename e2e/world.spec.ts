@@ -1052,6 +1052,43 @@ test.describe('World Mode - Resumen', () => {
     });
 });
 
+// ── Feature: in-app Guías (curated GM play-aid sheets at mundo/ root) ────────
+
+test.describe('World Mode - Guías', () => {
+    test('the Guías menu lists the sheets and picking one opens its dialog', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO); // has _RUN_OF_SHOW + _MAPA_DE_HILOS
+        await openWorldViaOPFS(page);
+
+        const trigger = page.locator('[data-guias-menu]');
+        await expect(trigger).toBeVisible();
+        await trigger.click();
+
+        // Both allowlisted guías appear: first-heading title for RUN_OF_SHOW,
+        // fallback mapping titulo for MAPA_DE_HILOS (no heading in its file).
+        const runItem = page.locator('[data-guia-item="_RUN_OF_SHOW"]');
+        const mapItem = page.locator('[data-guia-item="_MAPA_DE_HILOS"]');
+        await expect(runItem).toHaveText('Guion de la sesión');
+        await expect(mapItem).toHaveText('Mapa de Hilos');
+
+        // Picking one opens the read-only dialog rendering its markdown.
+        await runItem.click();
+        const dialog = page.locator('[data-guia-dialog]');
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText('Guion de la sesión');
+        await expect(dialog).toContainText('El favor de Kael Voss');
+    });
+
+    test('a world without guía files shows no Guías menu (base fixture)', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN); // no guía files
+        await openWorldViaOPFS(page);
+
+        await expect(page.locator('[data-world-status="ready"]')).toBeAttached();
+        await expect(page.locator('[data-guias-menu]')).toHaveCount(0);
+    });
+});
+
 // ── M5: ActRunner (scripted acts inside /world) ─────────────────────────────
 //
 // porto_verne is the fixture's playable place: lugares/porto_verne/ holds

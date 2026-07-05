@@ -57,6 +57,19 @@ export const TIENDAS_DIR = 'tiendas';
 export const RESUMEN_FILE = 'resumen.md';
 
 /**
+ * Curated GM play-aid ("guía") files at the `mundo/` root: an explicit
+ * allowlist so unrelated design docs never leak into the header menu. Each is
+ * OPTIONAL and read like the manifest/resumen (one read, tolerant, never an
+ * entity); an absent file is simply skipped. `titulo` is the fallback display
+ * title when the file has no leading `# heading`.
+ */
+export const GUIA_FILES: readonly { file: string; titulo: string }[] = [
+    { file: '_RUN_OF_SHOW.md', titulo: 'Run of Show' },
+    { file: '_MAPA_DE_HILOS.md', titulo: 'Mapa de Hilos' },
+    { file: '_REPARTO_DE_MANANA.md', titulo: 'Reparto de hoy' },
+];
+
+/**
  * Optional world-level music folder under `mundo/`: audio files at its root
  * are the world BGM rotation, each subfolder a named event playlist. Not an
  * entity dir — its contents are listed (never read) by the scanner.

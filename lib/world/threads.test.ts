@@ -112,6 +112,7 @@ function makeModel(tramas: Trama[]): WorldModel {
         musica: { bgm: [], eventPlaylists: [] },
         tiendas: new Map(),
         resumen: null,
+        guias: [],
     };
 }
 

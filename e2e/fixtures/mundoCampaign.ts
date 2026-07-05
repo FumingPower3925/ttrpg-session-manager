@@ -538,6 +538,24 @@ Un tenderete entre las grúas; Kael conoce al dueño.
 | Raciones de campo | 40 | - | siempre en stock |
 `;
 
+/**
+ * GM play-aid sheets for the in-app Guías menu (feature — Guías dialog). These
+ * live at the mundo/ root under the GUIA_FILES allowlist. RUN_OF_SHOW carries a
+ * leading `# heading` (first-heading title wins over the fallback); MAPA_DE_HILOS
+ * has no heading, so its label falls back to the mapping titulo.
+ */
+const RUN_OF_SHOW_MD = `# Guion de la sesión
+
+1. Reentrada en Porto Verne.
+2. El favor de Kael Voss en el muelle 7.
+3. La ruta franca de Vortex.
+`;
+
+const MAPA_DE_HILOS_MD = `Contrabando -> Brasa -> Consorcio Tetrad.
+
+Deudas -> Kael Voss -> Zara Hollis.
+`;
+
 /** Session recap for the in-app Resumen dialog (feature — in-app resumen). */
 const RESUMEN_MD = `# Anteriormente
 
@@ -594,6 +612,12 @@ export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     };
     // In-app resumen: mundo/resumen.md (the base fixture has none on purpose).
     mundo['resumen.md'] = RESUMEN_MD;
+    // GM guías: curated play-aid sheets at mundo/ root (GUIA_FILES allowlist).
+    // _RUN_OF_SHOW.md carries a leading heading (first-heading title wins);
+    // _MAPA_DE_HILOS.md has none, so its dropdown label falls back to the
+    // mapping titulo "Mapa de Hilos".
+    mundo['_RUN_OF_SHOW.md'] = RUN_OF_SHOW_MD;
+    mundo['_MAPA_DE_HILOS.md'] = MAPA_DE_HILOS_MD;
     return clone;
 })();
 

@@ -1466,6 +1466,49 @@ describe('scanWorldFolder — resumen', () => {
     });
 });
 
+// ── GM guías (GUIA_FILES allowlist) → model.guias ───────────────────────────
+
+describe('scanWorldFolder — guias', () => {
+    test('collects present guía files, first-heading preferred over the fallback titulo', async () => {
+        const tree = happyTree();
+        // _RUN_OF_SHOW.md has a leading heading -> that heading wins the title.
+        (tree.mundo as FileTree)['_RUN_OF_SHOW.md'] =
+            '# Guion de la sesión\n\nEscena 1: el muelle.';
+        // _REPARTO_DE_MANANA.md has NO heading -> falls back to the mapping titulo.
+        (tree.mundo as FileTree)['_REPARTO_DE_MANANA.md'] = 'Xiao, Chesco, Kael Voss.';
+        const model = await scanWorldFolder(makeHandle('campaign', tree));
+
+        expect(model.guias).toHaveLength(2);
+        // Allowlist order: _RUN_OF_SHOW before _REPARTO_DE_MANANA.
+        expect(model.guias[0]).toEqual({
+            id: '_RUN_OF_SHOW',
+            titulo: 'Guion de la sesión',
+            content: '# Guion de la sesión\n\nEscena 1: el muelle.',
+        });
+        expect(model.guias[1]).toEqual({
+            id: '_REPARTO_DE_MANANA',
+            titulo: 'Reparto de hoy',
+            content: 'Xiao, Chesco, Kael Voss.',
+        });
+        // Guías are never entities.
+        expect(model.entidades.has('_RUN_OF_SHOW')).toBe(false);
+    });
+
+    test('skips absent allowlisted files (mixed present/absent)', async () => {
+        const tree = happyTree();
+        (tree.mundo as FileTree)['_MAPA_DE_HILOS.md'] = '# Hilos\n\nContrabando -> Brasa.';
+        const model = await scanWorldFolder(makeHandle('campaign', tree));
+
+        expect(model.guias.map((g) => g.id)).toEqual(['_MAPA_DE_HILOS']);
+    });
+
+    test('empty array and NO aviso when no guía files are present', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+        expect(model.guias).toEqual([]);
+        expect(model.problemas.some((p) => p.archivo.includes('RUN_OF_SHOW'))).toBe(false);
+    });
+});
+
 // ── Stores (headless zustand) ───────────────────────────────────────────────
 
 describe('worldStore', () => {

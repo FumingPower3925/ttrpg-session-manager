@@ -123,6 +123,7 @@ function makeModel(): WorldModel {
         musica: { bgm: [], eventPlaylists: [] },
         tiendas: new Map(),
         resumen: null,
+        guias: [],
     };
 }
 

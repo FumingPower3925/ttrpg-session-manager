@@ -348,11 +348,18 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { MarkdownViewer } from '@/components/play/MarkdownViewer';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type {
   Conocimiento,
   EventEffect,
   EventTable,
   FactionPresence,
+  Guia,
   JournalDay,
   JournalEntry,
   Lead,
@@ -366,7 +373,7 @@ import type {
   WorldEvent,
   WorldModel,
 } from '@/types/world';
-import { BookOpen, Eye, FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
+import { BookOpen, Eye, FolderOpen, Globe, Lock, Map as MapIcon, Play, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -572,6 +579,10 @@ export default function WorldPage() {
   // Feature 2: in-app session recap dialog (mundo/resumen.md). Button + dialog
   // render only when model.resumen is non-null.
   const [resumenOpen, setResumenOpen] = useState(false);
+  // Guías header menu (curated GM play-aid sheets, model.guias). The dropdown
+  // and dialog render only when model.guias is non-empty; `guiaAbierta` holds
+  // the guía whose read-only dialog is open (null = closed), one at a time.
+  const [guiaAbierta, setGuiaAbierta] = useState<Guia | null>(null);
   const [viewport, setViewport] = useState<MapViewport | undefined>(undefined);
   // ?e= read once at first render, BEFORE the URL-writing effect can clear it.
   const [initialDeepLink] = useState(() => readEntityFromUrl());
@@ -2562,6 +2573,30 @@ export default function WorldPage() {
                   Resumen
                 </Button>
               )}
+              {/* Guías: curated GM play-aid sheets (model.guias). Only present
+                  when at least one allowlisted guía file exists — a dropdown
+                  that opens each sheet in the same read-only dialog. */}
+              {model.guias.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" data-guias-menu className="min-h-11">
+                      <MapIcon />
+                      Guías
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {model.guias.map((guia) => (
+                      <DropdownMenuItem
+                        key={guia.id}
+                        data-guia-item={guia.id}
+                        onSelect={() => setGuiaAbierta(guia)}
+                      >
+                        {guia.titulo}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               {/* Manual rescan: the app never watches the filesystem (no FS Access
                   watch API), so after the maintenance agent edits mundo/ — or after
                   an app update changes the scanner — the GM refreshes here instead
@@ -3147,6 +3182,30 @@ export default function WorldPage() {
                 </DialogHeader>
                 <div className="min-h-0 overflow-y-auto">
                   <MarkdownViewer content={model.resumen} className="prose-sm" />
+                </div>
+              </DialogContent>
+            </Dialog>
+          )}
+
+          {/* Guías: read-only dialog for the selected GM play-aid sheet, mirror
+              of the Resumen dialog — one open at a time, closing returns to the
+              map. Rendered only while a guía is selected (guiaAbierta non-null). */}
+          {guiaAbierta && (
+            <Dialog
+              open
+              onOpenChange={(open) => {
+                if (!open) setGuiaAbierta(null);
+              }}
+            >
+              <DialogContent data-guia-dialog className="max-h-[80vh] overflow-hidden sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>{guiaAbierta.titulo}</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    Guía del GM: {guiaAbierta.titulo}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="min-h-0 overflow-y-auto">
+                  <MarkdownViewer content={guiaAbierta.content} className="prose-sm" />
                 </div>
               </DialogContent>
             </Dialog>
