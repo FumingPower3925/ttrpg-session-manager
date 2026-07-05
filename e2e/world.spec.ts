@@ -1447,6 +1447,62 @@ test.describe('World Mode - Perfiles, imagen segura y detalle de pistas', () => 
         await expect(page.locator('[data-act-runner]')).toBeVisible();
     });
 
+    test('ActRunner collapses support docs into a grouped Fichas dropdown', async ({ page }) => {
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        // The many characters/ + threats/ + maps/*.md docs no longer render as
+        // flat tabs: no tab reads as a support-doc name.
+        await expect(page.getByRole('tab', { name: /zara hollis/i })).toHaveCount(0);
+        await expect(page.getByRole('tab', { name: /dron aduanas/i })).toHaveCount(0);
+        await expect(page.getByRole('tab', { name: /plano ascii/i })).toHaveCount(0);
+
+        // Plan / image / battlemap stay as real tabs.
+        await expect(page.getByRole('tab', { name: /^Plan$/ })).toBeVisible();
+        await expect(page.getByRole('tab', { name: 'muelle_7.svg' })).toBeVisible();
+        await expect(page.getByRole('tab', { name: /muelle 7 battlemap/i })).toBeVisible();
+
+        // Instead there is ONE "Fichas" dropdown trigger.
+        const fichas = runner.locator('[data-fichas-menu]');
+        await expect(fichas).toBeVisible();
+        await expect(fichas).toContainText('Fichas');
+        await expect(fichas).not.toHaveAttribute('data-active', 'true');
+
+        // Opening it groups the docs by folder with section labels.
+        await fichas.click();
+        const menu = page.locator('[data-slot="dropdown-menu-content"]');
+        await expect(menu).toBeVisible();
+        await expect(menu).toContainText('Personajes');
+        await expect(menu).toContainText('Amenazas');
+        await expect(menu).toContainText('Mapas (ASCII)');
+        await expect(menu.locator('[data-fichas-item]')).toHaveCount(6);
+
+        // Picking a ficha activates its TabsContent (the RunnerMarkdown body)...
+        await menu.locator('[data-fichas-item]', { hasText: 'zara hollis' }).click();
+        await expect(menu).toHaveCount(0);
+        await expect(runner.getByText('Prestamista a la que Kael debe dinero')).toBeVisible();
+        // ...and the trigger now shows the active state + the doc's label.
+        await expect(fichas).toHaveAttribute('data-active', 'true');
+        await expect(fichas).toContainText('zara hollis');
+
+        // A threats doc from the same dropdown swaps the content.
+        await fichas.click();
+        await page
+            .locator('[data-slot="dropdown-menu-content"] [data-fichas-item]', {
+                hasText: 'dron aduanas',
+            })
+            .click();
+        await expect(runner.getByText('Escanea el casco al acoplar')).toBeVisible();
+
+        // Plan tab still works, and returns the dropdown to its idle state.
+        await page.getByRole('tab', { name: /^Plan$/ }).click();
+        await expect(fichas).not.toHaveAttribute('data-active', 'true');
+        await expect(fichas).toContainText('Fichas');
+
+        // The tab strip is wrapped in the horizontal scroll container.
+        await expect(runner.locator('[data-tabs-scroll]')).toBeVisible();
+    });
+
     test('pista row opens a detail view with body + recompensa; transitions do not', async ({ page }) => {
         // Session active so the transition journals a pista line.
         await page.locator('[data-session-start]').click();

@@ -50,9 +50,33 @@ import { PartTimer } from '@/components/play/PartTimer';
 import { InitiativeTracker } from '@/components/play/InitiativeTracker';
 import { FullscreenImage } from '@/components/world/FullscreenImage';
 import { BattlemapViewer } from '@/components/world/BattlemapViewer';
+import { ScrollableTabsRow } from '@/components/world/ScrollableTabsRow';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Grid3x3, X } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  categorizeSupportDoc,
+  SUPPORT_DOC_CATEGORY_LABEL,
+  SUPPORT_DOC_CATEGORY_ORDER,
+  type SupportDocCategory,
+} from '@/lib/world/supportDocCategory';
+import {
+  ChevronDown,
+  FileText,
+  Grid3x3,
+  Image as ImageIcon,
+  Map as MapIcon,
+  Swords,
+  User,
+  X,
+} from 'lucide-react';
 
 const CLOSE_FADE_MS = 800;
 const CLOSE_FADE_INTERVAL_MS = 50;
@@ -235,6 +259,13 @@ abrir el acto.`;
       battlemaps.length > 0 ||
       currentPart.supportDocs.length > 0);
 
+  // The support docs live behind the "Fichas" dropdown (not as flat tabs), so
+  // the current tab may be `doc-<n>` with no matching TabsTrigger. Radix still
+  // activates the matching TabsContent; this index just drives the dropdown's
+  // active highlight + trigger label.
+  const activeDocIndex =
+    currentTab.startsWith('doc-') ? Number(currentTab.slice('doc-'.length)) : -1;
+
   return (
     <div data-act-runner className="fixed inset-0 z-50 flex flex-col bg-background">
       {/* pr keeps the Cerrar button clear of AudioControls' top-right pill. */}
@@ -302,30 +333,40 @@ abrir el acto.`;
           className="flex min-h-0 flex-1 flex-col overflow-hidden"
         >
           {hasTabs && (
-            <div className="shrink-0 border-b px-4">
-              <TabsList className="h-10">
-                <TabsTrigger value="plan">Plan</TabsTrigger>
-                {currentPart.images.map((img, index) => (
-                  <TabsTrigger key={`img-${index}`} value={`image-${index}`}>
-                    {img.name}
+            <div className="flex shrink-0 items-center gap-2 border-b px-4">
+              <ScrollableTabsRow>
+                <TabsList className="h-10 w-max flex-nowrap">
+                  <TabsTrigger value="plan" className="gap-1.5">
+                    <FileText className="h-3.5 w-3.5" />
+                    Plan
                   </TabsTrigger>
-                ))}
-                {battlemaps.map((map, index) => (
-                  <TabsTrigger
-                    key={`battlemap-${index}`}
-                    value={`battlemap-${index}`}
-                    className="gap-1.5"
-                  >
-                    <Grid3x3 className="h-3.5 w-3.5" />
-                    {docTabLabel(map.name)}
-                  </TabsTrigger>
-                ))}
-                {currentPart.supportDocs.map((doc, index) => (
-                  <TabsTrigger key={`doc-${index}`} value={`doc-${index}`}>
-                    {docTabLabel(doc.name)}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
+                  {currentPart.images.map((img, index) => (
+                    <TabsTrigger key={`img-${index}`} value={`image-${index}`} className="gap-1.5">
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      {img.name}
+                    </TabsTrigger>
+                  ))}
+                  {battlemaps.map((map, index) => (
+                    <TabsTrigger
+                      key={`battlemap-${index}`}
+                      value={`battlemap-${index}`}
+                      className="gap-1.5"
+                    >
+                      <Grid3x3 className="h-3.5 w-3.5" />
+                      {docTabLabel(map.name)}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </ScrollableTabsRow>
+
+              {currentPart.supportDocs.length > 0 && (
+                <FichasMenu
+                  docs={currentPart.supportDocs}
+                  activeIndex={activeDocIndex}
+                  docTabLabel={docTabLabel}
+                  onSelect={(index) => handleTabChange(`doc-${index}`)}
+                />
+              )}
             </div>
           )}
 
@@ -498,4 +539,90 @@ function RunnerBattlemap({
   }
 
   return <BattlemapViewer imageUrl={imageUrl} onClose={onClose} />;
+}
+
+const CATEGORY_ICON: Record<SupportDocCategory, typeof User> = {
+  personajes: User,
+  amenazas: Swords,
+  mapas: MapIcon,
+  otros: FileText,
+};
+
+/**
+ * Fichas dropdown: collapses the many support-doc tabs (characters/, threats/,
+ * maps/*.md, …) into one grouped menu so the tab strip stops overflowing.
+ * Items are grouped by inferred category (path prefix) with a section label
+ * and icon; selecting one drives the SAME Tabs value (`doc-<index>`) the flat
+ * tabs used, so the existing <TabsContent value="doc-<index>"> renders it. The
+ * trigger highlights and names the active doc when a `doc-N` tab is open.
+ */
+function FichasMenu({
+  docs,
+  activeIndex,
+  docTabLabel,
+  onSelect,
+}: {
+  docs: FileReference[];
+  activeIndex: number;
+  docTabLabel: (name: string) => string;
+  onSelect: (index: number) => void;
+}) {
+  const isActive = activeIndex >= 0 && activeIndex < docs.length;
+  const activeDoc = isActive ? docs[activeIndex] : undefined;
+
+  // Preserve each doc's original index (the TabsContent key) while grouping.
+  const grouped = SUPPORT_DOC_CATEGORY_ORDER.map((category) => ({
+    category,
+    items: docs
+      .map((doc, index) => ({ doc, index }))
+      .filter(({ doc }) => categorizeSupportDoc(doc.path) === category),
+  })).filter((group) => group.items.length > 0);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          data-fichas-menu
+          data-active={isActive || undefined}
+          className={`flex h-8 min-h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-sm whitespace-nowrap transition-colors ${
+            isActive
+              ? 'bg-muted text-foreground font-medium'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <User className="h-3.5 w-3.5" />
+          <span className="max-w-40 truncate">
+            {activeDoc ? docTabLabel(activeDoc.name) : 'Fichas'}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
+        {grouped.map((group, groupIndex) => {
+          const Icon = CATEGORY_ICON[group.category];
+          return (
+            <div key={group.category}>
+              {groupIndex > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuLabel className="text-muted-foreground text-xs">
+                {SUPPORT_DOC_CATEGORY_LABEL[group.category]}
+              </DropdownMenuLabel>
+              {group.items.map(({ doc, index }) => (
+                <DropdownMenuItem
+                  key={`doc-${index}`}
+                  data-fichas-item
+                  data-active={index === activeIndex || undefined}
+                  onSelect={() => onSelect(index)}
+                  className={index === activeIndex ? 'bg-accent text-accent-foreground' : ''}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span className="truncate">{docTabLabel(doc.name)}</span>
+                </DropdownMenuItem>
+              ))}
+            </div>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }

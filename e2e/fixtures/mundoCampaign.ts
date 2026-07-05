@@ -575,6 +575,19 @@ export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
         'muelle_7_battlemap.png': fixtureSvg('#4a6b8a'),
         'plano_ascii.md': '```\n#####\n#...#\n#####\n```\n',
     };
+    // Many support docs -> the "Fichas" dropdown groups them by folder. The
+    // base fixture already ships characters/kael_voss.md; add more characters
+    // and a threats/ folder so the flat-tabs overflow the tab strip and the
+    // grouped dropdown (Personajes / Amenazas / Mapas ASCII) has each section.
+    ((mundo.lugares as FileTree).porto_verne as FileTree).characters = {
+        'kael_voss.md': '# Kael Voss\n\nIntermediario de carga en los muelles.\n',
+        'zara_hollis.md': '# Zara Hollis\n\nPrestamista a la que Kael debe dinero.\n',
+        'capataz_vortex.md': '# Capataz de Vortex\n\nSupervisa el muelle 7 con mano dura.\n',
+    };
+    ((mundo.lugares as FileTree).porto_verne as FileTree).threats = {
+        'dron_aduanas.md': '# Dron de aduanas\n\nEscanea el casco al acoplar. Nivel 1.\n',
+        'cobrador_tetrad.md': '# Cobrador del Tetrad\n\nBusca al mensajero del paquete.\n',
+    };
     // Shop system: a tiendas/ subfolder inside the porto_verne place folder.
     ((mundo.lugares as FileTree).porto_verne as FileTree).tiendas = {
         'muelles.md': TIENDA_MUELLES,
