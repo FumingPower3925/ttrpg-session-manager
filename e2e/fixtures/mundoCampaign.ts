@@ -274,6 +274,56 @@ chaqueta de tres temporadas atras, sonrisa de vendedor cansado.
                 },
                 music: {},
             },
+            // A NODE-style playable place: its plan/ has NO act1 folder — content
+            // starts at act2 (acto2). Proves the ActRunner auto-selects the first
+            // act that actually exists and never renders a phantom acto1 slot.
+            jardin_que_exhala: {
+                'lugar.md': `---
+tipo: estructura
+nombre: Jardin que Exhala
+en: sistema_verne
+conocimiento: rumoreado
+etiquetas: [anomalia, predecesor]
+resumen: Camara viva que respira; el arco no la abre hasta el segundo acto.
+---
+Nadie describe igual lo que hay dentro. La entrada solo se abre a mitad del arco.
+`,
+                plan: {
+                    act2: {
+                        'acto2_umbral.md': `# ACTO 2 — EL UMBRAL SE ABRE
+
+## La camara respira por primera vez
+
+:::leer
+El aire sale tibio de las paredes y todo el jardin parece inhalar a la vez.
+Las luces palpitan al ritmo de algo que no veis.
+:::
+
+:::gm
+Este es el punto de entrada real del arco. No hay acto anterior que jugar.
+:::
+
+:::accion
+**Leer el pulso de la camara**
+- habilidad: Naturaleza
+- cd: 16
+- exito: entienden el ciclo de respiracion y cuando cruzar
+:::
+`,
+                    },
+                    act3: {
+                        'acto3_corazon.md': `# ACTO 3 — EL CORAZON
+
+## Descenso al nucleo latente
+
+:::leer
+Al fondo late una masa suspendida, atada por filamentos de luz.
+:::
+`,
+                    },
+                },
+                music: {},
+            },
         },
         facciones: {
             'vortex_logistics.md': `---

@@ -70,6 +70,7 @@ import {
 import { hasStatblock, parseThreatStatblock } from '@/lib/world/threatStatblock';
 import {
   ChevronDown,
+  Eye,
   FileText,
   Grid3x3,
   Image as ImageIcon,
@@ -131,6 +132,10 @@ export function ActRunner({ config, placeName, fsm, onClose, onActChange }: ActR
   );
   const [currentTab, setCurrentTab] = useState('plan');
   const [previousTab, setPreviousTab] = useState('plan');
+  // "Vista jugador": when ON, the Plan act view drops the GM-only rails
+  // (:::gm / :::accion / :::recurso) so the GM can screen-share a player-safe
+  // act. Off by default; resets each time the runner is opened (per-open state).
+  const [playerView, setPlayerView] = useState(false);
   const [planContent, setPlanContent] = useState<string | null>(null);
   // Threat -> combat handoff: bumping this signal appends prefilled NPC rows to
   // the mounted InitiativeTracker (the "Añadir al combate" one-tap add). The
@@ -318,7 +323,7 @@ abrir el acto.`;
           aria-label="Actos del lugar"
           className="flex min-w-0 flex-1 flex-wrap items-center gap-1"
         >
-          {visibleParts.map((part) => (
+          {visibleParts.map((part, index) => (
             <button
               key={part.id}
               type="button"
@@ -327,16 +332,41 @@ abrir el acto.`;
               aria-selected={part.id === currentPart?.id}
               onClick={() => handlePartChange(part)}
               // min-h-11 = 44px tap target (M5 sweep).
-              className={`min-h-11 rounded-md px-2.5 py-1 text-sm transition-colors ${
+              className={`flex min-h-11 items-center gap-1.5 rounded-md px-2.5 py-1 text-sm transition-colors ${
                 part.id === currentPart?.id
                   ? 'bg-muted font-medium'
                   : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               {part.name}
+              {/* "ENTRADA" flags where to start: node places have no acto1, so
+                  the first available act (e.g. acto2) is the real entry point. */}
+              {index === 0 && (
+                <span
+                  data-act-entry
+                  className="rounded-sm bg-primary/15 px-1 py-0.5 text-[10px] font-semibold tracking-wide text-primary uppercase"
+                >
+                  Entrada
+                </span>
+              )}
             </button>
           ))}
         </div>
+        {/* Vista jugador: hide GM-only rails so the Plan act is safe to screen-share. */}
+        <Button
+          variant={playerView ? 'default' : 'outline'}
+          size="sm"
+          data-player-view
+          data-active={playerView || undefined}
+          aria-pressed={playerView}
+          onClick={() => setPlayerView((v) => !v)}
+          aria-label="Vista jugador"
+          title="Oculta las notas del GM para compartir pantalla"
+          className="min-h-11 whitespace-nowrap"
+        >
+          <Eye />
+          Vista jugador
+        </Button>
         <Button
           variant="outline"
           size="sm"
@@ -426,7 +456,11 @@ abrir el acto.`;
           <div className="min-h-0 flex-1 overflow-hidden">
             <TabsContent value="plan" className="m-0 h-full data-[state=active]:flex">
               {currentPart.planFile ? (
-                <RunnerMarkdown file={currentPart.planFile} loadContent={loadContent} />
+                <RunnerMarkdown
+                  file={currentPart.planFile}
+                  loadContent={loadContent}
+                  playerView={playerView}
+                />
               ) : (
                 <div className="flex h-full flex-1 items-center justify-center">
                   <p className="text-muted-foreground">Este acto no tiene archivo de plan</p>
@@ -485,6 +519,7 @@ function RunnerMarkdown({
   loadContent,
   isThreat = false,
   onAddToCombat,
+  playerView = false,
 }: {
   file: FileReference;
   loadContent: (file: FileReference) => Promise<string>;
@@ -492,6 +527,8 @@ function RunnerMarkdown({
   isThreat?: boolean;
   /** Adds N combatants parsed from `content` to the initiative tracker. */
   onAddToCombat?: (content: string, fallbackName: string, count: number) => void;
+  /** Player-safe act view: drops the GM-only rails from ActPanels. */
+  playerView?: boolean;
 }) {
   const [content, setContent] = useState<string | null>(null);
 
@@ -520,7 +557,7 @@ function RunnerMarkdown({
   const showAdd = isThreat && onAddToCombat !== undefined && hasStatblock(content);
 
   const body = isActFormat(content) ? (
-    <ActPanels content={content} />
+    <ActPanels content={content} playerView={playerView} />
   ) : (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-4xl p-6">

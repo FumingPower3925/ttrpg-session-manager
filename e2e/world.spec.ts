@@ -1241,6 +1241,93 @@ test.describe('World Mode - ActRunner', () => {
             .poll(() => readOPFSFile(page, journalPath))
             .toMatch(/- \[\d{2}:\d{2}\] nota: Acto cerrado: Part 1 @ Porto Verne/);
     });
+
+    test('Vista jugador hides the GM answer-key rails, then restores them', async ({ page }) => {
+        // CON_ESTADO adds an image to porto_verne, so we can assert the player-safe
+        // media survives the toggle while the GM rails vanish.
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        const readAloud = runner.getByText('Las luces del muelle se encienden en fila', {
+            exact: false,
+        });
+        const gmAnswerKey = runner.getByText('Acto de apertura del arco', { exact: false });
+        const accionCard = runner.getByText('Localizar a Kael Voss', { exact: false });
+        // A SECTION-scoped :::gm body (bare :::gm under the numbered "## 2. El
+        // favor de Kael" heading) — this renders inline in the CENTER column, not
+        // in the left rail, so it must be guarded separately or it leaks.
+        const gmSectionNote = runner.getByText('Kael sube la paga a 500 creditos', {
+            exact: false,
+        });
+
+        // Default GM view: read-aloud AND the GM-only rails/notes are present.
+        await expect(readAloud).toBeVisible();
+        await expect(runner.getByText('Recordatorios del acto')).toBeVisible();
+        await expect(gmAnswerKey).toBeVisible();
+        await expect(accionCard).toBeVisible();
+        await expect(gmSectionNote).toBeVisible();
+
+        const toggle = runner.locator('[data-player-view]');
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+        // Toggle Vista jugador ON: the :::gm answer-key + :::accion cards must be
+        // gone from the DOM entirely, while the :::leer read-aloud remains.
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(readAloud).toBeVisible();
+        await expect(gmAnswerKey).toHaveCount(0);
+        await expect(accionCard).toHaveCount(0);
+        await expect(runner.getByText('Recordatorios del acto')).toHaveCount(0);
+        // The section-scoped :::gm note must be gone from the DOM too.
+        await expect(gmSectionNote).toHaveCount(0);
+
+        // The Plan tab strip (player-safe media viewers) is still mounted.
+        await expect(runner.locator('[role="tab"]').filter({ hasText: 'Plan' })).toBeVisible();
+
+        // Toggle OFF restores the full GM view byte-for-byte.
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+        await expect(gmAnswerKey).toBeVisible();
+        await expect(accionCard).toBeVisible();
+        await expect(runner.getByText('Recordatorios del acto')).toBeVisible();
+        await expect(gmSectionNote).toBeVisible();
+    });
+
+    test('a node place whose first act is acto2 auto-selects it (no phantom acto1)', async ({
+        page,
+    }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+
+        // jardin_que_exhala is a system-tier child of sistema_verne; its plan/
+        // starts at act2 (no act1 folder at all).
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await page.locator('[data-entity-id="jardin_que_exhala"]').click();
+        await expect(page.locator('[data-entity-panel="jardin_que_exhala"]')).toBeVisible();
+
+        await page.locator('[data-play-act]').click();
+        const runner = page.locator('[data-act-runner]');
+        await expect(runner).toBeVisible();
+
+        // No phantom acto1 tab, and the first real act (Acto2) is the selected one.
+        await expect(runner.locator('[data-act-part*="Acto1"]')).toHaveCount(0);
+        const firstTab = runner.locator('[data-act-part="Acto2 Umbral"]');
+        await expect(firstTab).toBeVisible();
+        await expect(firstTab).toHaveAttribute('aria-selected', 'true');
+        // Its ENTRADA badge flags "start here"; act3 has none.
+        await expect(firstTab.locator('[data-act-entry]')).toBeVisible();
+        await expect(
+            runner.locator('[data-act-part="Acto3 Corazon"] [data-act-entry]')
+        ).toHaveCount(0);
+
+        // The auto-selected act's read-aloud renders (proves acto2 is live).
+        await expect(runner.getByText('El aire sale tibio de las paredes', { exact: false })).toBeVisible();
+    });
 });
 
 // ── World-level music (mundo/musica/ -> bottom-left audio dock) ─────────────

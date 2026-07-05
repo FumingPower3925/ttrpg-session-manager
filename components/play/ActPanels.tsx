@@ -117,9 +117,23 @@ interface ActPanelsProps {
   content: string;
   initialScrollTop?: number;
   onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
+  /**
+   * Player-safe view (screen-share). When true, the GM-only rails are omitted
+   * from the DOM entirely — no :::gm reminders (left), no :::accion cards
+   * (right), and no :::recurso cue chips / action-count hints in the center —
+   * leaving only the :::leer / :::info read-aloud flow the players may see.
+   * Default false → the full 3-panel GM view (byte-identical to before). /play
+   * never passes this, so /play is unaffected.
+   */
+  playerView?: boolean;
 }
 
-export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanelsProps) {
+export function ActPanels({
+  content,
+  initialScrollTop = 0,
+  onScroll,
+  playerView = false,
+}: ActPanelsProps) {
   const model = useMemo(() => parseAct(content), [content]);
   const centerRef = useRef<HTMLDivElement>(null);
   const ticking = useRef(false);
@@ -155,9 +169,13 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
 
   // Publish the actions-rail width so fixed-position widgets (e.g. the timer) can
   // shift clear of it. Open = 20rem (w-80), collapsed = 2.25rem (w-9), unmounted = 0.
+  // Player view has no rail at all, so it publishes 0.
   useEffect(() => {
-    document.documentElement.style.setProperty('--actions-rail-w', rightOpen ? '20rem' : '2.25rem');
-  }, [rightOpen]);
+    document.documentElement.style.setProperty(
+      '--actions-rail-w',
+      playerView ? '0px' : rightOpen ? '20rem' : '2.25rem'
+    );
+  }, [rightOpen, playerView]);
   useEffect(
     () => () => {
       document.documentElement.style.setProperty('--actions-rail-w', '0px');
@@ -183,8 +201,9 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* LEFT RAIL — persistent act-level reminders */}
-      {leftOpen ? (
+      {/* LEFT RAIL — persistent act-level reminders (GM-only; omitted in player view) */}
+      {!playerView &&
+        (leftOpen ? (
         <aside className="w-72 shrink-0 border-r bg-muted/20 flex flex-col">
           <div className="flex items-center justify-between px-3 py-2 border-b">
             <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
@@ -206,15 +225,15 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
             )}
           </div>
         </aside>
-      ) : (
-        <button
-          onClick={() => setLeftOpen(true)}
-          title="Recordatorios del acto"
-          className="w-9 shrink-0 border-r bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
-        >
-          <PanelLeftOpen className="h-4 w-4" />
-        </button>
-      )}
+        ) : (
+          <button
+            onClick={() => setLeftOpen(true)}
+            title="Recordatorios del acto"
+            className="w-9 shrink-0 border-r bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
+          >
+            <PanelLeftOpen className="h-4 w-4" />
+          </button>
+        ))}
 
       {/* CENTER — the scene flow: read-aloud + GM guidance inline, in order */}
       <div ref={centerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
@@ -236,7 +255,7 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
                 <h2 className={s.isSection ? 'text-xl font-bold border-b pb-1' : 'text-lg font-semibold text-muted-foreground'}>
                   {s.title}
                 </h2>
-                {resources.length > 0 && (
+                {!playerView && resources.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {resources.map((b, i) => (
                       <ResourceChip key={`r-${i}`} block={b} />
@@ -259,11 +278,15 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
                       );
                     const b = item.block;
                     if (b.type === 'recurso' || b.type === 'accion') return null;
-                    if (b.type === 'gm') return <GmNote key={i} block={b} />;
+                    // Section-scoped :::gm notes are GM answer-key too — a bare
+                    // :::gm under a numbered heading parses as a section block and
+                    // renders inline here. In player view they must be truly
+                    // absent from the DOM so nothing leaks on the shared screen.
+                    if (b.type === 'gm') return playerView ? null : <GmNote key={i} block={b} />;
                     return <ReadAloud key={i} block={b} />;
                   })}
                 </div>
-                {actionCount > 0 && (
+                {!playerView && actionCount > 0 && (
                   <p className="mt-2 text-xs text-muted-foreground italic flex items-center gap-1">
                     <Dice5 className="h-3 w-3" /> {actionCount} acción(es) en el panel derecho →
                   </p>
@@ -275,8 +298,9 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
         </div>
       </div>
 
-      {/* RIGHT RAIL — actions for the section in view (+ parents + act) */}
-      {rightOpen ? (
+      {/* RIGHT RAIL — actions for the section in view (GM-only; omitted in player view) */}
+      {!playerView &&
+        (rightOpen ? (
         <aside className="w-80 shrink-0 border-l bg-muted/20 flex flex-col">
           <div className="flex items-center justify-between px-3 py-2 border-b">
             <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground truncate">
@@ -294,15 +318,15 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
             )}
           </div>
         </aside>
-      ) : (
-        <button
-          onClick={() => setRightOpen(true)}
-          title="Acciones"
-          className="w-9 shrink-0 border-l bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
-        >
-          <PanelRightOpen className="h-4 w-4" />
-        </button>
-      )}
+        ) : (
+          <button
+            onClick={() => setRightOpen(true)}
+            title="Acciones"
+            className="w-9 shrink-0 border-l bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
+          >
+            <PanelRightOpen className="h-4 w-4" />
+          </button>
+        ))}
     </div>
   );
 }
