@@ -926,14 +926,48 @@ test.describe('World Mode - Tiendas', () => {
         await expect(shop).toContainText('Suministros del Muelle 7');
         await expect(shop).toContainText('Kael Voss'); // shopkeeper chip
 
-        // Buy the unlimited item: creditos drop by 40 (1240 -> 1200).
+        // The price shows as an editable input defaulting to the base (40).
+        await expect(
+            shop.locator('[data-shop-price-input="Raciones de campo"]')
+        ).toHaveValue('40');
+
+        // Buy the unlimited item at base: creditos drop by 40 (1240 -> 1200).
         await shop.locator('[data-shop-buy="Raciones de campo"]').click();
         await expect(page.locator('[data-party-bar] [data-creditos="1200"]')).toBeVisible();
 
-        // Journal carries the gasto with the compra comentario.
+        // Journal carries the gasto with the compra comentario (no negociado tag
+        // at base price).
         await expect
             .poll(() => readOPFSFile(page, journalPath))
-            .toMatch(/- \[\d{2}:\d{2}\] gasto: 40 \| compra: Raciones de campo/);
+            .toMatch(/- \[\d{2}:\d{2}\] gasto: 40 \| compra: Raciones de campo(?! \(negociado)/);
+    });
+
+    test('negotiate a lower price: Comprar charges the edited amount', async ({ page }) => {
+        const journalPath = await startSession(page);
+        await openPortoVernePanel(page);
+        await page.locator('[data-shop-link="muelles"]').click();
+        const shop = page.locator('[data-shop-panel="muelles"]');
+        await expect(shop).toBeVisible();
+
+        // Negotiate the base 40 down to 25 in the price input.
+        const priceInput = shop.locator('[data-shop-price-input="Raciones de campo"]');
+        await priceInput.fill('25');
+        // The base hint surfaces the deviation.
+        await expect(shop.locator('[data-shop-price-base]').first()).toContainText('base 40');
+
+        // Comprar charges 25: creditos drop by 25 (1240 -> 1215).
+        await shop.locator('[data-shop-buy="Raciones de campo"]').click();
+        await expect(page.locator('[data-party-bar] [data-creditos="1215"]')).toBeVisible();
+
+        // Journal records the negotiated gasto with the base annotation.
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(
+                /- \[\d{2}:\d{2}\] gasto: 25 \| compra: Raciones de campo \(negociado, base 40\)/
+            );
+
+        // After a buy the input resets back to the base price.
+        await expect(priceInput).toHaveValue('40');
     });
 
     test('a stock-1 item blocks the second purchase', async ({ page }) => {

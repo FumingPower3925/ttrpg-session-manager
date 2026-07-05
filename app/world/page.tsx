@@ -217,7 +217,9 @@
  *     (an effect), so a shop never lingers over the wrong place; a re-scan that
  *     drops the id closes the panel too (openShop resolves live from
  *     model.tiendas). Back clears selectedShopId -> the place panel returns.
- *   - onBuy is session-gated: it journals gasto(precio, `compra: <articulo>`),
+ *   - onBuy is session-gated: it journals gasto(precio, `compra: <articulo>`)
+ *     at the NEGOTIATED price (the comentario gains `(negociado, base <n>)` when
+ *     the GM edited it away from item.precio),
  *     decrements finite stock IN MEMORY (touchModel re-renders; unlimited stock
  *     = null never decrements — the market never runs out) and toasts
  *     `−<precio> cr · <articulo>` with an undo action. No session -> the log is
@@ -2121,18 +2123,24 @@ export default function WorldPage() {
    * session the log is rejected and the GM sees the hint.
    */
   const handleBuy = useCallback(
-    (item: ShopItem) => {
+    (item: ShopItem, precio: number) => {
       const store = usePartyStore.getState();
       if (!store.session.active) {
         toast.error('Inicia sesión para comprar');
         return;
       }
       if (item.stock === 0) return;
-      if (!store.actions.log(makeEntry.gasto(item.precio, `compra: ${item.articulo}`))) return;
+      // Guard against a NaN/negative negotiated price ever reaching the journal.
+      if (!Number.isFinite(precio) || precio < 0) return;
+      const comentario =
+        precio === item.precio
+          ? `compra: ${item.articulo}`
+          : `compra: ${item.articulo} (negociado, base ${item.precio})`;
+      if (!store.actions.log(makeEntry.gasto(precio, comentario))) return;
       if (item.stock !== null) item.stock -= 1;
       touchModel();
       rederiveLeads(); // creditos>=N requisitos track the live balance
-      toast.success(`−${item.precio} cr · ${item.articulo}`, { action: undoToastAction });
+      toast.success(`−${precio} cr · ${item.articulo}`, { action: undoToastAction });
     },
     [touchModel, rederiveLeads, undoToastAction]
   );
@@ -2951,7 +2959,6 @@ export default function WorldPage() {
             onMedidor={handleMedidor}
             onDescanso={handleDescanso}
             descansoDisabled={travel !== null}
-            onPista={() => uiActions.setPanelTab('pistas')}
             onEvento={() => openEventDrawer('estancia', usePartyStore.getState().ubicacion)}
             eventoDisabled={travel !== null}
             onNota={handleNota}

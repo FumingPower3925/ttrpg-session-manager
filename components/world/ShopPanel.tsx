@@ -12,13 +12,23 @@
  * session-gated: `enabled=false` disables every button with the hint tooltip;
  * an item at stock 0 is also disabled (agotado). Unlimited stock (null) renders
  * as an infinity mark and never sells out.
+ *
+ * The price is NEGOTIABLE: each row shows an editable numeric input
+ * (data-shop-price-input) defaulting to item.precio; the GM can adjust it and
+ * Comprar charges the edited amount. A blank/NaN/negative input disables
+ * Comprar (never journals NaN); zero is allowed (a freebie). Edits reset when
+ * the shop changes or after a successful buy (keyed by the shop id + a bump
+ * counter). When the edited price deviates from the base a subtle "base <n>"
+ * hint appears.
  */
 
+import { useEffect, useState } from 'react';
 import type { Shop, ShopItem } from '@/types/world';
 import { MarkdownViewer } from '@/components/play/MarkdownViewer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ArrowLeft, ShoppingCart, User } from 'lucide-react';
 
@@ -28,8 +38,11 @@ interface ShopPanelProps {
   pnjNombre?: string;
   /** Back to the place that owns the shop. */
   onBack: () => void;
-  /** Buy one unit of `item` (page journals the gasto + decrements stock). */
-  onBuy: (item: ShopItem) => void;
+  /**
+   * Buy one unit of `item` at `precio` (the negotiated amount, which may differ
+   * from item.precio). The page journals the gasto + decrements stock.
+   */
+  onBuy: (item: ShopItem, precio: number) => void;
   /** False without an active session: every Comprar disabled with a hint. */
   enabled: boolean;
 }
@@ -40,8 +53,27 @@ function stockLabel(stock: number | null): string {
   return stock === null ? '∞' : String(stock);
 }
 
+/** Parse an edited price field: a non-negative finite integer, else null. */
+function parsePrice(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return Math.trunc(value);
+}
+
 export function ShopPanel({ shop, pnjNombre, onBack, onBuy, enabled }: ShopPanelProps) {
   const hasBody = shop.body.trim().length > 0;
+
+  /**
+   * Per-row edited price strings, keyed by item index. Reset whenever the shop
+   * changes (a new id remounts the map values). Cleared for a row after a
+   * successful buy so the field falls back to the item's base price.
+   */
+  const [edited, setEdited] = useState<Record<number, string>>({});
+  useEffect(() => {
+    setEdited({});
+  }, [shop.id]);
 
   return (
     <Card className="flex h-full flex-col gap-0 overflow-hidden py-0" data-shop-panel={shop.id}>
@@ -86,12 +118,18 @@ export function ShopPanel({ shop, pnjNombre, onBack, onBuy, enabled }: ShopPanel
             <ul className="flex flex-col gap-1.5">
               {shop.items.map((item, index) => {
                 const agotado = item.stock === 0;
-                const buyDisabled = !enabled || agotado;
+                const raw = edited[index] ?? String(item.precio);
+                const precio = parsePrice(raw);
+                const precioInvalido = precio === null;
+                const negociado = precio !== null && precio !== item.precio;
+                const buyDisabled = !enabled || agotado || precioInvalido;
                 const title = !enabled
                   ? DISABLED_TITLE
                   : agotado
                     ? 'Sin existencias'
-                    : undefined;
+                    : precioInvalido
+                      ? 'Introduce un precio válido'
+                      : undefined;
                 return (
                   <li
                     key={`${item.articulo}-${index}`}
@@ -111,9 +149,32 @@ export function ShopPanel({ shop, pnjNombre, onBack, onBuy, enabled }: ShopPanel
                         <p className="truncate text-xs text-muted-foreground">{item.nota}</p>
                       )}
                     </div>
-                    <span className="shrink-0 tabular-nums" data-shop-price>
-                      {item.precio.toLocaleString('es-ES')} cr
-                    </span>
+                    {/* Editable / negotiable price: the input holds the current
+                        per-row amount; the base hint shows the deviation. */}
+                    <div className="flex shrink-0 flex-col items-end gap-0.5">
+                      <span className="flex items-center gap-1" data-shop-price>
+                        <Input
+                          data-shop-price-input={item.articulo}
+                          inputMode="numeric"
+                          value={raw}
+                          onChange={(event) =>
+                            setEdited((prev) => ({ ...prev, [index]: event.target.value }))
+                          }
+                          aria-label={`Precio de ${item.articulo}`}
+                          aria-invalid={precioInvalido || undefined}
+                          className="h-8 w-[6ch] px-1.5 text-right tabular-nums"
+                        />
+                        <span className="text-xs text-muted-foreground">cr</span>
+                      </span>
+                      {negociado && (
+                        <span
+                          className="text-[10px] leading-none text-muted-foreground tabular-nums"
+                          data-shop-price-base
+                        >
+                          base {item.precio.toLocaleString('es-ES')}
+                        </span>
+                      )}
+                    </div>
                     {/* The disabled wrapper keeps the tooltip (Button sets
                         pointer-events-none when disabled). */}
                     <span title={title} className="shrink-0">
@@ -123,7 +184,16 @@ export function ShopPanel({ shop, pnjNombre, onBack, onBuy, enabled }: ShopPanel
                         variant="secondary"
                         data-shop-buy={item.articulo}
                         disabled={buyDisabled}
-                        onClick={() => onBuy(item)}
+                        onClick={() => {
+                          if (precio === null) return;
+                          onBuy(item, precio);
+                          // Reset the row back to its base price after a buy.
+                          setEdited((prev) => {
+                            const next = { ...prev };
+                            delete next[index];
+                            return next;
+                          });
+                        }}
                         className="min-h-11"
                       >
                         <ShoppingCart aria-hidden />

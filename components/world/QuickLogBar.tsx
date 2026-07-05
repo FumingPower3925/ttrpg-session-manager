@@ -5,8 +5,6 @@
  * buttons; every logging path is at most 2 interactions. Pure and
  * props-driven: the page owns the store and passes callbacks. Disabled as a
  * whole until the session is active, with these exceptions:
- *   - «Pista» only switches the right panel to the Pistas tab (it logs
- *     nothing), so it stays enabled even without a session — same as the tab.
  *   - «Descansar» and «Evento» additionally disable MID-TRAVEL: the stepper
  *     owns day advancement and the viaje event draw there.
  *   - «Música» and «Combate» are NEVER session-gated (feature 3): music and
@@ -38,7 +36,6 @@ import {
   Rocket,
   StickyNote,
   Swords,
-  Target,
   Zap,
 } from 'lucide-react';
 
@@ -81,8 +78,6 @@ interface QuickLogBarProps {
   onDescanso: (dias: number) => void;
   /** True mid-travel: the stepper owns day advancement then. */
   descansoDisabled?: boolean;
-  /** Opens the leads tab/dialog (page-owned). Never session-gated: logs nothing. */
-  onPista: () => void;
   /**
    * Opens the estancia EventDrawer (page-owned). Enabled whenever the session
    * runs — with no applicable tables the drawer shows its empty state instead
@@ -117,7 +112,6 @@ export function QuickLogBar({
   onMedidor,
   onDescanso,
   descansoDisabled = false,
-  onPista,
   onEvento,
   eventoDisabled = false,
   onNota,
@@ -275,18 +269,6 @@ export function QuickLogBar({
           onClick={() => setOpenPopover(openPopover === 'descanso' ? null : 'descanso')}
         />
       </PopoverAnchor>
-
-      {/* Pista never logs anything — it stays available as a shortcut to the tab. */}
-      <ActionButton
-        id="pista"
-        icon={Target}
-        label="Pista"
-        enabled
-        onClick={() => {
-          setOpenPopover(null);
-          onPista();
-        }}
-      />
 
       <ActionButton
         id="evento"
