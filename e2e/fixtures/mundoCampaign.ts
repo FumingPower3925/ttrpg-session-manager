@@ -259,6 +259,11 @@ El paquete conecta con la pista deuda_kael_zara. Si los PJ negocian bien
 - efecto: activa la pista deuda_kael_zara
 - recompensa: 400 creditos al entregar
 :::
+
+:::efecto
+- pista: rumor_lejano activa | el eco del nodo se enciende
+- ganancia: 150 | pago inicial de Kael
+:::
 `,
                 },
                 characters: {

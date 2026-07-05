@@ -38,11 +38,18 @@
  * closing nota names the act the GM actually ended on.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FileReference, Part, SessionConfig } from '@/types';
+import type { EventEffect } from '@/types/world';
 import { FileSystemManager } from '@/lib/fileSystem';
 import { AudioManager } from '@/lib/audioManager';
 import { isActFormat } from '@/lib/actFormat';
+import { extractEfectos } from '@/lib/world/eventEngine';
+import {
+  effectLabel,
+  splitComentario,
+  stripEfectoBlocks,
+} from '@/components/world/EventDrawer';
 import { ActPanels } from '@/components/play/ActPanels';
 import { MarkdownViewer } from '@/components/play/MarkdownViewer';
 import { AudioControls } from '@/components/play/AudioControls';
@@ -69,6 +76,7 @@ import {
 } from '@/lib/world/supportDocCategory';
 import { hasStatblock, parseThreatStatblock } from '@/lib/world/threatStatblock';
 import {
+  Check,
   ChevronDown,
   Eye,
   FileText,
@@ -77,6 +85,7 @@ import {
   Map as MapIcon,
   Minus,
   Plus,
+  Sparkles,
   Swords,
   User,
   X,
@@ -118,9 +127,27 @@ interface ActRunnerProps {
   onClose: () => void;
   /** Fired with the part name whenever the GM switches acts. */
   onActChange?: (actName: string) => void;
+  /**
+   * Apply ONE of the current act's `:::efecto` state-transitions to the party
+   * journal — the SAME page handler wired to EventDrawer's onApplyEffect
+   * (makeEntry.* → partyStore log). Absent ⇒ no "Efectos del acto" panel.
+   * Returns false when the apply was rejected (no session/model, log refused)
+   * so the button is NOT ticked off for an un-journaled transition.
+   */
+  onApplyEffect?: (effect: EventEffect) => boolean | void;
+  /** Session-gate for the apply buttons (disabled + hint when inactive). */
+  sessionActive?: boolean;
 }
 
-export function ActRunner({ config, placeName, fsm, onClose, onActChange }: ActRunnerProps) {
+export function ActRunner({
+  config,
+  placeName,
+  fsm,
+  onClose,
+  onActChange,
+  onApplyEffect,
+  sessionActive = false,
+}: ActRunnerProps) {
   // Same visibility rule as play: trunk parts + the active path's parts.
   const visibleParts = config.parts.filter(
     (p) => p.pathId == null || p.pathId === (config.activePathId ?? null)
@@ -137,6 +164,10 @@ export function ActRunner({ config, placeName, fsm, onClose, onActChange }: ActR
   // act. Off by default; resets each time the runner is opened (per-open state).
   const [playerView, setPlayerView] = useState(false);
   const [planContent, setPlanContent] = useState<string | null>(null);
+  // "Efectos del acto": indexes into the current act's parsed :::efecto blocks
+  // already applied (checks off + disables the button). Reset per act — a new
+  // part's transitions start un-applied.
+  const [appliedActEfectos, setAppliedActEfectos] = useState<number[]>([]);
   // Threat -> combat handoff: bumping this signal appends prefilled NPC rows to
   // the mounted InitiativeTracker (the "Añadir al combate" one-tap add). The
   // toast is a brief confirmation of what got added.
@@ -153,6 +184,15 @@ export function ActRunner({ config, placeName, fsm, onClose, onActChange }: ActR
 
   const currentPart: Part | undefined =
     visibleParts.find((p) => p.id === currentPartId) ?? visibleParts[0];
+
+  // The current act's declared state-transitions: parse its plan's :::efecto
+  // blocks with the SAME grammar the event scanner uses (extractEfectos), so
+  // the GM can one-tap apply them instead of hand-performing each across three
+  // panels mid-narration. Empty when the act has no :::efecto (no panel).
+  const actEfectos: EventEffect[] = useMemo(
+    () => (planContent ? extractEfectos(planContent.split(/\r?\n/)).efectos : []),
+    [planContent]
+  );
 
   // Audio teardown belongs to unmount (Cerrar just asks the page to unmount
   // us), so a parent-driven unmount — world reset, re-scan — fades too. The
@@ -239,6 +279,25 @@ abrir el acto.`;
       cancelled = true;
     };
   }, [currentPart, audioManager, loadContent]);
+
+  // Applied-effect ticks are per-act: switching acts starts the new act's
+  // transitions un-applied (keyed on the resolved part id so the auto-selected
+  // first act resets too, not just explicit clicks).
+  const currentPartKey = currentPart?.id ?? null;
+  useEffect(() => {
+    setAppliedActEfectos([]);
+  }, [currentPartKey]);
+
+  const handleApplyActEfecto = useCallback(
+    (effect: EventEffect, index: number) => {
+      if (!onApplyEffect || !sessionActive) return;
+      // Only tick the button off if the effect was actually journaled — a
+      // rejected apply (false) must stay un-applied so nothing silently reverts.
+      if (onApplyEffect(effect) === false) return;
+      setAppliedActEfectos((prev) => (prev.includes(index) ? prev : [...prev, index]));
+    },
+    [onApplyEffect, sessionActive]
+  );
 
   const handlePartChange = useCallback(
     (part: Part) => {
@@ -454,7 +513,19 @@ abrir el acto.`;
           )}
 
           <div className="min-h-0 flex-1 overflow-hidden">
-            <TabsContent value="plan" className="m-0 h-full data-[state=active]:flex">
+            <TabsContent
+              value="plan"
+              className="m-0 h-full data-[state=active]:flex data-[state=active]:flex-col"
+            >
+              {/* GM-only: hidden under Vista jugador, like the :::gm rails. */}
+              {!playerView && actEfectos.length > 0 && onApplyEffect && (
+                <ActEfectosPanel
+                  efectos={actEfectos}
+                  applied={appliedActEfectos}
+                  sessionActive={sessionActive}
+                  onApply={handleApplyActEfecto}
+                />
+              )}
               {currentPart.planFile ? (
                 <RunnerMarkdown
                   file={currentPart.planFile}
@@ -513,6 +584,64 @@ abrir el acto.`;
   );
 }
 
+/**
+ * "Efectos del acto" — GM-only strip at the top of the Plan tab listing the
+ * current act's declared `:::efecto` state-transitions as one-tap apply
+ * buttons (mirrors EventDrawer's Efectos button list). Each applied button
+ * checks off + disables. Session-gated: with no active session the buttons are
+ * disabled and carry the "Inicia sesión para aplicar" hint (like QuickLogBar),
+ * so an un-logged transition can never silently revert. Rendered only when the
+ * act HAS efectos (the caller guards that + Vista jugador).
+ */
+function ActEfectosPanel({
+  efectos,
+  applied,
+  sessionActive,
+  onApply,
+}: {
+  efectos: EventEffect[];
+  applied: number[];
+  sessionActive: boolean;
+  onApply: (effect: EventEffect, index: number) => void;
+}) {
+  return (
+    <div data-act-efectos className="shrink-0 border-b bg-muted/20 px-4 py-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <Sparkles className="h-3 w-3" aria-hidden />
+        Efectos del acto
+        {!sessionActive && (
+          <span data-act-efectos-hint className="ml-1 normal-case font-normal">
+            · Inicia sesión para aplicar
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {efectos.map((efecto, index) => {
+          const isApplied = applied.includes(index);
+          const { comentario } = splitComentario(efecto.value);
+          return (
+            <Button
+              key={index}
+              type="button"
+              variant={isApplied ? 'secondary' : 'outline'}
+              size="sm"
+              disabled={isApplied || !sessionActive}
+              title={!sessionActive ? 'Inicia sesión para aplicar' : comentario}
+              data-act-efecto={index}
+              onClick={() => onApply(efecto, index)}
+              // min-h-11 = 44px tap target (M5 sweep).
+              className="min-h-11"
+            >
+              {isApplied && <Check className="text-emerald-600 dark:text-emerald-400" />}
+              {effectLabel(efecto)}
+            </Button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** Markdown pane: `:::` act format -> ActPanels 3-panel view, else MarkdownViewer. */
 function RunnerMarkdown({
   file,
@@ -556,8 +685,12 @@ function RunnerMarkdown({
   // render exactly as before (no header).
   const showAdd = isThreat && onAddToCombat !== undefined && hasStatblock(content);
 
+  // `:::efecto` blocks (the act's declared state-transitions, surfaced as the
+  // GM-only "Efectos del acto" apply buttons) are not an actFormat block type —
+  // strip them so they never render as stray prose in the act view (mirrors
+  // EventDrawer's stripEfectoBlocks before parseAct).
   const body = isActFormat(content) ? (
-    <ActPanels content={content} playerView={playerView} />
+    <ActPanels content={stripEfectoBlocks(content)} playerView={playerView} />
   ) : (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-4xl p-6">

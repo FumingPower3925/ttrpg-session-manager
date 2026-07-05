@@ -1328,6 +1328,107 @@ test.describe('World Mode - ActRunner', () => {
         // The auto-selected act's read-aloud renders (proves acto2 is live).
         await expect(runner.getByText('El aire sale tibio de las paredes', { exact: false })).toBeVisible();
     });
+
+    // ── "Efectos del acto" — one-tap apply of an act's :::efecto transitions ──
+    //
+    // acto1_regreso.md declares a :::efecto block (pista rumor_lejano
+    // rumor->activa + ganancia 150). The panel surfaces those as apply buttons;
+    // applying them journals the transition (so it can't silently revert).
+
+    test('Efectos del acto: apply a :::efecto transition, button checks off, raw text hidden', async ({
+        page,
+    }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        // A session must be active for the apply buttons to journal.
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        const journalPath = `mundo/diario/${journalName}`;
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        // The Efectos del acto panel renders both transitions as apply buttons.
+        const panel = runner.locator('[data-act-efectos]');
+        await expect(panel).toBeVisible();
+        await expect(panel).toContainText('Efectos del acto');
+        const pistaBtn = panel.locator('[data-act-efecto="0"]');
+        const gananciaBtn = panel.locator('[data-act-efecto="1"]');
+        await expect(pistaBtn).toBeEnabled();
+        await expect(gananciaBtn).toContainText('+150 créditos');
+
+        // The raw :::efecto source is NOT in the act view (stripped before ActPanels).
+        await expect(runner).not.toContainText(':::efecto');
+        await expect(runner).not.toContainText('rumor->activa');
+
+        // Apply the ganancia: party bar credits jump 1240 -> 1390 and it journals.
+        await gananciaBtn.click();
+        await expect(page.locator('[data-party-bar] [data-creditos="1390"]')).toBeVisible();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] ganancia: 150/);
+        // The applied button checks off + disables (can't double-apply).
+        await expect(gananciaBtn).toBeDisabled();
+
+        // Apply the pista transition: journals a pista line rumor -> activa.
+        await pistaBtn.click();
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] pista: rumor_lejano rumor->activa/);
+        await expect(pistaBtn).toBeDisabled();
+    });
+
+    test('Efectos del acto: hidden under Vista jugador and gated without a session', async ({
+        page,
+    }) => {
+        // No estado fixture -> no active session -> the apply buttons are gated.
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        const panel = runner.locator('[data-act-efectos]');
+        await expect(panel).toBeVisible();
+        // Session-gated: the hint shows and each apply button is disabled.
+        await expect(panel.locator('[data-act-efectos-hint]')).toBeVisible();
+        await expect(panel.locator('[data-act-efecto="0"]')).toBeDisabled();
+        await expect(panel.locator('[data-act-efecto="1"]')).toBeDisabled();
+
+        // Vista jugador is GM-only: the panel must vanish from the DOM entirely.
+        const toggle = runner.locator('[data-player-view]');
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(runner.locator('[data-act-efectos]')).toHaveCount(0);
+
+        // Toggling back off restores it.
+        await toggle.click();
+        await expect(runner.locator('[data-act-efectos]')).toBeVisible();
+    });
+
+    test('an act WITHOUT a :::efecto block shows no Efectos del acto panel', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+
+        // jardin_que_exhala's acto2 plan carries no :::efecto block.
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await page.locator('[data-entity-id="jardin_que_exhala"]').click();
+        await expect(page.locator('[data-entity-panel="jardin_que_exhala"]')).toBeVisible();
+        await page.locator('[data-play-act]').click();
+
+        const runner = page.locator('[data-act-runner]');
+        await expect(runner).toBeVisible();
+        await expect(runner.getByText('El aire sale tibio de las paredes', { exact: false })).toBeVisible();
+        await expect(runner.locator('[data-act-efectos]')).toHaveCount(0);
+    });
 });
 
 // ── World-level music (mundo/musica/ -> bottom-left audio dock) ─────────────

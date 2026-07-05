@@ -1556,14 +1556,17 @@ export default function WorldPage() {
   /**
    * One `:::efecto` line -> one journal entry via makeEntry against CURRENT
    * party state. Grammar per plan Part A (module doc "Event :::efecto lines");
-   * unparseable/unknown effects degrade to a nota entry.
+   * unparseable/unknown effects degrade to a nota entry. Shared by the
+   * EventDrawer (drawn-event effects) AND the ActRunner ("Efectos del acto" —
+   * an act's own state-transitions declared as :::efecto). Returns true when
+   * the entry was logged so callers can track their own applied indexes;
+   * false when nothing was journaled (no model / rejected log).
    */
-  const handleApplyEffect = useCallback(
-    (effect: EventEffect) => {
+  const applyEffectCore = useCallback(
+    (effect: EventEffect): boolean => {
       const currentModel = useWorldStore.getState().model;
       const store = usePartyStore.getState();
-      const draw = eventDraw;
-      if (!currentModel || !draw) return;
+      if (!currentModel) return false;
 
       const { main, comentario } = splitEffectValue(effect.value);
       let entry: JournalEntry | null = null;
@@ -1654,19 +1657,33 @@ export default function WorldPage() {
           fallbackNota();
       }
 
-      if (!entry || !store.actions.log(entry)) return;
+      if (!entry || !store.actions.log(entry)) return false;
       after?.();
       // Covers every effect type: creditos/medidor numbers, pista estados and
       // sabe knowledge (donde-conocido gating) all feed accionable.
       rederiveLeads();
+      if (warn) toast.warning(mensaje);
+      else toast.success(mensaje);
+      return true;
+    },
+    [rederiveLeads]
+  );
+
+  /**
+   * EventDrawer wrapper: applies a DRAWN event's effect, then marks its index
+   * in the drawn event's efectos as applied (checks off + disables its button).
+   */
+  const handleApplyEffect = useCallback(
+    (effect: EventEffect) => {
+      const draw = eventDraw;
+      if (!draw) return;
+      if (!applyEffectCore(effect)) return;
       const index = draw.event.efectos.indexOf(effect);
       if (index >= 0) {
         setEventApplied((prev) => (prev.includes(index) ? prev : [...prev, index]));
       }
-      if (warn) toast.warning(mensaje);
-      else toast.success(mensaje);
     },
-    [eventDraw, rederiveLeads]
+    [eventDraw, applyEffectCore]
   );
 
   // ── M5: ActRunner (scripted acts at a playable place) ────────────────────
@@ -3137,6 +3154,8 @@ export default function WorldPage() {
               fsm={worldFs}
               onClose={handleCloseActRunner}
               onActChange={handleActChange}
+              onApplyEffect={applyEffectCore}
+              sessionActive={session.active}
             />
           )}
 

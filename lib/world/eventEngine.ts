@@ -122,8 +122,12 @@ const BLOCK_CLOSE = /^:::\s*$/;
  * fields, everything else stays as cuerpo (so parseAct — which does not know
  * `efecto` — never sees the block as stray prose). An unclosed block runs to
  * the end of the section, mirroring parseAct's tolerance.
+ *
+ * Exported so the ActRunner reuses this ONE grammar to lift an act's
+ * `:::efecto` state-transitions out of its plan file (the same blocks the
+ * event scanner turns into `event.efectos`) — never a second parser.
  */
-function extractEfectos(lines: string[]): { cuerpoLines: string[]; efectos: EventEffect[] } {
+export function extractEfectos(lines: string[]): { cuerpoLines: string[]; efectos: EventEffect[] } {
     const cuerpoLines: string[] = [];
     const efectoLines: string[] = [];
     let inEfecto = false;

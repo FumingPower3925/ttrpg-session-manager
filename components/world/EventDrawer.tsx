@@ -96,7 +96,7 @@ interface EventDrawerProps {
 }
 
 /** `:::efecto` is not an actFormat block type — remove it before parseAct. */
-function stripEfectoBlocks(cuerpo: string): string {
+export function stripEfectoBlocks(cuerpo: string): string {
   return cuerpo.replace(/^:::efecto[^\n]*$[\s\S]*?^:::[ \t]*$/gm, '').trim();
 }
 
@@ -105,7 +105,7 @@ function capitalize(text: string): string {
 }
 
 /** Split an efecto value on its first `|`: machine part + free comment. */
-function splitComentario(value: string): { main: string; comentario?: string } {
+export function splitComentario(value: string): { main: string; comentario?: string } {
   const idx = value.indexOf('|');
   if (idx === -1) return { main: value.trim() };
   const comentario = value.slice(idx + 1).trim();

@@ -4,6 +4,7 @@ import {
     applicableTables,
     drawEvent,
     eventSeenCounts,
+    extractEfectos,
     parseEventAttrs,
     parseEventTable,
 } from './eventEngine';
@@ -128,6 +129,46 @@ describe('parseEventTable', () => {
         const v02 = parsed.table.eventos[1];
         expect(v02.efectos).toEqual([]);
         expect(v02.cuerpo).toContain(':::gm');
+    });
+
+    // Direct coverage of the ONE grammar the ActRunner reuses to lift an act's
+    // declared :::efecto state-transitions out of its plan file.
+    test('extractEfectos: act plan block -> EventEffect[] + stripped cuerpo', () => {
+        const plan = `# ACTO 2
+
+:::gm
+Recordatorios del acto.
+:::
+
+:::efecto
+- pista: nodo_x rumor->activa | enciende el nodo
+- sabe: nodo_central conocido
+- ganancia: 150
+:::
+
+:::leer
+Texto para leer.
+:::
+`;
+        const { cuerpoLines, efectos } = extractEfectos(plan.split(/\r?\n/));
+        expect(efectos).toEqual([
+            { key: 'pista', value: 'nodo_x rumor->activa | enciende el nodo' },
+            { key: 'sabe', value: 'nodo_central conocido' },
+            { key: 'ganancia', value: '150' },
+        ]);
+        const cuerpo = cuerpoLines.join('\n');
+        expect(cuerpo).toContain(':::gm');
+        expect(cuerpo).toContain(':::leer');
+        expect(cuerpo).not.toContain(':::efecto');
+        expect(cuerpo).not.toContain('nodo_x rumor->activa');
+    });
+
+    test('extractEfectos: no :::efecto block -> empty effects, cuerpo intact', () => {
+        const { cuerpoLines, efectos } = extractEfectos(
+            ':::leer\nSolo narrativa.\n:::'.split(/\r?\n/)
+        );
+        expect(efectos).toEqual([]);
+        expect(cuerpoLines.join('\n')).toContain('Solo narrativa.');
     });
 
     test('bad si: aviso but the event is KEPT', () => {
