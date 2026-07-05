@@ -125,6 +125,7 @@ en: mercado_de_brasa
 conocimiento: visitado
 poi: {x: 30, y: 70}
 etiquetas: [muelles]
+servicios: [informacion]
 resumen: Rampa principal de descarga de la estacion franca.
 ---
 Un pasillo de grúas y contenedores donde nadie hace preguntas.

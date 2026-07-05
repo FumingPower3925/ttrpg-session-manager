@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 import { test, expect, describe } from 'bun:test';
-import { parseShop } from './shops';
+import type { PlaceEntity, Shop, SystemEntity, WorldEntityBase, WorldModel } from '@/types/world';
+import { affordancesFor, parseShop } from './shops';
 
 const PATH = 'mundo/lugares/porto_verne/tiendas/taller.md';
 
@@ -103,5 +104,108 @@ tipo: tienda
     test('garbage content never throws', () => {
         expect(() => parseShop('not markdown at all {[}', PATH, 'x')).not.toThrow();
         expect(() => parseShop('', PATH, 'x')).not.toThrow();
+    });
+});
+
+// ── affordancesFor: shop/info map-node badge derivation ─────────────────────
+
+/** Minimal PlaceEntity with just the fields affordancesFor reads. */
+function place(id: string, servicios: string[]): PlaceEntity {
+    return {
+        id,
+        tipo: 'estacion',
+        nombre: id,
+        filePath: `mundo/lugares/${id}/lugar.md`,
+        conocimiento: 'conocido',
+        etiquetas: [],
+        raw: {},
+        body: '',
+        servicios,
+        facciones: [],
+        acceso: 'normal',
+    };
+}
+
+/** Minimal SystemEntity (no `servicios` field — the guard must handle it). */
+function system(id: string): SystemEntity {
+    return {
+        id,
+        tipo: 'sistema',
+        nombre: id,
+        filePath: `mundo/sistemas/${id}.md`,
+        conocimiento: 'conocido',
+        etiquetas: [],
+        raw: {},
+        body: '',
+        coordenadas: { x: 0, y: 0 },
+    };
+}
+
+/** A WorldModel carrying only the two maps affordancesFor reads. */
+function modelWith(
+    entities: WorldEntityBase[],
+    tiendas: Record<string, Shop[]> = {}
+): WorldModel {
+    const entidades = new Map<string, WorldEntityBase>();
+    for (const e of entities) entidades.set(e.id, e);
+    return {
+        entidades,
+        tiendas: new Map(Object.entries(tiendas)),
+    } as unknown as WorldModel;
+}
+
+function shop(id: string): Shop {
+    return { id, nombre: id, etiquetas: [], items: [], body: '', filePath: `x/${id}.md` };
+}
+
+describe('affordancesFor', () => {
+    test('shop from a non-empty tiendas entry', () => {
+        const model = modelWith([place('brasa', [])], { brasa: [shop('s1')] });
+        expect(affordancesFor(model, 'brasa')).toEqual({ shop: true, info: false });
+    });
+
+    test('an empty tiendas array is NOT a shop', () => {
+        const model = modelWith([place('brasa', [])], { brasa: [] });
+        expect(affordancesFor(model, 'brasa')).toEqual({ shop: false, info: false });
+    });
+
+    test('shop from servicios mercado', () => {
+        const model = modelWith([place('mkt', ['mercado'])]);
+        expect(affordancesFor(model, 'mkt')).toEqual({ shop: true, info: false });
+    });
+
+    test('shop from servicios contrabando', () => {
+        const model = modelWith([place('smug', ['contrabando'])]);
+        expect(affordancesFor(model, 'smug')).toEqual({ shop: true, info: false });
+    });
+
+    test('info from servicios informacion', () => {
+        const model = modelWith([place('torre', ['informacion'])]);
+        expect(affordancesFor(model, 'torre')).toEqual({ shop: false, info: true });
+    });
+
+    test('info from servicios ocio', () => {
+        const model = modelWith([place('bar', ['ocio'])]);
+        expect(affordancesFor(model, 'bar')).toEqual({ shop: false, info: true });
+    });
+
+    test('both shop and info when servicios carry each', () => {
+        const model = modelWith([place('hub', ['mercado', 'informacion'])]);
+        expect(affordancesFor(model, 'hub')).toEqual({ shop: true, info: true });
+    });
+
+    test('a bare sistema (no servicios field) yields no affordances', () => {
+        const model = modelWith([system('sis')]);
+        expect(affordancesFor(model, 'sis')).toEqual({ shop: false, info: false });
+    });
+
+    test('a place with irrelevant servicios yields nothing', () => {
+        const model = modelWith([place('field', ['refugio', 'taller'])]);
+        expect(affordancesFor(model, 'field')).toEqual({ shop: false, info: false });
+    });
+
+    test('an unknown id yields no affordances (no crash)', () => {
+        const model = modelWith([]);
+        expect(affordancesFor(model, 'nope')).toEqual({ shop: false, info: false });
     });
 });

@@ -10,7 +10,15 @@ import {
 } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
-import { ChevronRight, Eye, EyeOff, Maximize2, Minimize2 } from 'lucide-react';
+import {
+  ChevronRight,
+  Eye,
+  EyeOff,
+  Maximize2,
+  MessageCircle,
+  Minimize2,
+  ShoppingCart,
+} from 'lucide-react';
 
 /** Viewport applied to the map content: `translate(x, y) scale(k)`. */
 export interface MapViewport {
@@ -295,6 +303,27 @@ export function StarMap({
             <Minimize2 />
           </Button>
         </div>
+      </div>
+
+      {/* Affordance legend: a subtle key so the node icons are self-explanatory.
+          Bottom-left corner, muted + small, so it never blocks the map body or
+          the top controls row. */}
+      <div
+        data-map-legend
+        className="pointer-events-none absolute bottom-2 left-2 flex flex-col gap-0.5 rounded-md border bg-background/80 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm"
+      >
+        <span className="flex items-center gap-1.5">
+          <ShoppingCart className="size-3 text-emerald-500" aria-hidden />
+          Tienda
+        </span>
+        <span className="flex items-center gap-1.5">
+          <MessageCircle className="size-3 text-sky-500" aria-hidden />
+          Información
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block size-2 rounded-full bg-amber-500" aria-hidden />
+          Misión / rumor
+        </span>
       </div>
     </div>
   );

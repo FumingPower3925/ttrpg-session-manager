@@ -12,8 +12,43 @@
  * ValidationIssue so the world always loads (same contract as worldScanner).
  */
 
-import { Shop, ShopItem, ValidationIssue } from '@/types/world';
+import { Shop, ShopItem, ValidationIssue, WorldModel } from '@/types/world';
 import { asString, asStringArray, normalizeKeys, parseFrontmatter } from './frontmatter';
+
+/**
+ * Semantic map-node affordances for the GM's at-a-glance scan: does this place
+ * sell things (SHOP) and/or offer information (INFO)? Derived purely from the
+ * model; the amber leads badge (quest/rumor) is computed separately in the page.
+ */
+export interface NodeAffordances {
+    /** The place has shops, or `servicios` markets goods (mercado/contrabando). */
+    shop: boolean;
+    /** The place offers information/leisure (`servicios` informacion/ocio). */
+    info: boolean;
+}
+
+/** `servicios` values that imply a SHOP affordance (goods for sale). */
+const SHOP_SERVICIOS = new Set(['mercado', 'contrabando']);
+/** `servicios` values that imply an INFO affordance (chatter / rumor sources). */
+const INFO_SERVICIOS = new Set(['informacion', 'ocio']);
+
+/**
+ * Derives the shop/info affordances for a given entity id from the world model.
+ * Only places (PlaceEntity) carry `servicios`; sistemas and other kinds have
+ * none, so they yield no affordances. Callers gate on conocimiento BEFORE
+ * calling this (never reveal shop/info on desconocido/rumoreado nodes).
+ */
+export function affordancesFor(model: WorldModel, id: string): NodeAffordances {
+    const shopsHere = model.tiendas.get(id);
+    const hasShops = shopsHere !== undefined && shopsHere.length > 0;
+    const entity = model.entidades.get(id);
+    // Only PlaceEntity has `servicios`; guard the field for sistemas et al.
+    const rawServicios = (entity as { servicios?: unknown } | undefined)?.servicios;
+    const servicios: string[] = Array.isArray(rawServicios) ? (rawServicios as string[]) : [];
+    const shop = hasShops || servicios.some((s) => SHOP_SERVICIOS.has(s));
+    const info = servicios.some((s) => INFO_SERVICIOS.has(s));
+    return { shop, info };
+}
 
 /** Columns the parser understands, matched by header text (case-insensitive). */
 const KNOWN_COLUMNS = ['articulo', 'precio', 'stock', 'nota'] as const;

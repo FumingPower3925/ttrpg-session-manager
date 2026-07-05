@@ -1,6 +1,7 @@
 'use client';
 
 import type { MouseEvent as ReactMouseEvent } from 'react';
+import { MessageCircle, ShoppingCart } from 'lucide-react';
 import { Conocimiento } from '@/types/world';
 import { useMapScale } from './StarMap';
 
@@ -59,6 +60,12 @@ interface EntityNodeProps {
   faccionColor?: string;
   /** Actionable-leads count; > 0 renders the amber badge. */
   leadsCount?: number;
+  /**
+   * Semantic affordance badges above the node so the GM can scan a map and tell
+   * shops / info spots apart at a glance. Only pass for conocido/visitado nodes
+   * (the page gates on knowledge) — never reveal on ghost/rumor nodes.
+   */
+  affordances?: { shop?: boolean; info?: boolean };
   onSelect: (id: string) => void;
   onDrillIn: (id: string) => void;
   x: number;
@@ -77,6 +84,7 @@ export function EntityNode({
   selected,
   faccionColor,
   leadsCount,
+  affordances,
   onSelect,
   onDrillIn,
   x,
@@ -94,6 +102,32 @@ export function EntityNode({
   const screenRadius = NODE_RADIUS * k;
   const labelY = Math.max(screenRadius, 12) + 14;
   const badgeOffset = Math.max(screenRadius * 0.8, 10);
+
+  // Affordance badges: small colored discs with a lucide icon, centered ABOVE
+  // the node (label is below, amber leads badge is top-right — no overlap).
+  const affordanceBadges = [
+    affordances?.shop
+      ? {
+          key: 'shop',
+          Icon: ShoppingCart,
+          discClass: 'fill-emerald-500 stroke-background',
+        }
+      : null,
+    affordances?.info
+      ? {
+          key: 'info',
+          Icon: MessageCircle,
+          discClass: 'fill-sky-500 stroke-background',
+        }
+      : null,
+  ].filter((badge): badge is NonNullable<typeof badge> => badge !== null);
+  const AFFORDANCE_DISC_R = 8;
+  const AFFORDANCE_ICON = 11;
+  const AFFORDANCE_GAP = 3;
+  const affordanceStep = AFFORDANCE_DISC_R * 2 + AFFORDANCE_GAP;
+  // Center the row of discs above the glyph, clear of the top ring/badge.
+  const affordanceY = -(Math.max(screenRadius, 12) + AFFORDANCE_DISC_R + 6);
+  const affordanceStartX = -((affordanceBadges.length - 1) * affordanceStep) / 2;
 
   const handleClick = (event: ReactMouseEvent<SVGGElement>) => {
     event.stopPropagation();
@@ -199,6 +233,32 @@ export function EntityNode({
             </text>
           </g>
         )}
+        {affordanceBadges.map((badge, index) => {
+          const cx = affordanceStartX + index * affordanceStep;
+          const { Icon } = badge;
+          return (
+            <g
+              key={badge.key}
+              data-node-icon={badge.key}
+              transform={`translate(${cx} ${affordanceY})`}
+            >
+              <circle
+                r={AFFORDANCE_DISC_R}
+                className={badge.discClass}
+                strokeWidth={1.5}
+              />
+              <Icon
+                width={AFFORDANCE_ICON}
+                height={AFFORDANCE_ICON}
+                x={-AFFORDANCE_ICON / 2}
+                y={-AFFORDANCE_ICON / 2}
+                className="stroke-white"
+                strokeWidth={2}
+                aria-hidden
+              />
+            </g>
+          );
+        })}
       </g>
     </g>
   );

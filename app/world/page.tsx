@@ -272,6 +272,8 @@ import {
   deriveLeadActionability,
 } from '@/lib/world/worldScanner';
 import { buildCondContext } from '@/lib/world/conditions';
+import { affordancesFor } from '@/lib/world/shops';
+import type { NodeAffordances } from '@/lib/world/shops';
 import { applicableTables, drawEvent, eventSeenCounts } from '@/lib/world/eventEngine';
 import {
   computeTravelPlan,
@@ -1898,6 +1900,25 @@ export default function WorldPage() {
     [dominantFactionByNode]
   );
 
+  /**
+   * Semantic map-node affordances (shop / info) per entity id, so the GM can
+   * scan a Plano/system and tell storefronts from info spots at a glance. Only
+   * reveal on conocido/visitado nodes — desconocido/rumoreado stay opaque so
+   * the map never leaks what the party hasn't discovered.
+   */
+  const nodeIconsFor = useCallback(
+    (id: string): NodeAffordances | undefined => {
+      if (!model) return undefined;
+      const entity = model.entidades.get(id);
+      if (!entity || (entity.conocimiento !== 'conocido' && entity.conocimiento !== 'visitado')) {
+        return undefined;
+      }
+      const affordances = affordancesFor(model, id);
+      return affordances.shop || affordances.info ? affordances : undefined;
+    },
+    [model]
+  );
+
   // ── Party readout (live store fields; hydrate seeds them from the file) ──
 
   /**
@@ -2667,6 +2688,7 @@ export default function WorldPage() {
                     partyLocationId={partyMapNodeId}
                     leadsBadgeCounts={leadsBadgeCounts}
                     factionColor={factionColor}
+                    nodeIconsFor={nodeIconsFor}
                     showUnknown={showUnknown}
                     onSelect={selectEntity}
                     onDrillIn={enterEntity}
@@ -2680,6 +2702,7 @@ export default function WorldPage() {
                     partyLocationId={partyMapNodeId}
                     leadsBadgeCounts={leadsBadgeCounts}
                     factionColor={factionColor}
+                    nodeIconsFor={nodeIconsFor}
                     showUnknown={showUnknown}
                     onSelect={selectEntity}
                     onDrillIn={enterEntity}
@@ -2693,6 +2716,7 @@ export default function WorldPage() {
                     partyLocationId={partyMapNodeId}
                     leadsBadgeCounts={leadsBadgeCounts}
                     factionColor={factionColor}
+                    nodeIconsFor={nodeIconsFor}
                     showUnknown={showUnknown}
                     onSelect={selectEntity}
                     onDrillIn={enterEntity}

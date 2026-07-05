@@ -176,6 +176,29 @@ test.describe('World Mode - Drill-in & tiers', () => {
         // The hub glyph carries the place's own id.
         await expect(plano.locator('[data-entity-id="mercado_de_brasa"]')).toBeAttached();
 
+        // Affordance badges: sala_franca (servicios mercado/contrabando, conocido)
+        // shows a SHOP icon; rampa_carga (servicios informacion, visitado) shows an
+        // INFO icon. trastienda (rumoreado) must NOT leak any affordance, and the
+        // shop node carries no info icon (nor vice versa).
+        await expect(
+            plano.locator('[data-entity-id="sala_franca"] [data-node-icon="shop"]')
+        ).toBeAttached();
+        await expect(
+            plano.locator('[data-entity-id="sala_franca"] [data-node-icon="info"]')
+        ).toHaveCount(0);
+        await expect(
+            plano.locator('[data-entity-id="rampa_carga"] [data-node-icon="info"]')
+        ).toBeAttached();
+        await expect(
+            plano.locator('[data-entity-id="rampa_carga"] [data-node-icon="shop"]')
+        ).toHaveCount(0);
+        await expect(
+            plano.locator('[data-entity-id="trastienda"] [data-node-icon]')
+        ).toHaveCount(0);
+
+        // The legend key is present so the icons are self-explanatory.
+        await expect(page.locator('[data-map-legend]')).toBeVisible();
+
         // Clicking a POI selects it (panel shows it).
         await plano.locator('[data-entity-id="rampa_carga"]').click();
         await expect(page.locator('[data-entity-panel="rampa_carga"]')).toBeVisible();

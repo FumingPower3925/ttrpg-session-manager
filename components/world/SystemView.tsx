@@ -2,6 +2,7 @@
 
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { PlaceEntity, SystemEntity } from '@/types/world';
+import type { NodeAffordances } from '@/lib/world/shops';
 import { EntityNode } from './EntityNode';
 import { PartyMarker } from './PartyMarker';
 import { useMapScale } from './StarMap';
@@ -68,6 +69,8 @@ interface SystemViewProps {
   leadsBadgeCounts: Map<string, number>;
   /** Dominant-faction ring color per entity id; undefined = no ring. */
   factionColor: (id: string) => string | undefined;
+  /** Semantic affordance badges (shop/info) per entity id; undefined = none. */
+  nodeIconsFor: (id: string) => NodeAffordances | undefined;
   /** When false, `conocimiento: desconocido` entities are hidden (screen-share mode). */
   showUnknown: boolean;
   onSelect: (id: string) => void;
@@ -84,6 +87,7 @@ export function SystemView({
   partyLocationId,
   leadsBadgeCounts,
   factionColor,
+  nodeIconsFor,
   showUnknown,
   onSelect,
   onDrillIn,
@@ -214,6 +218,7 @@ export function SystemView({
           selected={lugar.id === selectedId}
           faccionColor={factionColor(lugar.id)}
           leadsCount={leadsBadgeCounts.get(lugar.id)}
+          affordances={nodeIconsFor(lugar.id)}
           onSelect={onSelect}
           onDrillIn={onDrillIn}
           x={x}

@@ -133,25 +133,27 @@ export function ShopPanel({ shop, pnjNombre, onBack, onBuy, enabled }: ShopPanel
                 return (
                   <li
                     key={`${item.articulo}-${index}`}
-                    className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-sm"
+                    // Stacked layout: the article/stock line, an optional nota,
+                    // then the price + Comprar row. Keeps price and button fully
+                    // visible in the cockpit's NARROW right-column panel (no
+                    // horizontal clip); the ScrollArea handles vertical overflow.
+                    className="flex flex-col gap-1.5 rounded-md border px-2 py-1.5 text-sm"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="min-w-0 truncate font-medium">{item.articulo}</span>
-                        <span
-                          className="shrink-0 text-xs text-muted-foreground tabular-nums"
-                          data-shop-stock
-                        >
-                          x{stockLabel(item.stock)}
-                        </span>
-                      </div>
-                      {item.nota && (
-                        <p className="truncate text-xs text-muted-foreground">{item.nota}</p>
-                      )}
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate font-medium">{item.articulo}</span>
+                      <span
+                        className="shrink-0 text-xs text-muted-foreground tabular-nums"
+                        data-shop-stock
+                      >
+                        x{stockLabel(item.stock)}
+                      </span>
                     </div>
-                    {/* Editable / negotiable price: the input holds the current
-                        per-row amount; the base hint shows the deviation. */}
-                    <div className="flex shrink-0 flex-col items-end gap-0.5">
+                    {item.nota && (
+                      <p className="text-xs text-muted-foreground">{item.nota}</p>
+                    )}
+                    <div className="flex items-center justify-between gap-2">
+                      {/* Editable / negotiable price: the input holds the current
+                          per-row amount; the base hint shows the deviation. */}
                       <span className="flex items-center gap-1" data-shop-price>
                         <Input
                           data-shop-price-input={item.articulo}
@@ -162,44 +164,44 @@ export function ShopPanel({ shop, pnjNombre, onBack, onBuy, enabled }: ShopPanel
                           }
                           aria-label={`Precio de ${item.articulo}`}
                           aria-invalid={precioInvalido || undefined}
-                          className="h-8 w-[6ch] px-1.5 text-right tabular-nums"
+                          className="h-8 w-[7ch] px-1.5 text-right tabular-nums"
                         />
                         <span className="text-xs text-muted-foreground">cr</span>
+                        {negociado && (
+                          <span
+                            className="text-[10px] leading-none text-muted-foreground tabular-nums"
+                            data-shop-price-base
+                          >
+                            base {item.precio.toLocaleString('es-ES')}
+                          </span>
+                        )}
                       </span>
-                      {negociado && (
-                        <span
-                          className="text-[10px] leading-none text-muted-foreground tabular-nums"
-                          data-shop-price-base
+                      {/* The disabled wrapper keeps the tooltip (Button sets
+                          pointer-events-none when disabled). */}
+                      <span title={title} className="shrink-0">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          data-shop-buy={item.articulo}
+                          disabled={buyDisabled}
+                          onClick={() => {
+                            if (precio === null) return;
+                            onBuy(item, precio);
+                            // Reset the row back to its base price after a buy.
+                            setEdited((prev) => {
+                              const next = { ...prev };
+                              delete next[index];
+                              return next;
+                            });
+                          }}
+                          className="min-h-11"
                         >
-                          base {item.precio.toLocaleString('es-ES')}
-                        </span>
-                      )}
+                          <ShoppingCart aria-hidden />
+                          Comprar
+                        </Button>
+                      </span>
                     </div>
-                    {/* The disabled wrapper keeps the tooltip (Button sets
-                        pointer-events-none when disabled). */}
-                    <span title={title} className="shrink-0">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        data-shop-buy={item.articulo}
-                        disabled={buyDisabled}
-                        onClick={() => {
-                          if (precio === null) return;
-                          onBuy(item, precio);
-                          // Reset the row back to its base price after a buy.
-                          setEdited((prev) => {
-                            const next = { ...prev };
-                            delete next[index];
-                            return next;
-                          });
-                        }}
-                        className="min-h-11"
-                      >
-                        <ShoppingCart aria-hidden />
-                        Comprar
-                      </Button>
-                    </span>
                   </li>
                 );
               })}
