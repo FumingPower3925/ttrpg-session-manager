@@ -40,7 +40,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FileReference, Part, SessionConfig } from '@/types';
-import type { EventEffect } from '@/types/world';
+import type { EventEffect, Shop, ShopItem } from '@/types/world';
 import { FileSystemManager } from '@/lib/fileSystem';
 import { AudioManager } from '@/lib/audioManager';
 import { isActFormat } from '@/lib/actFormat';
@@ -58,8 +58,17 @@ import { InitiativeTracker } from '@/components/play/InitiativeTracker';
 import { FullscreenImage } from '@/components/world/FullscreenImage';
 import { BattlemapViewer } from '@/components/world/BattlemapViewer';
 import { ScrollableTabsRow } from '@/components/world/ScrollableTabsRow';
+import { ActRunnerPartyStrip } from '@/components/world/ActRunnerPartyStrip';
+import { ShopPanel } from '@/components/world/ShopPanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -85,6 +94,7 @@ import {
   Map as MapIcon,
   Minus,
   Plus,
+  ShoppingCart,
   Sparkles,
   Swords,
   User,
@@ -137,6 +147,22 @@ interface ActRunnerProps {
   onApplyEffect?: (effect: EventEffect) => boolean | void;
   /** Session-gate for the apply buttons (disabled + hint when inactive). */
   sessionActive?: boolean;
+  /**
+   * Party state + callbacks for the in-act party strip (créditos + gauges).
+   * Same values/handlers the cockpit feeds the QuickLogBar — adjustments here
+   * journal identically. Omitted ⇒ no strip (e.g. an unwired caller).
+   */
+  creditos?: number;
+  medidores?: Record<string, number>;
+  medidorNames?: string[];
+  onCreditos?: (delta: number) => void;
+  onMedidor?: (nombre: string, to: number) => void;
+  /** Shops at this place (model.tiendas). Enables the Tienda button + dialog. */
+  shops?: Shop[];
+  /** Buy one unit — the SAME page handler as the cockpit ShopPanel. */
+  onBuy?: (item: ShopItem, precio: number) => void;
+  /** Resolve a pnj id to a display name (shopkeeper label). */
+  resolveName?: (id: string) => string;
 }
 
 export function ActRunner({
@@ -147,6 +173,14 @@ export function ActRunner({
   onActChange,
   onApplyEffect,
   sessionActive = false,
+  creditos,
+  medidores,
+  medidorNames,
+  onCreditos,
+  onMedidor,
+  shops,
+  onBuy,
+  resolveName,
 }: ActRunnerProps) {
   // Same visibility rule as play: trunk parts + the active path's parts.
   const visibleParts = config.parts.filter(
@@ -158,6 +192,13 @@ export function ActRunner({
     visibleParts[0]?.id ?? null
   );
   const [currentTab, setCurrentTab] = useState('plan');
+
+  // In-act shop dialog: opened from the party strip's Tienda button.
+  const [shopsOpen, setShopsOpen] = useState(false);
+  const [openShopId, setOpenShopId] = useState<string | null>(null);
+  const openShop = shops?.find((s) => s.id === openShopId) ?? null;
+  const partyStripReady =
+    creditos != null && medidores != null && medidorNames != null && !!onCreditos && !!onMedidor;
   const [previousTab, setPreviousTab] = useState('plan');
   // "Vista jugador": when ON, the Plan act view drops the GM-only rails
   // (:::gm / :::accion / :::recurso) so the GM can screen-share a player-safe
@@ -438,6 +479,81 @@ abrir el acto.`;
           Cerrar
         </Button>
       </header>
+
+      {partyStripReady && (
+        <ActRunnerPartyStrip
+          creditos={creditos!}
+          medidores={medidores!}
+          medidorNames={medidorNames!}
+          enabled={sessionActive}
+          onCreditos={onCreditos!}
+          onMedidor={onMedidor!}
+          shopCount={shops?.length ?? 0}
+          onOpenShops={() => {
+            setOpenShopId(shops && shops.length === 1 ? shops[0].id : null);
+            setShopsOpen(true);
+          }}
+        />
+      )}
+
+      {shops && shops.length > 0 && (
+        <Dialog
+          open={shopsOpen}
+          onOpenChange={(open) => {
+            setShopsOpen(open);
+            if (!open) setOpenShopId(null);
+          }}
+        >
+          <DialogContent
+            data-act-shop-dialog
+            className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl"
+          >
+            <DialogHeader>
+              <DialogTitle>{openShop ? openShop.nombre : 'Tiendas'}</DialogTitle>
+              <DialogDescription className="sr-only">
+                Tienda del lugar — suministros y equipo
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {openShop ? (
+                <ShopPanel
+                  shop={openShop}
+                  pnjNombre={
+                    openShop.pnj ? (resolveName?.(openShop.pnj) ?? openShop.pnj) : undefined
+                  }
+                  onBack={() => {
+                    if (shops.length > 1) setOpenShopId(null);
+                    else setShopsOpen(false);
+                  }}
+                  onBuy={(item, precio) => onBuy?.(item, precio)}
+                  enabled={sessionActive}
+                />
+              ) : (
+                <ul className="space-y-1">
+                  {shops.map((s) => (
+                    <li key={s.id}>
+                      <button
+                        type="button"
+                        data-act-shop-pick={s.id}
+                        onClick={() => setOpenShopId(s.id)}
+                        className="flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm hover:bg-accent"
+                      >
+                        <ShoppingCart className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                        <span className="font-medium">{s.nombre}</span>
+                        {s.pnj && (
+                          <span className="text-xs text-muted-foreground">
+                            · {resolveName?.(s.pnj) ?? s.pnj}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
 
       <AudioControls
         audioManager={audioManager}

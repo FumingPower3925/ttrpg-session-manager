@@ -3156,6 +3156,14 @@ export default function WorldPage() {
               onActChange={handleActChange}
               onApplyEffect={applyEffectCore}
               sessionActive={session.active}
+              creditos={creditos}
+              medidores={medidores}
+              medidorNames={model.manifest.medidores}
+              onCreditos={handleCreditos}
+              onMedidor={handleMedidor}
+              shops={model.tiendas.get(actRunnerPlace.id) ?? []}
+              onBuy={handleBuy}
+              resolveName={(id) => model.entidades.get(id)?.nombre ?? id}
             />
           )}
 

@@ -1242,6 +1242,39 @@ test.describe('World Mode - ActRunner', () => {
             .toMatch(/- \[\d{2}:\d{2}\] nota: Acto cerrado: Part 1 @ Porto Verne/);
     });
 
+    test('the party strip surfaces créditos + gauges in-act, adjustments journal, and Tienda opens the shop', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        const journalPath = `mundo/diario/${journalName}`;
+
+        await openPortoVerneRunner(page);
+
+        // The cockpit essentials now live INSIDE the fullscreen act (the overlay
+        // hides the PartyStatusBar/QuickLogBar): read-out is always visible.
+        const strip = page.locator('[data-act-party-strip]');
+        await expect(strip).toBeVisible();
+        await expect(strip.locator('[data-strip-creditos-value]')).toBeVisible();
+        const nave = strip.locator('[data-strip-medidor="nave"]');
+        await expect(nave).toHaveAttribute('data-valor', '2');
+
+        // Repair the hull (nave 2 -> 5) from within the act -> journals a medidor.
+        await nave.click();
+        await page.locator('[data-strip-pip="5"]').click();
+        await expect(nave).toHaveAttribute('data-valor', '5');
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] medidor: nave 2->5/);
+
+        // The Tienda button opens the place's shop without leaving the scene.
+        await page.locator('[data-strip-tienda]').click();
+        await expect(page.locator('[data-act-shop-dialog]')).toBeVisible();
+    });
+
     test('Vista jugador hides the GM answer-key rails, then restores them', async ({ page }) => {
         // CON_ESTADO adds an image to porto_verne, so we can assert the player-safe
         // media survives the toggle while the GM rails vanish.
