@@ -380,6 +380,7 @@ async function scanActFolder(
         name: partName,
         planFile: null,
         images: [],
+        battlemaps: [],
         supportDocs: [],
         bgmPlaylist: [],
         eventPlaylists: [],
@@ -436,7 +437,7 @@ async function scanActFolder(
         part.supportDocs.push(...threatFiles.map(f => createFileReference(f, 'markdown')));
     }
 
-    // Scan maps folder
+    // Scan maps folder: markdown ASCII maps -> supportDocs; image files -> battlemaps.
     const mapsFolder = await getSubdirectory(handle, 'maps', actName);
     if (mapsFolder) {
         const mapFiles = await getFilesFromDirectory(
@@ -445,6 +446,13 @@ async function scanActFolder(
             SUPPORTED_MARKDOWN_EXTENSIONS
         );
         part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+
+        const battlemapFiles = await getFilesFromDirectory(
+            mapsFolder,
+            `maps/${actName}`,
+            SUPPORTED_IMAGE_EXTENSIONS
+        );
+        part.battlemaps.push(...battlemapFiles.map(f => createFileReference(f, 'image')));
     }
 
     const musicFolder = await getSubdirectory(handle, 'music', actName);
@@ -522,7 +530,7 @@ async function collectPathSupportContent(
         part.supportDocs.push(...threatFiles.map(f => createFileReference(f, 'markdown')));
     }
 
-    // Maps
+    // Maps: markdown ASCII maps -> supportDocs; image files -> battlemaps.
     const mapsFolder = await getSubdirectory(handle, 'maps', pathFolder);
     if (mapsFolder) {
         const mapFiles = await getFilesFromDirectory(
@@ -531,6 +539,13 @@ async function collectPathSupportContent(
             SUPPORTED_MARKDOWN_EXTENSIONS
         );
         part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+
+        const battlemapFiles = await getFilesFromDirectory(
+            mapsFolder,
+            `maps/${pathFolder}`,
+            SUPPORTED_IMAGE_EXTENSIONS
+        );
+        part.battlemaps.push(...battlemapFiles.map(f => createFileReference(f, 'image')));
     }
 
     // Music (BGM tracks + event playlist subfolders), same logic as scanActFolder
@@ -573,6 +588,7 @@ function createPathPart(name: string, pathId: string): Part {
         name,
         planFile: null,
         images: [],
+        battlemaps: [],
         supportDocs: [],
         bgmPlaylist: [],
         eventPlaylists: [],
@@ -636,6 +652,7 @@ async function scanForSinglePart(
         name: partName,
         planFile: null,
         images: [],
+        battlemaps: [],
         supportDocs: [],
         bgmPlaylist: [],
         eventPlaylists: [],
@@ -665,6 +682,13 @@ async function scanForSinglePart(
             const files = await getFilesFromDirectory(folder, folderName, SUPPORTED_AUDIO_EXTENSIONS);
             part.bgmPlaylist = files.map(f => createAudioFile(f));
             if (files.length > 0) hasContent = true;
+        } else if (folderName === 'maps') {
+            // maps/ markdown -> supportDocs; images -> battlemaps.
+            const mapFiles = await getFilesFromDirectory(folder, folderName, SUPPORTED_MARKDOWN_EXTENSIONS);
+            part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+            const battlemapFiles = await getFilesFromDirectory(folder, folderName, SUPPORTED_IMAGE_EXTENSIONS);
+            part.battlemaps.push(...battlemapFiles.map(f => createFileReference(f, 'image')));
+            if (mapFiles.length > 0 || battlemapFiles.length > 0) hasContent = true;
         } else {
             const files = await getFilesFromDirectory(folder, folderName, SUPPORTED_MARKDOWN_EXTENSIONS);
             part.supportDocs.push(...files.map(f => createFileReference(f, 'markdown')));

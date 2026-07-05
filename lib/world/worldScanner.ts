@@ -611,6 +611,7 @@ function splitFlatPlanParts(config: SessionConfig): SessionConfig {
         name: fileNameToDisplayName(ref.name),
         planFile: ref,
         images: i === 0 ? part.images : [],
+        battlemaps: i === 0 ? part.battlemaps : [],
         supportDocs: i === 0 ? otherDocs : [],
         bgmPlaylist: i === 0 ? part.bgmPlaylist : [],
         eventPlaylists: i === 0 ? part.eventPlaylists : [],
@@ -630,6 +631,7 @@ function prefixSessionConfigPaths(config: SessionConfig, prefix: string): Sessio
             ...part,
             planFile: part.planFile ? prefixFileReference(part.planFile, prefix) : null,
             images: part.images.map((ref) => prefixFileReference(ref, prefix)),
+            battlemaps: part.battlemaps.map((ref) => prefixFileReference(ref, prefix)),
             supportDocs: part.supportDocs.map((ref) => prefixFileReference(ref, prefix)),
             bgmPlaylist: part.bgmPlaylist.map((ref) => prefixFileReference(ref, prefix)),
             eventPlaylists: part.eventPlaylists.map((playlist) => ({

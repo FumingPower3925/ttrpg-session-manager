@@ -70,6 +70,7 @@ export default function SetupPage() {
       name: `Part ${config.parts.length + 1}`,
       planFile: null,
       images: [],
+      battlemaps: [],
       supportDocs: [],
       bgmPlaylist: [],
       eventPlaylists: [],

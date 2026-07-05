@@ -49,9 +49,10 @@ import { AudioControls } from '@/components/play/AudioControls';
 import { PartTimer } from '@/components/play/PartTimer';
 import { InitiativeTracker } from '@/components/play/InitiativeTracker';
 import { FullscreenImage } from '@/components/world/FullscreenImage';
+import { BattlemapViewer } from '@/components/world/BattlemapViewer';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { X } from 'lucide-react';
+import { Grid3x3, X } from 'lucide-react';
 
 const CLOSE_FADE_MS = 800;
 const CLOSE_FADE_INTERVAL_MS = 50;
@@ -210,7 +211,8 @@ abrir el acto.`;
 
   const handleTabChange = useCallback(
     (newTab: string) => {
-      if (newTab.startsWith('image-')) setPreviousTab(currentTab);
+      if (newTab.startsWith('image-') || newTab.startsWith('battlemap-'))
+        setPreviousTab(currentTab);
       setCurrentTab(newTab);
     },
     [currentTab]
@@ -224,9 +226,14 @@ abrir el acto.`;
     setCurrentTab(previousTab);
   }, [previousTab]);
 
+  // battlemaps may be absent on configs stored before this field existed.
+  const battlemaps = currentPart?.battlemaps ?? [];
+
   const hasTabs =
     currentPart !== undefined &&
-    (currentPart.images.length > 0 || currentPart.supportDocs.length > 0);
+    (currentPart.images.length > 0 ||
+      battlemaps.length > 0 ||
+      currentPart.supportDocs.length > 0);
 
   return (
     <div data-act-runner className="fixed inset-0 z-50 flex flex-col bg-background">
@@ -303,6 +310,16 @@ abrir el acto.`;
                     {img.name}
                   </TabsTrigger>
                 ))}
+                {battlemaps.map((map, index) => (
+                  <TabsTrigger
+                    key={`battlemap-${index}`}
+                    value={`battlemap-${index}`}
+                    className="gap-1.5"
+                  >
+                    <Grid3x3 className="h-3.5 w-3.5" />
+                    {docTabLabel(map.name)}
+                  </TabsTrigger>
+                ))}
                 {currentPart.supportDocs.map((doc, index) => (
                   <TabsTrigger key={`doc-${index}`} value={`doc-${index}`}>
                     {docTabLabel(doc.name)}
@@ -326,6 +343,20 @@ abrir el acto.`;
             {currentPart.images.map((img, index) => (
               <TabsContent key={`img-${index}`} value={`image-${index}`} className="m-0 h-full">
                 <RunnerImage file={img} loadImageUrl={loadImageUrl} onClose={handleImageClose} />
+              </TabsContent>
+            ))}
+
+            {battlemaps.map((map, index) => (
+              <TabsContent
+                key={`battlemap-${index}`}
+                value={`battlemap-${index}`}
+                className="m-0 h-full"
+              >
+                <RunnerBattlemap
+                  file={map}
+                  loadImageUrl={loadImageUrl}
+                  onClose={handleImageClose}
+                />
               </TabsContent>
             ))}
 
@@ -428,4 +459,43 @@ function RunnerImage({
   }
 
   return <FullscreenImage imageUrl={imageUrl} onClose={onClose} />;
+}
+
+/** Battlemap pane: resolves the object URL, then hands off to the pan/zoom/grid viewer. */
+function RunnerBattlemap({
+  file,
+  loadImageUrl,
+  onClose,
+}: {
+  file: FileReference;
+  loadImageUrl: (file: FileReference) => Promise<string>;
+  onClose: () => void;
+}) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageUrl(null);
+    void loadImageUrl(file).then(
+      (url) => {
+        if (!cancelled) setImageUrl(url);
+      },
+      (error) => {
+        console.error(`Error al cargar el mapa ${file.path}:`, error);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [file, loadImageUrl]);
+
+  if (imageUrl === null) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-muted-foreground">Cargando mapa…</p>
+      </div>
+    );
+  }
+
+  return <BattlemapViewer imageUrl={imageUrl} onClose={onClose} />;
 }

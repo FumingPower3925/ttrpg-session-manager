@@ -1419,6 +1419,34 @@ test.describe('World Mode - Perfiles, imagen segura y detalle de pistas', () => 
         await expect(page.locator('[data-act-runner]')).toBeVisible();
     });
 
+    test('ActRunner surfaces maps/ battlemaps in the pan/zoom/grid viewer', async ({ page }) => {
+        await openPortoVerneRunner(page);
+
+        // maps/muelle_7_battlemap.png -> a battlemap tab (labelled, not the raw
+        // filename with extension). Opening it renders the BattlemapViewer, NOT
+        // the plain FullscreenImage.
+        const tab = page.getByRole('tab', { name: /muelle 7 battlemap/i });
+        await expect(tab).toBeVisible();
+        await tab.click();
+
+        const viewer = page.locator('[data-battlemap-viewer]');
+        await expect(viewer).toBeVisible();
+        await expect(page.locator('[data-fullscreen-image]')).toHaveCount(0);
+        // Player-safety: projecting flag set like the fullscreen viewer.
+        await expect(page.locator('html[data-projecting]')).toHaveCount(1);
+
+        // Grid starts off; the toggle turns the overlay on.
+        await expect(page.locator('[data-battlemap-grid]')).toHaveCount(0);
+        await page.locator('[data-battlemap-grid-toggle]').click();
+        await expect(page.locator('[data-battlemap-grid]')).toBeVisible();
+
+        // Close returns to the act.
+        await page.locator('[data-battlemap-close]').click();
+        await expect(page.locator('[data-battlemap-viewer]')).toHaveCount(0);
+        await expect(page.locator('html[data-projecting]')).toHaveCount(0);
+        await expect(page.locator('[data-act-runner]')).toBeVisible();
+    });
+
     test('pista row opens a detail view with body + recompensa; transitions do not', async ({ page }) => {
         // Session active so the transition journals a pista line.
         await page.locator('[data-session-start]').click();

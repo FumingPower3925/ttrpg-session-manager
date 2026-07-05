@@ -567,6 +567,14 @@ export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     ((mundo.lugares as FileTree).porto_verne as FileTree).images = {
         'muelle_7.svg': fixtureSvg('#c7823a'),
     };
+    // Battlemaps: maps/ carries a markdown ASCII map (-> supportDocs) AND an
+    // image battlemap (-> part.battlemaps -> BattlemapViewer). The .png holds
+    // SVG bytes (OPFS is utf-8; the viewer only needs a blob URL, the scanner
+    // keys off the extension).
+    ((mundo.lugares as FileTree).porto_verne as FileTree).maps = {
+        'muelle_7_battlemap.png': fixtureSvg('#4a6b8a'),
+        'plano_ascii.md': '```\n#####\n#...#\n#####\n```\n',
+    };
     // Shop system: a tiendas/ subfolder inside the porto_verne place folder.
     ((mundo.lugares as FileTree).porto_verne as FileTree).tiendas = {
         'muelles.md': TIENDA_MUELLES,
