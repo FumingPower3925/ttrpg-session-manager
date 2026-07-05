@@ -116,6 +116,8 @@ function makeModel(estadoGrupo: PartyState | null, diario: JournalDay[] = []): W
         estadoGrupo,
         diario,
         musica: { bgm: [], eventPlaylists: [] },
+        tiendas: new Map(),
+        resumen: null,
     };
 }
 

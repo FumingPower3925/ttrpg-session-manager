@@ -1279,6 +1279,163 @@ describe('scanWorldFolder — imagenes', () => {
     });
 });
 
+// ── Shops (lugares/<place>/tiendas/) → model.tiendas ────────────────────────
+
+describe('scanWorldFolder — tiendas', () => {
+    const SHOP_TALLER = `---
+tipo: tienda
+nombre: Taller de Bracca
+pnj: kael_zara
+etiquetas: [taller, repuestos]
+---
+Bracca repara casi cualquier cosa, si le pagas por adelantado.
+
+| articulo | precio | stock | nota |
+|---|---|---|---|
+| Célula de combustible | 120 | 4 | recargable |
+| Kit de reparación | 60 | - | ilimitado |
+| Blindaje ligero | 800 | 1 | única unidad |
+`;
+
+    /** happyTree with a tiendas/ subfolder inside the porto_verne place folder. */
+    function treeWithShops(tiendas: FileTree): FileTree {
+        const tree = happyTree();
+        ((tree.mundo as FileTree).lugares as FileTree).porto_verne = {
+            ...(((tree.mundo as FileTree).lugares as FileTree).porto_verne as FileTree),
+            tiendas,
+        };
+        return tree;
+    }
+
+    test('parses a shop with items; prices are numbers, "-" stock is null', async () => {
+        const model = await scanWorldFolder(
+            makeHandle('campaign', treeWithShops({ 'taller.md': SHOP_TALLER }))
+        );
+
+        const shops = model.tiendas.get('porto_verne');
+        expect(shops).toBeDefined();
+        expect(shops!.length).toBe(1);
+        const shop = shops![0];
+        expect(shop.id).toBe('taller');
+        expect(shop.nombre).toBe('Taller de Bracca');
+        expect(shop.pnj).toBe('kael_zara');
+        expect(shop.etiquetas).toEqual(['taller', 'repuestos']);
+        expect(shop.body).toContain('Bracca repara');
+        expect(shop.filePath).toBe('mundo/lugares/porto_verne/tiendas/taller.md');
+
+        expect(shop.items).toEqual([
+            { articulo: 'Célula de combustible', precio: 120, stock: 4, nota: 'recargable' },
+            { articulo: 'Kit de reparación', precio: 60, stock: null, nota: 'ilimitado' },
+            { articulo: 'Blindaje ligero', precio: 800, stock: 1, nota: 'única unidad' },
+        ]);
+        // precio/stock are real numbers, not strings.
+        expect(typeof shop.items[0].precio).toBe('number');
+        expect(shop.items[1].stock).toBeNull();
+    });
+
+    test('a malformed row earns an aviso and is skipped, not a crash', async () => {
+        const badShop = `---
+tipo: tienda
+nombre: Mercadillo
+---
+| articulo | precio | stock | nota |
+|---|---|---|---|
+| Manzana | 5 | 10 | fresca |
+| Pera | no-es-numero | 3 | precio roto |
+| | 40 | 2 | sin nombre |
+| Naranja | 8 | - | ok |
+`;
+        const model = await scanWorldFolder(
+            makeHandle('campaign', treeWithShops({ 'mercadillo.md': badShop }))
+        );
+
+        const shop = model.tiendas.get('porto_verne')![0];
+        // Only the two well-formed rows survive.
+        expect(shop.items.map((i) => i.articulo)).toEqual(['Manzana', 'Naranja']);
+        const avisos = model.problemas.filter(
+            (p) => p.archivo.includes('mercadillo.md') && p.mensaje.includes('mal formada')
+        );
+        expect(avisos.length).toBe(2);
+        expect(avisos.every((p) => p.nivel === 'aviso')).toBe(true);
+    });
+
+    test('multiple shops under one place; a dangling pnj is an aviso', async () => {
+        const shopA = `---
+tipo: tienda
+nombre: Tienda A
+pnj: kael_zara
+---
+| articulo | precio | stock | nota |
+|---|---|---|---|
+| Cosa | 10 | 1 |  |
+`;
+        const shopB = `---
+tipo: tienda
+nombre: Tienda B
+pnj: pnj_inexistente
+---
+| articulo | precio | stock | nota |
+|---|---|---|---|
+| Otra | 20 | - |  |
+`;
+        const model = await scanWorldFolder(
+            makeHandle('campaign', treeWithShops({ 'a.md': shopA, 'b.md': shopB }))
+        );
+
+        const shops = model.tiendas.get('porto_verne')!;
+        // listEntries sorts by name: a.md < b.md.
+        expect(shops.map((s) => s.id)).toEqual(['a', 'b']);
+        const aviso = model.problemas.find(
+            (p) => p.archivo.includes('b.md') && p.mensaje.includes('pnj')
+        );
+        expect(aviso).toBeDefined();
+        expect(aviso!.nivel).toBe('aviso');
+        // The valid pnj (kael_zara) raises no dangling aviso.
+        expect(
+            model.problemas.some((p) => p.archivo.includes('a.md') && p.mensaje.includes('pnj'))
+        ).toBe(false);
+    });
+
+    test('a place without tiendas/ has no shops and no aviso', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+        expect(model.tiendas.size).toBe(0);
+        expect(model.problemas.some((p) => p.archivo.includes('tiendas'))).toBe(false);
+    });
+
+    test('tiendas/ ignore rules: _-prefixed shop files are skipped', async () => {
+        const model = await scanWorldFolder(
+            makeHandle(
+                'campaign',
+                treeWithShops({ '_borrador.md': SHOP_TALLER, 'real.md': SHOP_TALLER })
+            )
+        );
+        const shops = model.tiendas.get('porto_verne')!;
+        expect(shops.map((s) => s.id)).toEqual(['real']);
+    });
+});
+
+// ── Session recap (mundo/resumen.md) → model.resumen ────────────────────────
+
+describe('scanWorldFolder — resumen', () => {
+    test('reads mundo/resumen.md verbatim into model.resumen', async () => {
+        const tree = happyTree();
+        (tree.mundo as FileTree)['resumen.md'] =
+            '# Anteriormente\n\nEl grupo llegó a Porto Verne con la bodega vacía.';
+        const model = await scanWorldFolder(makeHandle('campaign', tree));
+        expect(model.resumen).toBe(
+            '# Anteriormente\n\nEl grupo llegó a Porto Verne con la bodega vacía.'
+        );
+        // It is never treated as an entity.
+        expect(model.entidades.has('resumen')).toBe(false);
+    });
+
+    test('absent resumen.md yields null and NO aviso (optional by design)', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+        expect(model.resumen).toBeNull();
+        expect(model.problemas.some((p) => p.archivo.includes('resumen'))).toBe(false);
+    });
+});
+
 // ── Stores (headless zustand) ───────────────────────────────────────────────
 
 describe('worldStore', () => {

@@ -18,6 +18,7 @@ import {
     NpcEntity,
     PartyState,
     PlaceEntity,
+    Shop,
     SystemEntity,
     Trama,
     ValidationIssue,
@@ -38,6 +39,7 @@ import { SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS } from '@/lib/fi
 import { buildCondContext, evalConditions, isParseableCondition } from './conditions';
 import { parseEventTable } from './eventEngine';
 import { parseJournal, parseLlegadaPayload, parseSabePayload } from './logEntries';
+import { parseShop } from './shops';
 import { ancestryChain } from './worldNav';
 import { defaultPartyState, parsePartyState } from './partyState';
 import {
@@ -64,9 +66,11 @@ import {
     NIVELES_PRESENCIA,
     PARTY_STATE_FILE,
     PLACE_FOLDER_FILE,
+    RESUMEN_FILE,
     ROLES_PNJ,
     ROLES_TRAMA,
     SERVICIOS,
+    TIENDAS_DIR,
     TIPOS_LUGAR,
     WORLD_DIR,
     isIgnoredDir,
@@ -115,7 +119,7 @@ export async function scanWorldFolder(
             mensaje: `No se encontró la carpeta "${WORLD_DIR}/" en la carpeta de campaña`,
         });
         onProgress?.(1, 1);
-        return assembleModel(defaultManifest(), [], problemas, null, emptyMusica(), new Map());
+        return assembleModel(defaultManifest(), [], problemas, null, emptyMusica(), new Map(), null);
     }
 
     // Enumerate first (cheap directory listings), then read contents in batches.
@@ -146,6 +150,10 @@ export async function scanWorldFolder(
     // Entity profile images (imagenes/): one directory listing, never read.
     const imagenes = await scanEntityImages(mundoDir);
 
+    // Session recap (resumen.md): one optional read, like the manifest — plain
+    // markdown, null when absent, never an entity and never an aviso.
+    const resumen = await readResumen(mundoDir);
+
     // Entity reads, batched
     const records: RawEntityFile[] = [];
     for (let i = 0; i < tasks.length; i += READ_BATCH_SIZE) {
@@ -160,7 +168,22 @@ export async function scanWorldFolder(
     }
 
     const manifest = parseManifest(manifestContent, problemas);
-    return assembleModel(manifest, records, problemas, estadoGrupo, musica, imagenes);
+    return assembleModel(manifest, records, problemas, estadoGrupo, musica, imagenes, resumen);
+}
+
+/**
+ * Reads the OPTIONAL `mundo/resumen.md` recap. Returns its whole text, or null
+ * when the file is absent (or unreadable) — the recap is optional by design,
+ * so absence is silent (no aviso), exactly like an empty musica/ folder.
+ */
+async function readResumen(mundoDir: FileSystemDirectoryHandle): Promise<string | null> {
+    try {
+        const handle = await mundoDir.getFileHandle(RESUMEN_FILE);
+        const file = await handle.getFile();
+        return await file.text();
+    } catch {
+        return null;
+    }
 }
 
 // ── Entity profile images (imagenes/) ───────────────────────────────────────
@@ -341,6 +364,8 @@ interface RawEntityFile {
     content: string;
     /** Set for playable place folders with session content. */
     playable?: SessionConfig;
+    /** Parsed shops from the place folder's optional `tiendas/` subfolder. */
+    tiendas?: Shop[];
 }
 
 interface TaskResult {
@@ -517,6 +542,8 @@ async function scanPlaceFolder(
         });
     }
 
+    const tiendas = await scanShops(dirHandle, folderPath, issues);
+
     return {
         record: {
             kind: 'lugar',
@@ -524,9 +551,37 @@ async function scanPlaceFolder(
             filePath: `${folderPath}/${PLACE_FOLDER_FILE}`,
             content,
             playable,
+            tiendas,
         },
         issues,
     };
+}
+
+/**
+ * Reads the OPTIONAL `tiendas/` subfolder of a place folder: each `*.md`
+ * (ignore rules apply — `_`-prefixed files, ALL-CAPS dirs) parses into one
+ * Shop via parseShop. An absent folder yields [] and NO aviso (optional by
+ * design). Shopkeeper `pnj` refs are validated later in assembleModel, once
+ * the entity map exists.
+ */
+async function scanShops(
+    dirHandle: FileSystemDirectoryHandle,
+    folderPath: string,
+    issues: ValidationIssue[]
+): Promise<Shop[]> {
+    const tiendasDir = await getSubdirectory(dirHandle, TIENDAS_DIR);
+    if (!tiendasDir) return [];
+
+    const { files } = await listEntries(tiendasDir);
+    const shops: Shop[] = [];
+    for (const file of files) {
+        const filePath = `${folderPath}/${TIENDAS_DIR}/${file.name}`;
+        const content = await readFileContent(file.handle);
+        const { shop, issues: shopIssues } = parseShop(content, filePath, stripMd(file.name));
+        issues.push(...shopIssues);
+        shops.push(shop);
+    }
+    return shops;
 }
 
 /**
@@ -987,7 +1042,8 @@ function assembleModel(
     problemas: ValidationIssue[],
     estadoGrupo: PartyState | null,
     musica: WorldModel['musica'],
-    imagenes: Map<string, FileReference>
+    imagenes: Map<string, FileReference>,
+    resumen: string | null
 ): WorldModel {
     const entidades = new Map<string, WorldEntityBase>();
     const sistemas: SystemEntity[] = [];
@@ -998,6 +1054,9 @@ function assembleModel(
     const tramas: Trama[] = [];
     const tablas: EventTable[] = [];
     const diario: JournalDay[] = [];
+    // Shops keyed by place id. Collected from the lugar records as we parse
+    // them; pnj refs are validated once the entity map is complete (below).
+    const tiendas = new Map<string, Shop[]>();
 
     for (const record of records) {
         // Journals are not entities: no id dedupe, own tolerant parser.
@@ -1042,6 +1101,9 @@ function assembleModel(
                 const entity = buildLugar(record, data, parsed.body, problemas);
                 lugares.push(entity);
                 entidades.set(entity.id, entity);
+                if (record.tiendas && record.tiendas.length > 0) {
+                    tiendas.set(entity.id, record.tiendas);
+                }
                 break;
             }
             case 'faccion': {
@@ -1092,6 +1154,7 @@ function assembleModel(
 
     checkDanglingRefs(entidades, lugares, pnjs, pistas, problemas);
     checkPartyStateRefs(entidades, estadoGrupo, problemas);
+    checkShopRefs(entidades, tiendas, problemas);
 
     const childrenOf = deriveChildrenOf(entidades, sistemas, lugares);
     deriveRegionInheritance(entidades, lugares);
@@ -1111,6 +1174,8 @@ function assembleModel(
         estadoGrupo,
         diario,
         musica,
+        tiendas,
+        resumen,
     };
 
     // Unprocessed journals re-overlay in-session knowledge BEFORE the
@@ -1250,6 +1315,29 @@ function checkPartyStateRefs(
     }
     if (estadoGrupo.rumbo !== null && !entidades.has(estadoGrupo.rumbo.destino)) {
         dangling('rumbo.destino', estadoGrupo.rumbo.destino);
+    }
+}
+
+/**
+ * A shop's `pnj` (shopkeeper) pointing at an entity that doesn't exist is an
+ * AVISO, not an error: the shop still works keeper-less, and a half-built world
+ * must load. Shops with no `pnj` are skipped.
+ */
+function checkShopRefs(
+    entidades: Map<string, WorldEntityBase>,
+    tiendas: Map<string, Shop[]>,
+    problemas: ValidationIssue[]
+): void {
+    for (const shops of tiendas.values()) {
+        for (const shop of shops) {
+            if (shop.pnj !== undefined && !entidades.has(shop.pnj)) {
+                problemas.push({
+                    nivel: 'aviso',
+                    archivo: shop.filePath,
+                    mensaje: `Referencia colgante en "pnj": "${shop.pnj}" no existe`,
+                });
+            }
+        }
     }
 }
 

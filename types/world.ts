@@ -105,6 +105,38 @@ export interface Trama extends WorldEntityBase {
 }
 
 /**
+ * One row of a shop's price table (feature — shop system). `stock` null means
+ * unlimited (the market never runs out); a number counts down as the party
+ * buys. `nota` is an optional free-text column.
+ */
+export interface ShopItem {
+  articulo: string;
+  precio: number;
+  stock: number | null;
+  nota?: string;
+}
+
+/**
+ * A shop parsed from `mundo/lugares/<place>/tiendas/<shop_id>.md` (frontmatter
+ * `tipo: tienda`, then GM prose, then a `| articulo | precio | stock | nota |`
+ * table). Multiple shops can live under one place; the scanner keys them by
+ * place id in WorldModel.tiendas.
+ */
+export interface Shop {
+  /** id = shop filename without extension. */
+  id: string;
+  nombre: string;
+  /** Optional shopkeeper pnj id (`pnj:`); validated against the entity map. */
+  pnj?: string;
+  etiquetas: string[];
+  items: ShopItem[];
+  /** GM prose above the table. */
+  body: string;
+  /** Path relative to the campaign folder. */
+  filePath: string;
+}
+
+/**
  * One `:::efecto` line of an event (M4). Same shape semantics as ActField:
  * `key` is the field name (gasto/ganancia/medidor/sabe/pista/nota), `value`
  * the raw value part. The cockpit converts these to journal entries.
@@ -334,4 +366,16 @@ export interface WorldModel {
    * an aviso.
    */
   musica: { bgm: AudioFile[]; eventPlaylists: EventPlaylist[] };
+  /**
+   * Shops keyed by their place id (`mundo/lugares/<place>/tiendas/<shop>.md`).
+   * A place with no `tiendas/` folder has no entry; the map is empty when no
+   * place has shops. Multiple shops per place are possible.
+   */
+  tiendas: Map<string, Shop[]>;
+  /**
+   * Whole text of the OPTIONAL `mundo/resumen.md` session recap (plain
+   * markdown, read like the manifest — one read, never an entity); null when
+   * the file is absent.
+   */
+  resumen: string | null;
 }

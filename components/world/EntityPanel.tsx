@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Star, User, X, ZoomIn } from 'lucide-react';
+import { Star, Store, User, X, ZoomIn } from 'lucide-react';
 
 const CONOCIMIENTO_LABEL: Record<Conocimiento, string> = {
   desconocido: 'Desconocido',
@@ -50,6 +50,14 @@ export interface EntityPanelPersonaje {
   rol: NpcEntity['rol'];
   /** True when the party has not met the pnj yet (conocimiento desconocido). */
   desconocido: boolean;
+}
+
+/** One row of the "Tiendas" section: a shop located at this place. */
+export interface EntityPanelTienda {
+  id: string;
+  nombre: string;
+  /** Shopkeeper pnj display name, pre-resolved (optional). */
+  pnj?: string;
 }
 
 /**
@@ -128,6 +136,10 @@ interface EntityPanelProps {
   personajes?: EntityPanelPersonaje[];
   /** Click on a personaje row — the page switches the panel to its PnjCard. */
   onSelectPnj?: (id: string) => void;
+  /** Shops located at this place (feature — shop system); empty/undefined = no section. */
+  tiendas?: EntityPanelTienda[];
+  /** Click on a tienda row — the page swaps the panel to its ShopPanel. */
+  onSelectShop?: (id: string) => void;
   /** Resolves an entity image to an object URL (page-owned cache). */
   loadImageUrl?: (ref: FileReference) => Promise<string>;
   /** Opens the player-safe FullscreenImage viewer with a resolved URL. */
@@ -147,6 +159,8 @@ export function EntityPanel({
   isCurrentLocation = false,
   personajes = [],
   onSelectPnj,
+  tiendas = [],
+  onSelectShop,
   loadImageUrl,
   onImageZoom,
   onDrillIn,
@@ -274,6 +288,32 @@ export function EntityPanel({
                       <Badge variant="outline" className="ml-auto shrink-0 text-muted-foreground">
                         {pnj.rol}
                       </Badge>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          {tiendas.length > 0 && onSelectShop && (
+            <Section title="Tiendas">
+              <ul className="flex flex-col gap-1">
+                {tiendas.map((tienda) => (
+                  <li key={tienda.id}>
+                    <button
+                      type="button"
+                      data-shop-link={tienda.id}
+                      onClick={() => onSelectShop(tienda.id)}
+                      // min-h-11 = 44px tap target (M5 sweep).
+                      className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                    >
+                      <Store className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      <span className="min-w-0 truncate">{tienda.nombre}</span>
+                      {tienda.pnj && (
+                        <Badge variant="outline" className="ml-auto shrink-0 text-muted-foreground">
+                          {tienda.pnj}
+                        </Badge>
+                      )}
                     </button>
                   </li>
                 ))}

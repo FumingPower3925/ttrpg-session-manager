@@ -45,6 +45,18 @@ export const ENTITY_DIRS = {
 export const PLACE_FOLDER_FILE = 'lugar.md';
 
 /**
+ * Optional shops subfolder inside a place folder `lugares/<id>/tiendas/`: each
+ * `*.md` is one shop (`tipo: tienda`). Absent folder = no shops, no aviso.
+ */
+export const TIENDAS_DIR = 'tiendas';
+
+/**
+ * Optional session-recap file `mundo/resumen.md` (plain markdown, read like the
+ * manifest — one read, never an entity). Absent = no recap, no button.
+ */
+export const RESUMEN_FILE = 'resumen.md';
+
+/**
  * Optional world-level music folder under `mundo/`: audio files at its root
  * are the world BGM rotation, each subfolder a named event playlist. Not an
  * entity dir — its contents are listed (never read) by the scanner.

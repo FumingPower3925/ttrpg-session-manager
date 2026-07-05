@@ -441,8 +441,37 @@ function fixtureSvg(fill: string): string {
 }
 
 /**
+ * A shop under porto_verne (feature — shop system): frontmatter `tipo: tienda`
+ * + a GM-prose blurb + the exact `| articulo | precio | stock | nota |` table.
+ * Two items: one with stock 1 (buy-twice must block on the second), one
+ * unlimited ("-"). pnj resolves to kael_voss (located at porto_verne).
+ */
+const TIENDA_MUELLES = `---
+tipo: tienda
+nombre: Suministros del Muelle 7
+pnj: kael_voss
+etiquetas: [repuestos]
+---
+Un tenderete entre las grúas; Kael conoce al dueño.
+
+| articulo | precio | stock | nota |
+|---|---|---|---|
+| Célula de combustible | 120 | 1 | última unidad |
+| Raciones de campo | 40 | - | siempre en stock |
+`;
+
+/** Session recap for the in-app Resumen dialog (feature — in-app resumen). */
+const RESUMEN_MD = `# Anteriormente
+
+El grupo llegó a Porto Verne con la bodega medio vacía y una deuda pendiente
+con Kael Voss.
+`;
+
+/**
  * Same campaign, plus estado/grupo.md — the party is docked at porto_verne —
- * plus entity profile images and an ActRunner image (M6, see header doc).
+ * plus entity profile images and an ActRunner image (M6, see header doc), plus
+ * a porto_verne shop (tiendas/) and a session recap (resumen.md) for the shop
+ * and in-app-resumen features.
  */
 export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     // FileTree is JSON-safe (plain strings/objects), so a JSON round-trip clones it.
@@ -460,6 +489,12 @@ export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
     ((mundo.lugares as FileTree).porto_verne as FileTree).images = {
         'muelle_7.svg': fixtureSvg('#c7823a'),
     };
+    // Shop system: a tiendas/ subfolder inside the porto_verne place folder.
+    ((mundo.lugares as FileTree).porto_verne as FileTree).tiendas = {
+        'muelles.md': TIENDA_MUELLES,
+    };
+    // In-app resumen: mundo/resumen.md (the base fixture has none on purpose).
+    mundo['resumen.md'] = RESUMEN_MD;
     return clone;
 })();
 

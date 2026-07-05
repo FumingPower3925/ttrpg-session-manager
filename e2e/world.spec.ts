@@ -839,6 +839,120 @@ test.describe('World Mode - Eventos en curso & combate', () => {
     });
 });
 
+// ── Feature: shop system (lugares/porto_verne/tiendas/muelles.md) ───────────
+//
+// The CON_ESTADO fixture adds a shop under porto_verne: "Suministros del Muelle
+// 7", pnj kael_voss, items "Célula de combustible" (120 cr, stock 1) and
+// "Raciones de campo" (40 cr, unlimited). The party starts with 1240 cr.
+
+test.describe('World Mode - Tiendas', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+    });
+
+    /** Starts a session; returns the diario path (single file, sesion 1). */
+    async function startSession(page: import('@playwright/test').Page): Promise<string> {
+        await page.locator('[data-session-start]').click();
+        await expect(page.locator('[data-session-end]')).toBeVisible();
+        await expect
+            .poll(async () => (await listOPFSDir(page, 'mundo/diario')).length)
+            .toBe(1);
+        const [journalName] = await listOPFSDir(page, 'mundo/diario');
+        return `mundo/diario/${journalName}`;
+    }
+
+    /** Drills into sistema_verne and selects porto_verne (its EntityPanel). */
+    async function openPortoVernePanel(page: import('@playwright/test').Page): Promise<void> {
+        await page.locator('[data-entity-id="sistema_verne"]').dblclick();
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+        await page.locator('[data-entity-id="porto_verne"]').click();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+    }
+
+    test('open a shop from the Tiendas section and buy an item', async ({ page }) => {
+        const journalPath = await startSession(page);
+        await openPortoVernePanel(page);
+
+        // The Tiendas section lists the shop; clicking the row opens the ShopPanel.
+        const shopLink = page.locator('[data-shop-link="muelles"]');
+        await expect(shopLink).toBeVisible();
+        await shopLink.click();
+        const shop = page.locator('[data-shop-panel="muelles"]');
+        await expect(shop).toBeVisible();
+        await expect(shop).toContainText('Suministros del Muelle 7');
+        await expect(shop).toContainText('Kael Voss'); // shopkeeper chip
+
+        // Buy the unlimited item: creditos drop by 40 (1240 -> 1200).
+        await shop.locator('[data-shop-buy="Raciones de campo"]').click();
+        await expect(page.locator('[data-party-bar] [data-creditos="1200"]')).toBeVisible();
+
+        // Journal carries the gasto with the compra comentario.
+        await expect
+            .poll(() => readOPFSFile(page, journalPath))
+            .toMatch(/- \[\d{2}:\d{2}\] gasto: 40 \| compra: Raciones de campo/);
+    });
+
+    test('a stock-1 item blocks the second purchase', async ({ page }) => {
+        await startSession(page);
+        await openPortoVernePanel(page);
+        await page.locator('[data-shop-link="muelles"]').click();
+        const shop = page.locator('[data-shop-panel="muelles"]');
+        await expect(shop).toBeVisible();
+
+        const buyCell = shop.locator('[data-shop-buy="Célula de combustible"]');
+        // First buy succeeds: creditos 1240 -> 1120, stock 1 -> 0.
+        await buyCell.click();
+        await expect(page.locator('[data-party-bar] [data-creditos="1120"]')).toBeVisible();
+
+        // Now agotado: the Comprar button is disabled, a second buy does nothing.
+        await expect(buyCell).toBeDisabled();
+        await expect(page.locator('[data-party-bar] [data-creditos="1120"]')).toBeVisible();
+    });
+
+    test('without a session the Comprar buttons are disabled with a hint', async ({ page }) => {
+        // No session started.
+        await openPortoVernePanel(page);
+        await page.locator('[data-shop-link="muelles"]').click();
+        const shop = page.locator('[data-shop-panel="muelles"]');
+        await expect(shop).toBeVisible();
+        await expect(shop.locator('[data-shop-buy="Raciones de campo"]')).toBeDisabled();
+
+        // Back returns to the place panel.
+        await shop.locator('[data-shop-back]').click();
+        await expect(page.locator('[data-entity-panel="porto_verne"]')).toBeVisible();
+    });
+});
+
+// ── Feature: in-app resumen (mundo/resumen.md) ──────────────────────────────
+
+test.describe('World Mode - Resumen', () => {
+    test('the Resumen button opens the recap dialog (CON_ESTADO has resumen.md)', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        const button = page.locator('[data-resumen-open]');
+        await expect(button).toBeVisible();
+        await button.click();
+
+        const dialog = page.locator('[data-resumen-dialog]');
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText('Anteriormente');
+        await expect(dialog).toContainText('bodega medio vacía');
+    });
+
+    test('a world without resumen.md shows no Resumen button (base fixture)', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN); // no resumen.md
+        await openWorldViaOPFS(page);
+
+        await expect(page.locator('[data-world-status="ready"]')).toBeAttached();
+        await expect(page.locator('[data-resumen-open]')).toHaveCount(0);
+    });
+});
+
 // ── M5: ActRunner (scripted acts inside /world) ─────────────────────────────
 //
 // porto_verne is the fixture's playable place: lugares/porto_verne/ holds
@@ -929,14 +1043,14 @@ test.describe('World Mode - Música del mundo', () => {
         await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_MUSICA);
         await openWorldViaOPFS(page);
 
-        // Closed by default: just the toggle button above the QuickLogBar.
-        const toggle = page.locator('[data-world-audio="toggle"]');
+        // Feature 3: the toggle is the QuickLogBar «Música» button now (the old
+        // floating dock toggle was removed). Closed by default, no panel yet.
+        const toggle = page.locator('[data-quicklog="musica"]');
         await expect(toggle).toBeVisible();
-        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
         await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
 
         await toggle.click();
-        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
         const panel = page.locator('[data-world-audio="panel"]');
         await expect(panel).toBeVisible();
 
@@ -954,7 +1068,7 @@ test.describe('World Mode - Música del mundo', () => {
         // Toggle back off: panel gone, button released.
         await toggle.click();
         await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
-        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+        await expect(toggle).not.toHaveAttribute('aria-expanded', 'true');
     });
 
     test('a world without mundo/musica/ still shows the dock, opening to an empty state', async ({ page }) => {
@@ -964,16 +1078,15 @@ test.describe('World Mode - Música del mundo', () => {
 
         await expect(page.locator('[data-world-status="ready"]')).toBeAttached();
 
-        // The toggle is ALWAYS present now (an empty folder must not read as a
-        // broken cockpit) — closed by default, no panel yet.
-        const toggle = page.locator('[data-world-audio="toggle"]');
+        // The QuickLogBar «Música» button is ALWAYS present (an empty folder
+        // must not read as a broken cockpit) — closed by default, no panel yet.
+        const toggle = page.locator('[data-quicklog="musica"]');
         await expect(toggle).toBeVisible();
-        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
         await expect(page.locator('[data-world-audio="panel"]')).toHaveCount(0);
 
         // Open it: the empty-state panel with the "Sin música cargada" hint.
         await toggle.click();
-        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
         const panel = page.locator('[data-world-audio="panel"]');
         await expect(panel).toBeVisible();
         await expect(page.locator('[data-world-audio="panel"][data-world-audio-empty]')).toBeVisible();
@@ -992,22 +1105,23 @@ test.describe('World Mode - Música del mundo', () => {
         await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_MUSICA);
         await openWorldViaOPFS(page);
 
-        // Leave the dock OPEN so the round-trip proves state survival.
-        const toggle = page.locator('[data-world-audio="toggle"]');
+        // Leave the dock OPEN so the round-trip proves state survival. The
+        // toggle is the QuickLogBar «Música» button now (feature 3).
+        const toggle = page.locator('[data-quicklog="musica"]');
         await toggle.click();
         await expect(page.locator('[data-world-audio="panel"]')).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
         // Runner open: the world dock is concealed (still mounted, hidden) —
         // the act music owns the room per the handoff contract.
         await openPortoVerneRunner(page);
-        await expect(toggle).toBeHidden();
         await expect(page.locator('[data-world-audio="panel"]')).toBeHidden();
 
-        // Runner closed: dock back, still open (aria-pressed survived).
+        // Runner closed: dock back, still open (page-owned musicaOpen survived).
         await page.locator('[data-act-close]').click();
         await expect(page.locator('[data-act-runner]')).toHaveCount(0);
         await expect(toggle).toBeVisible();
-        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
         await expect(page.locator('[data-world-audio="panel"]')).toBeVisible();
     });
 });

@@ -1,14 +1,20 @@
 'use client';
 
 /**
- * QuickLogBar — bottom cockpit action band (M3, plan Part B). Nine large
- * one-tap buttons; every logging path is at most 2 interactions. Pure and
+ * QuickLogBar — bottom cockpit action band (M3, plan Part B). Large one-tap
+ * buttons; every logging path is at most 2 interactions. Pure and
  * props-driven: the page owns the store and passes callbacks. Disabled as a
- * whole until the session is active, with two exceptions:
+ * whole until the session is active, with these exceptions:
  *   - «Pista» only switches the right panel to the Pistas tab (it logs
  *     nothing), so it stays enabled even without a session — same as the tab.
  *   - «Descansar» and «Evento» additionally disable MID-TRAVEL: the stepper
  *     owns day advancement and the viaje event draw there.
+ *   - «Música» and «Combate» are NEVER session-gated (feature 3): music and
+ *     the initiative tracker work anytime, so they toggle regardless of the
+ *     session. They carry an `activo` visual state driven by musicaOpen /
+ *     combatOpen. Etched here instead of floating page overlays so they stop
+ *     "flying over" the map/panels. The Combate button keeps the historical
+ *     data-combat-open attribute so existing e2e still finds the affordance.
  *
  * Popovers (créditos amounts, medidor pips, descanso days) are hand-rolled
  * (relative anchor + absolute panel opening upward) instead of
@@ -28,8 +34,10 @@ import {
   LucideIcon,
   MapPin,
   Moon,
+  Music,
   Rocket,
   StickyNote,
+  Swords,
   Target,
   Zap,
 } from 'lucide-react';
@@ -85,6 +93,14 @@ interface QuickLogBarProps {
   eventoDisabled?: boolean;
   /** Freeform note text (non-empty, trimmed). */
   onNota: (text: string) => void;
+  /** Toggles the world audio dock (feature 3). NOT session-gated. */
+  onMusica: () => void;
+  /** True while the audio dock is open — drives the button's active state. */
+  musicaOpen?: boolean;
+  /** Toggles + force-opens the initiative tracker (feature 3). NOT session-gated. */
+  onCombat: () => void;
+  /** True while the initiative tracker is revealed — drives the active state. */
+  combatOpen?: boolean;
 }
 
 const MID_TRAVEL_DESCANSO_TITLE = 'El viaje en curso ya avanza los días — usa «Continuar»';
@@ -105,6 +121,10 @@ export function QuickLogBar({
   onEvento,
   eventoDisabled = false,
   onNota,
+  onMusica,
+  musicaOpen = false,
+  onCombat,
+  combatOpen = false,
 }: QuickLogBarProps) {
   /** Which popover is open: 'creditos' | medidor name | null. */
   const [openPopover, setOpenPopover] = useState<string | null>(null);
@@ -309,6 +329,34 @@ export function QuickLogBar({
           }}
         />
       )}
+
+      {/* Música + Combate (feature 3): etched into the band, never
+          session-gated. The Combate button keeps data-combat-open so existing
+          e2e still finds the affordance. */}
+      <ActionButton
+        id="musica"
+        icon={Music}
+        label="Música"
+        enabled
+        active={musicaOpen}
+        onClick={() => {
+          setOpenPopover(null);
+          onMusica();
+        }}
+      />
+
+      <ActionButton
+        id="combate"
+        icon={Swords}
+        label="Combate"
+        enabled
+        active={combatOpen}
+        extraAttrs={{ 'data-combat-open': true }}
+        onClick={() => {
+          setOpenPopover(null);
+          onCombat();
+        }}
+      />
     </div>
   );
 }
@@ -329,6 +377,8 @@ interface ActionButtonProps {
   active?: boolean;
   disabledTitle?: string;
   onClick: () => void;
+  /** Extra data attributes spread onto the button (e.g. data-combat-open). */
+  extraAttrs?: Record<string, string | boolean | undefined>;
 }
 
 /** Large (min-h-12) vertical icon+label button; disabled state keeps its tooltip. */
@@ -341,6 +391,7 @@ function ActionButton({
   active = false,
   disabledTitle = DISABLED_TITLE,
   onClick,
+  extraAttrs,
 }: ActionButtonProps) {
   const button = (
     <Button
@@ -353,6 +404,7 @@ function ActionButton({
       className={`h-auto min-h-12 w-full flex-col gap-0.5 px-2 py-1.5 ${
         active ? 'bg-accent text-accent-foreground' : ''
       }`}
+      {...extraAttrs}
     >
       <Icon aria-hidden />
       <span className="text-xs leading-none">{label}</span>

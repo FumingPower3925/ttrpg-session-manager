@@ -12,6 +12,12 @@
  * empty-state panel instead of the AudioControls — no manager exists to
  * render.
  *
+ * CONTROLLED (feature 3): the dock no longer owns a toggle button. Open state
+ * lives in the page (`open` + `onOpenChange`) so the QuickLogBar «Música»
+ * button drives it — the standalone floating toggle "flew over" the map, so it
+ * moved into the action band. The dock renders ONLY the panel (or empty state)
+ * when `open`; closed = nothing but the mount point.
+ *
  * REUSES the play AudioControls unmodified. That component positions itself
  * `fixed top-4 right-0` with a hover-pill collapse — a layout owned by /play
  * and the ActRunner overlay, where the top-right edge is free. Here it is
@@ -19,8 +25,8 @@
  * reserves bottom-center for timer/toasts and the right column for actions,
  * so the dock parks bottom-LEFT and adapts the panel with scoped CSS instead
  * of forking the component:
- *   - the hover pill (`div.cursor-pointer`) is display:none — the dock's own
- *     music button is the expand/collapse affordance;
+ *   - the hover pill (`div.cursor-pointer`) is display:none — the QuickLogBar
+ *     «Música» button is the expand/collapse affordance now;
  *   - AudioControls' two fixed divs are forced into normal flow (`static!`)
  *     and the inline collapse transform is neutralized (`transform-none!`,
  *     !important beats the inline style), so the full panel simply IS the
@@ -28,17 +34,13 @@
  * If AudioControls ever changes its root markup, revisit those selectors.
  *
  * `concealed` (ActRunner open) hides the dock with CSS but keeps it MOUNTED,
- * so the open/closed state survives the audio handoff — e2e asserts
- * aria-pressed across an open/close round-trip. The audio ducking itself
- * lives in the page (see the actRunnerPlace wiring), not here.
+ * so the open/closed state (page-owned) survives the audio handoff. The audio
+ * ducking itself lives in the page (see the actRunnerPlace wiring), not here.
  */
 
-import { useState } from 'react';
 import type { AudioFile, EventPlaylist } from '@/types';
 import { AudioManager } from '@/lib/audioManager';
 import { AudioControls } from '@/components/play/AudioControls';
-import { Button } from '@/components/ui/button';
-import { Music2 } from 'lucide-react';
 
 interface WorldAudioDockProps {
   /**
@@ -49,6 +51,8 @@ interface WorldAudioDockProps {
   audioManager: AudioManager | null;
   bgm: AudioFile[];
   eventPlaylists: EventPlaylist[];
+  /** Page-owned open state (driven by the QuickLogBar «Música» button). */
+  open: boolean;
   /** True while the ActRunner overlay owns the room — hidden, state kept. */
   concealed: boolean;
 }
@@ -57,17 +61,16 @@ export function WorldAudioDock({
   audioManager,
   bgm,
   eventPlaylists,
+  open,
   concealed,
 }: WorldAudioDockProps) {
-  const [open, setOpen] = useState(false);
-
   return (
     <div data-world-audio="dock" className={concealed ? 'hidden' : undefined}>
       {open &&
         (audioManager ? (
           <div
             data-world-audio="panel"
-            className="fixed bottom-40 left-3 z-40 max-h-[calc(100vh-20rem)] w-[21rem] overflow-y-auto rounded-xl border bg-background shadow-lg"
+            className="fixed bottom-24 left-3 z-40 max-h-[calc(100vh-14rem)] w-[21rem] overflow-y-auto rounded-xl border bg-background shadow-lg"
           >
             <div className="flex items-center justify-between gap-2 border-b px-3 py-2 text-sm">
               <span className="font-medium">Música del mundo</span>
@@ -89,7 +92,7 @@ export function WorldAudioDock({
           <div
             data-world-audio="panel"
             data-world-audio-empty
-            className="fixed bottom-40 left-3 z-40 w-[21rem] rounded-xl border bg-background p-3 text-sm shadow-lg"
+            className="fixed bottom-24 left-3 z-40 w-[21rem] rounded-xl border bg-background p-3 text-sm shadow-lg"
           >
             <p className="font-medium">Sin música cargada</p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -98,21 +101,6 @@ export function WorldAudioDock({
             </p>
           </div>
         ))}
-      {/* min-h-11 = 44px tap target (M5 sweep). Above the QuickLogBar; the
-          bottom-center strip stays free for the Toaster (offset 96px). */}
-      <Button
-        type="button"
-        variant={open ? 'default' : 'outline'}
-        size="sm"
-        data-world-audio="toggle"
-        aria-pressed={open}
-        aria-label="Música del mundo"
-        onClick={() => setOpen((current) => !current)}
-        className="fixed bottom-24 left-3 z-40 min-h-11 shadow-md"
-      >
-        <Music2 />
-        Música
-      </Button>
     </div>
   );
 }

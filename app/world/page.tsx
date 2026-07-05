@@ -207,6 +207,32 @@
  *     openSignal is world-only — /play passes nothing and keeps the tracker's
  *     self-managed hover-to-expand behavior unchanged.
  *
+ * SHOP SYSTEM (feature — mundo/lugares/<place>/tiendas/<shop>.md):
+ *   - The scanner keys shops by place id in model.tiendas. A place panel lists
+ *     them in a "Tiendas" section (EntityPanel tiendas prop); clicking a row
+ *     sets the page-level `selectedShopId` and the entidad tab swaps the whole
+ *     panel for the ShopPanel — the SAME swap idea as selectedPnj -> PnjCard,
+ *     but shops are NOT entities so they get their own state piece (not
+ *     selectedEntityId). Changing the selected entity clears selectedShopId
+ *     (an effect), so a shop never lingers over the wrong place; a re-scan that
+ *     drops the id closes the panel too (openShop resolves live from
+ *     model.tiendas). Back clears selectedShopId -> the place panel returns.
+ *   - onBuy is session-gated: it journals gasto(precio, `compra: <articulo>`),
+ *     decrements finite stock IN MEMORY (touchModel re-renders; unlimited stock
+ *     = null never decrements — the market never runs out) and toasts
+ *     `−<precio> cr · <articulo>` with an undo action. No session -> the log is
+ *     rejected and a "Inicia sesión para comprar" toast fires (the button is
+ *     already disabled with the same hint when enabled=false). Stock lives in
+ *     the scanned model only — a reload re-reads the file's stock (the agent
+ *     reconciles purchases from the journal gasto entries), same
+ *     scan-is-source-of-truth rule as pista transitions.
+ *
+ * IN-APP RESUMEN (mundo/resumen.md — optional session recap):
+ *   - The scanner reads it like the manifest (one read, model.resumen: string |
+ *     null; never an entity). When non-null the header shows a "Resumen" button
+ *     that opens a read-only dialog ("Anteriormente…") rendering the recap via
+ *     the existing MarkdownViewer. Absent file -> no button.
+ *
  * SCAN-OVERLAY ASYMMETRY (M4 decision — documented, not a bug):
  *   worldScanner.overlayUnprocessedJournals re-derives ONLY knowledge (sabe)
  *   and location knowledge (llegada) from journals with procesado: false.
@@ -279,8 +305,10 @@ import type {
   EntityPanelEntity,
   EntityPanelLead,
   EntityPanelPersonaje,
+  EntityPanelTienda,
 } from '@/components/world/EntityPanel';
 import { PnjCard } from '@/components/world/PnjCard';
+import { ShopPanel } from '@/components/world/ShopPanel';
 import { FullscreenImage } from '@/components/world/FullscreenImage';
 import { DiagnosticsPanel } from '@/components/world/DiagnosticsPanel';
 import { WorldSearchDialog } from '@/components/world/WorldSearchDialog';
@@ -303,6 +331,14 @@ import { WorldAudioDock } from '@/components/world/WorldAudioDock';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { MarkdownViewer } from '@/components/play/MarkdownViewer';
 import type {
   Conocimiento,
   EventEffect,
@@ -313,13 +349,15 @@ import type {
   Lead,
   PartyState,
   PlaceEntity,
+  Shop,
+  ShopItem,
   SystemEntity,
   TravelPlan,
   WorldEntityBase,
   WorldEvent,
   WorldModel,
 } from '@/types/world';
-import { Eye, FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, Swords, TriangleAlert } from 'lucide-react';
+import { BookOpen, Eye, FolderOpen, Globe, Lock, Play, RefreshCw, Rocket, TriangleAlert } from 'lucide-react';
 
 interface TtrpgWorldTestHook {
   openFromOPFS: () => Promise<void>;
@@ -520,6 +558,9 @@ export default function WorldPage() {
   const [entry, setEntry] = useState<EntryMode>('checking');
   const [pendingHandle, setPendingHandle] = useState<FileSystemDirectoryHandle | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  // Feature 2: in-app session recap dialog (mundo/resumen.md). Button + dialog
+  // render only when model.resumen is non-null.
+  const [resumenOpen, setResumenOpen] = useState(false);
   const [viewport, setViewport] = useState<MapViewport | undefined>(undefined);
   // ?e= read once at first render, BEFORE the URL-writing effect can clear it.
   const [initialDeepLink] = useState(() => readEntityFromUrl());
@@ -560,6 +601,16 @@ export default function WorldPage() {
   // force the full panel open (not just the pull-tab).
   const [combatOpen, setCombatOpen] = useState(false);
   const [combatOpenSignal, setCombatOpenSignal] = useState(0);
+  // Feature 3: the world audio dock open state is page-owned now (the dock is
+  // controlled) so the QuickLogBar «Música» button drives it. Survives the
+  // ActRunner conceal round-trip because it lives here, not in the dock.
+  const [musicaOpen, setMusicaOpen] = useState(false);
+  // Shop system: the shop whose ShopPanel is open in the right column (null =
+  // closed). It is a page-level piece (shops are NOT entities, so they cannot
+  // ride selectedEntityId like pnjs do); the render below swaps the entity
+  // panel for the ShopPanel while it is set. Scoped to the selected place —
+  // changing the selected entity clears it (effect below).
+  const [selectedShopId, setSelectedShopId] = useState<string | null>(null);
   // M6: resolved object URL currently zoomed in the player-safe fullscreen
   // viewer (null = closed). The URL belongs to the page-owned image cache.
   const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
@@ -1977,6 +2028,64 @@ export default function WorldPage() {
       }));
   }, [model, selectedEntity, modelRev]);
 
+  /**
+   * Shop system: shops located AT the selected entity (Tiendas section rows),
+   * with the shopkeeper pnj name pre-resolved. Keyed by place id in
+   * model.tiendas; empty when the place has no tiendas/ folder.
+   */
+  const placeShops = useMemo<Shop[]>(() => {
+    if (!model || !selectedEntity) return [];
+    return model.tiendas.get(selectedEntity.id) ?? [];
+  }, [model, selectedEntity]);
+
+  const panelTiendas = useMemo<EntityPanelTienda[]>(() => {
+    if (!model) return [];
+    return placeShops.map((shop) => ({
+      id: shop.id,
+      nombre: shop.nombre,
+      pnj: shop.pnj ? (model.entidades.get(shop.pnj)?.nombre ?? shop.pnj) : undefined,
+    }));
+  }, [model, placeShops]);
+
+  /**
+   * The shop whose ShopPanel is open, resolved LIVE from the selected place's
+   * shops (so a re-scan or a selection change that drops the id closes the
+   * panel). modelRev is a dep because onBuy mutates item.stock in place.
+   */
+  const openShop = useMemo<Shop | null>(() => {
+    void modelRev;
+    if (!selectedShopId) return null;
+    return placeShops.find((shop) => shop.id === selectedShopId) ?? null;
+  }, [placeShops, selectedShopId, modelRev]);
+
+  /** Selecting a different entity closes any open shop (it belonged to the old place). */
+  useEffect(() => {
+    setSelectedShopId(null);
+  }, [selectedEntityId]);
+
+  /**
+   * Shop buy: session-gated. Journals a gasto (`compra: <articulo>`),
+   * decrements finite stock in memory (touchModel re-renders the derived
+   * views) and toasts. Unlimited stock (null) never decrements. Without a
+   * session the log is rejected and the GM sees the hint.
+   */
+  const handleBuy = useCallback(
+    (item: ShopItem) => {
+      const store = usePartyStore.getState();
+      if (!store.session.active) {
+        toast.error('Inicia sesión para comprar');
+        return;
+      }
+      if (item.stock === 0) return;
+      if (!store.actions.log(makeEntry.gasto(item.precio, `compra: ${item.articulo}`))) return;
+      if (item.stock !== null) item.stock -= 1;
+      touchModel();
+      rederiveLeads(); // creditos>=N requisitos track the live balance
+      toast.success(`−${item.precio} cr · ${item.articulo}`, { action: undoToastAction });
+    },
+    [touchModel, rederiveLeads, undoToastAction]
+  );
+
   /** PnjCard back: to the pnj's ubicacion place (or clear a dangling one). */
   const handlePnjBack = useCallback(() => {
     const currentModel = useWorldStore.getState().model;
@@ -2289,6 +2398,20 @@ export default function WorldPage() {
             <h1 className="text-lg font-semibold">{model.manifest.nombre || 'Mundo'}</h1>
             <div className="ml-auto flex items-center gap-2">
               <WorldSearchDialog index={searchIndex} onResultSelect={navigateToEntity} />
+              {/* Feature 2: session recap. Only present when mundo/resumen.md
+                  exists (model.resumen non-null) — opens the read-only dialog. */}
+              {model.resumen !== null && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-resumen-open
+                  onClick={() => setResumenOpen(true)}
+                  className="min-h-11"
+                >
+                  <BookOpen />
+                  Resumen
+                </Button>
+              )}
               {/* Manual rescan: the app never watches the filesystem (no FS Access
                   watch API), so after the maintenance agent edits mundo/ — or after
                   an app update changes the scanner — the GM refreshes here instead
@@ -2520,7 +2643,27 @@ export default function WorldPage() {
                 </button>
               </div>
 
-              {panelTab === 'entidad' && (
+              {panelTab === 'entidad' && openShop && (
+                <div className="min-h-0 flex-1">
+                  {/* Shop system: the ShopPanel takes the whole entidad slot
+                      while a shop is open (swap pattern reused from selectedPnj
+                      -> PnjCard). Back clears selectedShopId -> the place panel
+                      returns. See page state `selectedShopId`. */}
+                  <ShopPanel
+                    shop={openShop}
+                    pnjNombre={
+                      openShop.pnj
+                        ? (model.entidades.get(openShop.pnj)?.nombre ?? openShop.pnj)
+                        : undefined
+                    }
+                    onBack={() => setSelectedShopId(null)}
+                    onBuy={handleBuy}
+                    enabled={session.active}
+                  />
+                </div>
+              )}
+
+              {panelTab === 'entidad' && !openShop && (
                 <>
                   {siteListPlace && (
                     <div className="min-h-0 flex-1">
@@ -2568,6 +2711,8 @@ export default function WorldPage() {
                         isCurrentLocation={selectedEntity.id === ubicacion}
                         personajes={panelPersonajes}
                         onSelectPnj={selectEntity}
+                        tiendas={panelTiendas}
+                        onSelectShop={setSelectedShopId}
                         loadImageUrl={loadEntityImageUrl}
                         onImageZoom={handleImageZoom}
                         onDrillIn={
@@ -2696,6 +2841,13 @@ export default function WorldPage() {
             onEvento={() => openEventDrawer('estancia', usePartyStore.getState().ubicacion)}
             eventoDisabled={travel !== null}
             onNota={handleNota}
+            onMusica={() => setMusicaOpen((current) => !current)}
+            musicaOpen={musicaOpen}
+            onCombat={() => {
+              setCombatOpen(true);
+              setCombatOpenSignal((n) => n + 1);
+            }}
+            combatOpen={combatOpen}
           />
 
           <MoverDialog
@@ -2753,6 +2905,7 @@ export default function WorldPage() {
             audioManager={worldAudio}
             bgm={model.musica.bgm}
             eventPlaylists={model.musica.eventPlaylists}
+            open={musicaOpen}
             concealed={actRunnerOpen}
           />
 
@@ -2784,34 +2937,33 @@ export default function WorldPage() {
             />
           )}
 
-          {/* "Combate" affordance: mounts the tracker AND force-opens it via
-              openSignal (the full panel, not just the pull-tab). Hidden while
-              the ActRunner overlay owns the screen (it has its own tracker). */}
-          {actRunnerPlace === null && (
-            <Button
-              type="button"
-              size="sm"
-              variant={combatOpen ? 'secondary' : 'outline'}
-              data-combat-open
-              aria-pressed={combatOpen}
-              onClick={() => {
-                setCombatOpen(true);
-                setCombatOpenSignal((n) => n + 1);
-              }}
-              title="Abrir el rastreador de iniciativa (combate)"
-              // Bottom-RIGHT, clear of the bottom-left WorldAudioDock and the
-              // bottom-center toaster; above the QuickLogBar band.
-              className="fixed bottom-20 right-3 z-30 min-h-11 shadow-lg"
-            >
-              <Swords aria-hidden />
-              Combate
-            </Button>
-          )}
+          {/* Feature 3: the standalone floating "Combate" button moved into the
+              QuickLogBar (data-combat-open lives on that button now). The
+              QuickLogBar onCombat handler force-opens the tracker via
+              combatOpenSignal exactly as the old button did. */}
 
           {/* M6: player-safe fullscreen for entity images (z above everything;
               the URL lives in the page cache — never revoked here). */}
           {zoomedImageUrl && (
             <FullscreenImage imageUrl={zoomedImageUrl} onClose={() => setZoomedImageUrl(null)} />
+          )}
+
+          {/* Feature 2: read-only session-recap dialog ("Anteriormente…"),
+              rendering mundo/resumen.md through the existing MarkdownViewer. */}
+          {model.resumen !== null && (
+            <Dialog open={resumenOpen} onOpenChange={setResumenOpen}>
+              <DialogContent data-resumen-dialog className="max-h-[80vh] overflow-hidden sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>Anteriormente…</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    Resumen de la sesión anterior
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="min-h-0 overflow-y-auto">
+                  <MarkdownViewer content={model.resumen} className="prose-sm" />
+                </div>
+              </DialogContent>
+            </Dialog>
           )}
         </>
       ) : (

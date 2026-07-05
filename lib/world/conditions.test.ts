@@ -298,6 +298,8 @@ function makeModel(entities: WorldEntityBase[]): WorldModel {
         estadoGrupo: null,
         diario: [],
         musica: { bgm: [], eventPlaylists: [] },
+        tiendas: new Map(),
+        resumen: null,
     };
 }
 
