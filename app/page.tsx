@@ -6,6 +6,8 @@ import { SessionConfig, Part, PathDef } from '@/types';
 import { FileSystemManager, SUPPORTED_IMAGE_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS } from '@/lib/fileSystem';
 import { exportConfig, importConfig, createEmptyConfig } from '@/lib/configManager';
 import { scanSessionFolder, getExpectedStructure } from '@/lib/sessionScanner';
+import { hasWorld } from '@/lib/world/worldScanner';
+import { rememberDirHandle } from '@/lib/dirHandle';
 import { PartEditor } from '@/components/setup/PartEditor';
 import { PathManager } from '@/components/setup/PathManager';
 import {
@@ -20,7 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { FolderOpen, Plus, Edit2, Trash2, Download, Upload, Play, AlertCircle, Wand2, HelpCircle } from 'lucide-react';
+import { FolderOpen, Plus, Edit2, Trash2, Download, Upload, Play, AlertCircle, Wand2, HelpCircle, Globe } from 'lucide-react';
 
 export default function SetupPage() {
   const router = useRouter();
@@ -32,6 +34,7 @@ export default function SetupPage() {
   const [newPCName, setNewPCName] = useState('');
   const [showStructureHelp, setShowStructureHelp] = useState(false);
   const [isAutoDetecting, setIsAutoDetecting] = useState(false);
+  const [worldDetected, setWorldDetected] = useState(false);
 
   useEffect(() => {
     setIsSupported(FileSystemManager.isSupported());
@@ -45,6 +48,12 @@ export default function SetupPage() {
         ...config,
         folderName: handle.name,
       });
+      // World mode probe: mundo/mundo.md present -> offer "Entrar al mundo".
+      try {
+        setWorldDetected(await hasWorld(handle));
+      } catch {
+        setWorldDetected(false);
+      }
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
         console.log('Folder selection cancelled by user');
@@ -61,6 +70,7 @@ export default function SetupPage() {
       name: `Part ${config.parts.length + 1}`,
       planFile: null,
       images: [],
+      battlemaps: [],
       supportDocs: [],
       bgmPlaylist: [],
       eventPlaylists: [],
@@ -137,6 +147,7 @@ export default function SetupPage() {
     if (importedConfig) {
       setConfig(importedConfig);
       setFolderSelected(false);
+      setWorldDetected(false);
       alert('Configuration imported successfully. Please select your campaign folder to continue.');
     }
   };
@@ -186,6 +197,13 @@ export default function SetupPage() {
       ...config,
       playerCharacters: config.playerCharacters.filter((_, i) => i !== index),
     });
+  };
+
+  const handleEnterWorld = async () => {
+    const handle = fileSystemManager.getDirectoryHandle();
+    if (!handle) return;
+    await rememberDirHandle(handle);
+    router.push('/world');
   };
 
   const handleStartSession = () => {
@@ -256,6 +274,28 @@ export default function SetupPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* World Mode (shown when the selected folder contains mundo/mundo.md) */}
+        {worldDetected && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Globe className="h-5 w-5 text-muted-foreground" />
+                Mundo detectado
+              </CardTitle>
+              <CardDescription>
+                La carpeta contiene <code className="bg-muted px-1 rounded">mundo/mundo.md</code> —
+                puedes abrir el visor del mundo
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button onClick={handleEnterWorld}>
+                <Globe className="h-4 w-4 mr-2" />
+                Entrar al mundo
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Configuration Management */}
         <Card>

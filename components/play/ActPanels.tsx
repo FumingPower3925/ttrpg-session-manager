@@ -46,7 +46,87 @@ const FIELD_CLASS: Record<string, string> = {
   nota: 'text-muted-foreground',
 };
 
+// Skill-challenge tracker: N success + M fail pips the GM taps to count a
+// "X éxitos antes de Y fallos" beat mid-scene. Stepper feel — tapping the k-th
+// pip sets the count to k; tapping the current-topmost filled pip unfills it.
+// Purely local GM bookkeeping (no store/journal coupling); it lives inside the
+// :::accion card, which the Vista jugador toggle already hides from players.
+function RetoTracker({ exitosMeta, fallosMeta }: { exitosMeta: number; fallosMeta: number }) {
+  const [exitos, setExitos] = useState(0);
+  const [fallos, setFallos] = useState(0);
+
+  // Tap pip index p (1-based): set to p, or unfill to p-1 if it was the top pip.
+  const step = (p: number, cur: number, set: (n: number) => void) => set(cur === p ? p - 1 : p);
+
+  const superado = exitos >= exitosMeta;
+  const fallado = fallos >= fallosMeta;
+
+  const pipBtn = (
+    filled: boolean,
+    onColor: string,
+    onTap: () => void,
+    kind: 'exito' | 'fallo',
+    idx: number
+  ) => (
+    <button
+      key={`${kind}-${idx}`}
+      type="button"
+      data-reto-exito={kind === 'exito' ? idx + 1 : undefined}
+      data-reto-fallo={kind === 'fallo' ? idx + 1 : undefined}
+      aria-label={`${kind === 'exito' ? 'Éxito' : 'Fallo'} ${idx + 1}`}
+      aria-pressed={filled}
+      onClick={onTap}
+      className={`h-5 w-5 rounded-full border transition-colors ${
+        filled ? onColor : 'bg-transparent border-muted-foreground/40'
+      }`}
+    />
+  );
+
+  return (
+    <div data-reto-tracker className="rounded-md border border-dashed bg-muted/25 px-2.5 py-2 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground w-10">Éxito</span>
+        {Array.from({ length: exitosMeta }, (_, i) =>
+          pipBtn(
+            i < exitos,
+            'bg-emerald-500 border-emerald-600 dark:bg-emerald-400 dark:border-emerald-300',
+            () => step(i + 1, exitos, setExitos),
+            'exito',
+            i
+          )
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground w-10">Fallo</span>
+        {Array.from({ length: fallosMeta }, (_, i) =>
+          pipBtn(
+            i < fallos,
+            'bg-rose-500 border-rose-600 dark:bg-rose-400 dark:border-rose-300',
+            () => step(i + 1, fallos, setFallos),
+            'fallo',
+            i
+          )
+        )}
+      </div>
+      <div data-reto-readout className="text-xs text-muted-foreground tabular-nums">
+        éxitos {exitos}/{exitosMeta} · fallos {fallos}/{fallosMeta}
+        {superado && (
+          <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">▶ SUPERADO</span>
+        )}
+        {fallado && (
+          <span className="ml-1.5 font-semibold text-rose-600 dark:text-rose-400">▶ FALLADO</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ActionCard({ block }: { block: ActBlock }) {
+  const hasReto = block.exitosMeta !== undefined && block.fallosMeta !== undefined;
+  // The reto: field drives the tracker (below), so don't also list it as a raw
+  // field row. Only filter when it actually parsed into a tracker — a malformed
+  // reto still shows as a plain field so the GM can see/fix it.
+  const fields = hasReto ? block.fields?.filter((f) => f.key !== 'reto') : block.fields;
   return (
     <div className="rounded-lg border bg-card p-3 text-sm space-y-2">
       {block.name && (
@@ -55,9 +135,9 @@ function ActionCard({ block }: { block: ActBlock }) {
           <span>{block.name}</span>
         </div>
       )}
-      {block.fields && block.fields.length > 0 ? (
+      {fields && fields.length > 0 ? (
         <dl className="space-y-1.5">
-          {block.fields.map((f, i) => (
+          {fields.map((f, i) => (
             <div key={i} className="grid grid-cols-[5.5rem_1fr] gap-x-2">
               <dt className="text-[10px] uppercase tracking-wide text-muted-foreground pt-1">
                 {FIELD_LABEL[f.key] ?? f.key}
@@ -68,6 +148,9 @@ function ActionCard({ block }: { block: ActBlock }) {
         </dl>
       ) : (
         <Md>{block.body}</Md>
+      )}
+      {hasReto && (
+        <RetoTracker exitosMeta={block.exitosMeta!} fallosMeta={block.fallosMeta!} />
       )}
     </div>
   );
@@ -117,9 +200,23 @@ interface ActPanelsProps {
   content: string;
   initialScrollTop?: number;
   onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
+  /**
+   * Player-safe view (screen-share). When true, the GM-only rails are omitted
+   * from the DOM entirely — no :::gm reminders (left), no :::accion cards
+   * (right), and no :::recurso cue chips / action-count hints in the center —
+   * leaving only the :::leer / :::info read-aloud flow the players may see.
+   * Default false → the full 3-panel GM view (byte-identical to before). /play
+   * never passes this, so /play is unaffected.
+   */
+  playerView?: boolean;
 }
 
-export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanelsProps) {
+export function ActPanels({
+  content,
+  initialScrollTop = 0,
+  onScroll,
+  playerView = false,
+}: ActPanelsProps) {
   const model = useMemo(() => parseAct(content), [content]);
   const centerRef = useRef<HTMLDivElement>(null);
   const ticking = useRef(false);
@@ -155,9 +252,13 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
 
   // Publish the actions-rail width so fixed-position widgets (e.g. the timer) can
   // shift clear of it. Open = 20rem (w-80), collapsed = 2.25rem (w-9), unmounted = 0.
+  // Player view has no rail at all, so it publishes 0.
   useEffect(() => {
-    document.documentElement.style.setProperty('--actions-rail-w', rightOpen ? '20rem' : '2.25rem');
-  }, [rightOpen]);
+    document.documentElement.style.setProperty(
+      '--actions-rail-w',
+      playerView ? '0px' : rightOpen ? '20rem' : '2.25rem'
+    );
+  }, [rightOpen, playerView]);
   useEffect(
     () => () => {
       document.documentElement.style.setProperty('--actions-rail-w', '0px');
@@ -183,8 +284,9 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* LEFT RAIL — persistent act-level reminders */}
-      {leftOpen ? (
+      {/* LEFT RAIL — persistent act-level reminders (GM-only; omitted in player view) */}
+      {!playerView &&
+        (leftOpen ? (
         <aside className="w-72 shrink-0 border-r bg-muted/20 flex flex-col">
           <div className="flex items-center justify-between px-3 py-2 border-b">
             <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
@@ -206,15 +308,15 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
             )}
           </div>
         </aside>
-      ) : (
-        <button
-          onClick={() => setLeftOpen(true)}
-          title="Recordatorios del acto"
-          className="w-9 shrink-0 border-r bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
-        >
-          <PanelLeftOpen className="h-4 w-4" />
-        </button>
-      )}
+        ) : (
+          <button
+            onClick={() => setLeftOpen(true)}
+            title="Recordatorios del acto"
+            className="w-9 shrink-0 border-r bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
+          >
+            <PanelLeftOpen className="h-4 w-4" />
+          </button>
+        ))}
 
       {/* CENTER — the scene flow: read-aloud + GM guidance inline, in order */}
       <div ref={centerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
@@ -236,7 +338,7 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
                 <h2 className={s.isSection ? 'text-xl font-bold border-b pb-1' : 'text-lg font-semibold text-muted-foreground'}>
                   {s.title}
                 </h2>
-                {resources.length > 0 && (
+                {!playerView && resources.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {resources.map((b, i) => (
                       <ResourceChip key={`r-${i}`} block={b} />
@@ -259,11 +361,15 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
                       );
                     const b = item.block;
                     if (b.type === 'recurso' || b.type === 'accion') return null;
-                    if (b.type === 'gm') return <GmNote key={i} block={b} />;
+                    // Section-scoped :::gm notes are GM answer-key too — a bare
+                    // :::gm under a numbered heading parses as a section block and
+                    // renders inline here. In player view they must be truly
+                    // absent from the DOM so nothing leaks on the shared screen.
+                    if (b.type === 'gm') return playerView ? null : <GmNote key={i} block={b} />;
                     return <ReadAloud key={i} block={b} />;
                   })}
                 </div>
-                {actionCount > 0 && (
+                {!playerView && actionCount > 0 && (
                   <p className="mt-2 text-xs text-muted-foreground italic flex items-center gap-1">
                     <Dice5 className="h-3 w-3" /> {actionCount} acción(es) en el panel derecho →
                   </p>
@@ -275,8 +381,9 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
         </div>
       </div>
 
-      {/* RIGHT RAIL — actions for the section in view (+ parents + act) */}
-      {rightOpen ? (
+      {/* RIGHT RAIL — actions for the section in view (GM-only; omitted in player view) */}
+      {!playerView &&
+        (rightOpen ? (
         <aside className="w-80 shrink-0 border-l bg-muted/20 flex flex-col">
           <div className="flex items-center justify-between px-3 py-2 border-b">
             <div className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground truncate">
@@ -288,21 +395,23 @@ export function ActPanels({ content, initialScrollTop = 0, onScroll }: ActPanels
           </div>
           <div className="overflow-y-auto p-3 space-y-3">
             {actionBlocks.length ? (
-              actionBlocks.map((b, i) => <ActionCard key={i} block={b} />)
+              // Key by the active section so the per-card reto tracker state
+              // resets when the GM switches acts/parts (not reused by index).
+              actionBlocks.map((b, i) => <ActionCard key={`${activeId ?? 'x'}-${i}`} block={b} />)
             ) : (
               <p className="text-muted-foreground text-xs">— sin acciones para esta sección —</p>
             )}
           </div>
         </aside>
-      ) : (
-        <button
-          onClick={() => setRightOpen(true)}
-          title="Acciones"
-          className="w-9 shrink-0 border-l bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
-        >
-          <PanelRightOpen className="h-4 w-4" />
-        </button>
-      )}
+        ) : (
+          <button
+            onClick={() => setRightOpen(true)}
+            title="Acciones"
+            className="w-9 shrink-0 border-l bg-muted/20 flex items-start justify-center pt-3 text-muted-foreground hover:text-foreground"
+          >
+            <PanelRightOpen className="h-4 w-4" />
+          </button>
+        ))}
     </div>
   );
 }

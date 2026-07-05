@@ -143,3 +143,36 @@ test('backward compat: act-only structure produces no paths and no pathId', asyn
     expect(config.paths == null || config.paths.length === 0).toBe(true);
     expect(config.activePathId == null).toBe(true);
 });
+
+test('maps/ splits image battlemaps from markdown maps', async () => {
+    const handle = makeHandle('sessionMaps', {
+        plan: {
+            act1: { 'opening.md': '# Act 1' },
+        },
+        maps: {
+            act1: {
+                'ascii_layout.md': '```\n#####\n#...#\n#####\n```',
+                'muelle_battlemap.png': 'fake-png-bytes',
+                'plaza.jpg': 'fake-jpg-bytes',
+            },
+        },
+    });
+
+    const config = await scanSessionFolder(handle);
+    expect(config.parts).toHaveLength(1);
+    const [part] = config.parts;
+
+    // Image files -> battlemaps (createFileReference type 'image').
+    const battlemapNames = part.battlemaps.map((b) => b.name).sort();
+    expect(battlemapNames).toEqual(['muelle_battlemap.png', 'plaza.jpg']);
+    for (const bm of part.battlemaps) {
+        expect(bm.type).toBe('image');
+        expect(bm.path).toBe(`maps/act1/${bm.name}`);
+    }
+
+    // Markdown maps still land in supportDocs, NOT battlemaps.
+    const docNames = part.supportDocs.map((d) => d.name);
+    expect(docNames).toContain('ascii_layout.md');
+    expect(part.supportDocs.every((d) => d.type === 'markdown')).toBe(true);
+    expect(part.supportDocs.some((d) => d.name.endsWith('.png'))).toBe(false);
+});

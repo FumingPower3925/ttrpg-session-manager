@@ -1,0 +1,9 @@
+# Bun config for `bun test`.
+# Discover unit tests across the repo (lib/ AND components/, e.g.
+# components/world/PlaceView.test.ts) — a `root = "lib"` restriction would
+# silently hide component unit tests. The e2e/ specs are Playwright tests and
+# must run via `bun run test:e2e`; they are excluded from `bun run test` via
+# the --path-ignore-patterns flag in package.json's "test" script (bunfig does
+# not honor a testPathIgnorePatterns key, so the exclusion lives in the script).
+[test]
+root = "."

@@ -4,13 +4,13 @@ export class FileSystemManager {
   /**
    * Opens a folder picker and returns the directory handle
    */
-  async selectFolder(): Promise<FileSystemDirectoryHandle> {
+  async selectFolder(mode: 'read' | 'readwrite' = 'read'): Promise<FileSystemDirectoryHandle> {
     if (!('showDirectoryPicker' in window)) {
       throw new Error('File System Access API is not supported in this browser. Please use Chrome or Edge.');
     }
 
     this.directoryHandle = await window.showDirectoryPicker({
-      mode: 'read',
+      mode,
     });
 
     return this.directoryHandle;
@@ -164,6 +164,113 @@ export class FileSystemManager {
 
     const fileHandle = await this.getFileHandle(relativePath);
     return await fileHandle.getFile();
+  }
+
+  /**
+   * Checks whether a file or directory exists at a relative path
+   */
+  async exists(relativePath: string): Promise<boolean> {
+    if (!this.directoryHandle) {
+      return false;
+    }
+
+    const parts = relativePath.split('/').filter(Boolean);
+    let currentDir = this.directoryHandle;
+
+    try {
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentDir = await currentDir.getDirectoryHandle(parts[i]);
+      }
+      const last = parts[parts.length - 1];
+      try {
+        await currentDir.getFileHandle(last);
+        return true;
+      } catch {
+        await currentDir.getDirectoryHandle(last);
+        return true;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Writes a text file at a relative path, creating intermediate directories.
+   * createWritable() writes to a temp file and atomically swaps on close().
+   */
+  async writeTextFile(relativePath: string, content: string): Promise<void> {
+    if (!this.directoryHandle) {
+      throw new Error('No directory selected');
+    }
+
+    const parts = relativePath.split('/').filter(Boolean);
+    let currentDir = this.directoryHandle;
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      currentDir = await currentDir.getDirectoryHandle(parts[i], { create: true });
+    }
+
+    const fileHandle = await currentDir.getFileHandle(parts[parts.length - 1], { create: true });
+    const writable = await fileHandle.createWritable();
+    try {
+      await writable.write(content);
+    } finally {
+      await writable.close();
+    }
+  }
+
+  /**
+   * Deletes a file at a relative path. Walks to the parent directory and
+   * removes the entry. A file that is already gone (NotFoundError anywhere on
+   * the walk) resolves to a no-op — deletion is idempotent — while any other
+   * error propagates. Used by the world "Descartar (prueba)" flow to drop a
+   * test session's journal.
+   */
+  async deleteFile(relativePath: string): Promise<void> {
+    if (!this.directoryHandle) {
+      throw new Error('No directory selected');
+    }
+
+    const parts = relativePath.split('/').filter(Boolean);
+    if (parts.length === 0) {
+      throw new Error('Cannot delete: empty path');
+    }
+
+    try {
+      let currentDir = this.directoryHandle;
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentDir = await currentDir.getDirectoryHandle(parts[i]);
+      }
+      await currentDir.removeEntry(parts[parts.length - 1]);
+    } catch (error) {
+      // Idempotent: a missing parent dir or a missing file is already the
+      // desired end state. Anything else (permissions, type mismatch) throws.
+      if ((error as Error).name === 'NotFoundError') return;
+      throw error;
+    }
+  }
+
+  /**
+   * Queries write permission on a handle (defaults to the root directory handle)
+   */
+  async queryWritePermission(handle?: FileSystemDirectoryHandle): Promise<PermissionState> {
+    const target = handle ?? this.directoryHandle;
+    if (!target) {
+      throw new Error('No directory selected');
+    }
+    return await target.queryPermission({ mode: 'readwrite' });
+  }
+
+  /**
+   * Requests write permission on a handle (defaults to the root directory handle).
+   * Must be called from a user gesture.
+   */
+  async requestWritePermission(handle?: FileSystemDirectoryHandle): Promise<PermissionState> {
+    const target = handle ?? this.directoryHandle;
+    if (!target) {
+      throw new Error('No directory selected');
+    }
+    return await target.requestPermission({ mode: 'readwrite' });
   }
 
   /**

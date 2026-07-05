@@ -5,6 +5,14 @@ import {
     SUPPORTED_AUDIO_EXTENSIONS,
     SUPPORTED_MARKDOWN_EXTENSIONS
 } from './fileSystem';
+import {
+    getFilesFromDirectory,
+    getSubdirectory,
+    createFileReference,
+    createAudioFile,
+    readFileContent,
+    fileNameToDisplayName,
+} from './fsScanUtils';
 
 /**
  * Expected folder names for auto-detection
@@ -126,74 +134,6 @@ function prettifyPathName(folderName: string): string {
 }
 
 /**
- * Gets all files from a directory with their relative paths
- */
-async function getFilesFromDirectory(
-    handle: FileSystemDirectoryHandle,
-    basePath: string,
-    extensions: readonly string[]
-): Promise<Array<{ name: string; path: string }>> {
-    const files: Array<{ name: string; path: string }> = [];
-
-    for await (const [name, entryHandle] of handle.entries()) {
-        if (entryHandle.kind !== 'file') continue;
-
-        const ext = name.toLowerCase().split('.').pop();
-        if (extensions.includes(ext || '')) {
-            files.push({
-                name,
-                path: `${basePath}/${name}`,
-            });
-        }
-    }
-
-    return files.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/**
- * Safely gets a subdirectory handle, returning null if not found
- */
-async function getSubdirectory(
-    handle: FileSystemDirectoryHandle,
-    ...path: string[]
-): Promise<FileSystemDirectoryHandle | null> {
-    try {
-        let current = handle;
-        for (const segment of path) {
-            current = await current.getDirectoryHandle(segment);
-        }
-        return current;
-    } catch {
-        return null;
-    }
-}
-
-/**
- * Creates a FileReference from a file entry
- */
-function createFileReference(
-    file: { name: string; path: string },
-    type: 'markdown' | 'image' | 'audio'
-): FileReference {
-    return {
-        path: file.path,
-        name: file.name,
-        type,
-    };
-}
-
-/**
- * Creates an AudioFile from a file entry
- */
-function createAudioFile(file: { name: string; path: string }): AudioFile {
-    return {
-        path: file.path,
-        name: file.name,
-        type: 'audio',
-    };
-}
-
-/**
  * Detects player character names from the characters/PCs folder
  * The filename (without extension) is used as the PC name
  */
@@ -291,18 +231,6 @@ function extractStat(content: string, patterns: RegExp[]): number | null {
 }
 
 /**
- * Reads a file's content from a FileSystemFileHandle
- */
-async function readFileContent(fileHandle: FileSystemFileHandle): Promise<string> {
-    try {
-        const file = await fileHandle.getFile();
-        return await file.text();
-    } catch {
-        return '';
-    }
-}
-
-/**
  * Extracts player character stats (HP, AC/DEF) from character sheet markdown files
  */
 async function extractPCStats(folder: FileSystemDirectoryHandle): Promise<PlayerCharacterStats[]> {
@@ -344,26 +272,6 @@ async function detectPlayerCharacterStats(handle: FileSystemDirectoryHandle): Pr
         return await extractPCStats(pcsLower);
     }
     return await extractPCStats(pcsFolder);
-}
-
-/**
- * Converts a filename to a readable display name
- * Removes extension, replaces underscores with spaces, and capitalizes each word
- * Short words (2 letters or less) stay lowercase unless they're the first word
- */
-function fileNameToDisplayName(fileName: string): string {
-    // Remove extension
-    const nameWithoutExt = fileName.replace(/\.(md|markdown)$/i, '');
-    // Replace underscores with spaces and capitalize words
-    const words = nameWithoutExt.replace(/_/g, ' ').split(' ');
-    return words
-        .map((word, index) => {
-            if (index === 0 || word.length > 2) {
-                return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-            }
-            return word.toLowerCase();
-        })
-        .join(' ');
 }
 
 /**
@@ -472,6 +380,7 @@ async function scanActFolder(
         name: partName,
         planFile: null,
         images: [],
+        battlemaps: [],
         supportDocs: [],
         bgmPlaylist: [],
         eventPlaylists: [],
@@ -528,7 +437,7 @@ async function scanActFolder(
         part.supportDocs.push(...threatFiles.map(f => createFileReference(f, 'markdown')));
     }
 
-    // Scan maps folder
+    // Scan maps folder: markdown ASCII maps -> supportDocs; image files -> battlemaps.
     const mapsFolder = await getSubdirectory(handle, 'maps', actName);
     if (mapsFolder) {
         const mapFiles = await getFilesFromDirectory(
@@ -537,6 +446,13 @@ async function scanActFolder(
             SUPPORTED_MARKDOWN_EXTENSIONS
         );
         part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+
+        const battlemapFiles = await getFilesFromDirectory(
+            mapsFolder,
+            `maps/${actName}`,
+            SUPPORTED_IMAGE_EXTENSIONS
+        );
+        part.battlemaps.push(...battlemapFiles.map(f => createFileReference(f, 'image')));
     }
 
     const musicFolder = await getSubdirectory(handle, 'music', actName);
@@ -614,7 +530,7 @@ async function collectPathSupportContent(
         part.supportDocs.push(...threatFiles.map(f => createFileReference(f, 'markdown')));
     }
 
-    // Maps
+    // Maps: markdown ASCII maps -> supportDocs; image files -> battlemaps.
     const mapsFolder = await getSubdirectory(handle, 'maps', pathFolder);
     if (mapsFolder) {
         const mapFiles = await getFilesFromDirectory(
@@ -623,6 +539,13 @@ async function collectPathSupportContent(
             SUPPORTED_MARKDOWN_EXTENSIONS
         );
         part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+
+        const battlemapFiles = await getFilesFromDirectory(
+            mapsFolder,
+            `maps/${pathFolder}`,
+            SUPPORTED_IMAGE_EXTENSIONS
+        );
+        part.battlemaps.push(...battlemapFiles.map(f => createFileReference(f, 'image')));
     }
 
     // Music (BGM tracks + event playlist subfolders), same logic as scanActFolder
@@ -665,6 +588,7 @@ function createPathPart(name: string, pathId: string): Part {
         name,
         planFile: null,
         images: [],
+        battlemaps: [],
         supportDocs: [],
         bgmPlaylist: [],
         eventPlaylists: [],
@@ -728,6 +652,7 @@ async function scanForSinglePart(
         name: partName,
         planFile: null,
         images: [],
+        battlemaps: [],
         supportDocs: [],
         bgmPlaylist: [],
         eventPlaylists: [],
@@ -757,6 +682,13 @@ async function scanForSinglePart(
             const files = await getFilesFromDirectory(folder, folderName, SUPPORTED_AUDIO_EXTENSIONS);
             part.bgmPlaylist = files.map(f => createAudioFile(f));
             if (files.length > 0) hasContent = true;
+        } else if (folderName === 'maps') {
+            // maps/ markdown -> supportDocs; images -> battlemaps.
+            const mapFiles = await getFilesFromDirectory(folder, folderName, SUPPORTED_MARKDOWN_EXTENSIONS);
+            part.supportDocs.push(...mapFiles.map(f => createFileReference(f, 'markdown')));
+            const battlemapFiles = await getFilesFromDirectory(folder, folderName, SUPPORTED_IMAGE_EXTENSIONS);
+            part.battlemaps.push(...battlemapFiles.map(f => createFileReference(f, 'image')));
+            if (mapFiles.length > 0 || battlemapFiles.length > 0) hasContent = true;
         } else {
             const files = await getFilesFromDirectory(folder, folderName, SUPPORTED_MARKDOWN_EXTENSIONS);
             part.supportDocs.push(...files.map(f => createFileReference(f, 'markdown')));

@@ -1,0 +1,219 @@
+/**
+ * World-mode domain constants: folder layout, scanner ignore rules,
+ * closed vocabularies and defaults. Spanish domain values, English identifiers.
+ */
+
+import {
+    Conocimiento,
+    FactionEntity,
+    FactionPresence,
+    Lead,
+    NpcEntity,
+    PlaceEntity,
+    Trama,
+    WorldManifest,
+} from '@/types/world';
+
+// ── Folder layout ───────────────────────────────────────────────────────────
+
+/** Root folder inside the campaign folder; its presence activates world mode. */
+export const WORLD_DIR = 'mundo';
+
+/** World manifest, at `mundo/mundo.md`. */
+export const MANIFEST_FILE = 'mundo.md';
+
+/** Agent maintenance-loop instructions — never scanned as an entity. */
+export const PROTOCOL_FILE = 'PROTOCOLO.md';
+
+/** Templates dir (ignored by the scanner via the ALL-CAPS rule). */
+export const TEMPLATES_DIR = 'PLANTILLAS';
+
+/** Entity/state directory names under `mundo/`. */
+export const ENTITY_DIRS = {
+    sistemas: 'sistemas',
+    lugares: 'lugares',
+    facciones: 'facciones',
+    pnjs: 'pnjs',
+    pistas: 'pistas',
+    tramas: 'tramas',
+    eventos: 'eventos',
+    estado: 'estado',
+    diario: 'diario',
+} as const;
+
+/** File inside a playable place folder `lugares/<id>/` that holds the entity. */
+export const PLACE_FOLDER_FILE = 'lugar.md';
+
+/**
+ * Optional shops subfolder inside a place folder `lugares/<id>/tiendas/`: each
+ * `*.md` is one shop (`tipo: tienda`). Absent folder = no shops, no aviso.
+ */
+export const TIENDAS_DIR = 'tiendas';
+
+/**
+ * Optional session-recap file `mundo/resumen.md` (plain markdown, read like the
+ * manifest — one read, never an entity). Absent = no recap, no button.
+ */
+export const RESUMEN_FILE = 'resumen.md';
+
+/**
+ * Curated GM play-aid ("guía") files at the `mundo/` root: an explicit
+ * allowlist so unrelated design docs never leak into the header menu. Each is
+ * OPTIONAL and read like the manifest/resumen (one read, tolerant, never an
+ * entity); an absent file is simply skipped. `titulo` is the fallback display
+ * title when the file has no leading `# heading`.
+ */
+export const GUIA_FILES: readonly { file: string; titulo: string }[] = [
+    { file: '_RUN_OF_SHOW.md', titulo: 'Run of Show' },
+    { file: '_MAPA_DE_HILOS.md', titulo: 'Mapa de Hilos' },
+    { file: '_REPARTO_DE_MANANA.md', titulo: 'Reparto de hoy' },
+];
+
+/**
+ * Optional world-level music folder under `mundo/`: audio files at its root
+ * are the world BGM rotation, each subfolder a named event playlist. Not an
+ * entity dir — its contents are listed (never read) by the scanner.
+ */
+export const MUSIC_DIR = 'musica';
+
+/**
+ * Optional entity profile-image folder under `mundo/`: a file named
+ * `<entity_id>.<ext>` (any supported image extension) is the profile image of
+ * the entity with that id. Not an entity dir — its contents are listed (never
+ * read) by the scanner.
+ */
+export const IMAGES_DIR = 'imagenes';
+
+/** Party-state file inside `mundo/estado/`. */
+export const PARTY_STATE_FILE = 'grupo.md';
+
+/**
+ * Pixels per world coordinate unit on the sector map (1 unit = 1 travel day,
+ * per manifest). Hoisted here so pure map-geometry helpers (worldNav,
+ * threads) can compute map pixels without importing the SectorView React
+ * component; SectorView re-exports it for its existing consumers.
+ */
+export const WORLD_SCALE = 60;
+
+// ── Scanner ignore rules ────────────────────────────────────────────────────
+
+/** Dirs written in ALL-CAPS (e.g. PLANTILLAS) are ignored by the scanner. */
+export function isIgnoredDir(name: string): boolean {
+    return name === name.toUpperCase() && name !== name.toLowerCase();
+}
+
+/** Files starting with `_` and PROTOCOLO.md are ignored by the scanner. */
+export function isIgnoredFile(name: string): boolean {
+    return name.startsWith('_') || name === PROTOCOL_FILE;
+}
+
+// ── Closed vocabularies ─────────────────────────────────────────────────────
+
+export const CONOCIMIENTOS: readonly Conocimiento[] = [
+    'desconocido',
+    'rumoreado',
+    'conocido',
+    'visitado',
+];
+
+export const SERVICIOS: readonly string[] = [
+    'repostaje',
+    'mercado',
+    'medico',
+    'taller',
+    'astillero',
+    'trabajo',
+    'informacion',
+    'ocio',
+    'refugio',
+    'contrabando',
+];
+
+/** Recommended `tipo:` values for lugares — open list (out-of-vocab is only a warning). */
+export const TIPOS_LUGAR: readonly string[] = [
+    'planeta',
+    'luna',
+    'cinturon',
+    'estacion',
+    'ciudad',
+    'estructura',
+    'ruina',
+    'nodo',
+    'bolsillo',
+    'punto',
+];
+
+export const NIVELES_PRESENCIA: readonly FactionPresence['nivel'][] = [
+    'dominante',
+    'fuerte',
+    'presente',
+    'encubierta',
+];
+
+export const ACTITUDES: readonly FactionEntity['actitud'][] = [
+    'hostil',
+    'rival',
+    'neutral',
+    'aliada',
+];
+
+export const ROLES_PNJ: readonly NpcEntity['rol'][] = [
+    'villano',
+    'aliado',
+    'comodin',
+    'contacto',
+    'neutral',
+];
+
+export const ESTADOS_PISTA: readonly Lead['estadoPista'][] = [
+    'rumor',
+    'activa',
+    'en_curso',
+    'resuelta',
+    'fallida',
+];
+
+export const ROLES_TRAMA: readonly Trama['rol'][] = [
+    'principal',
+    'secundaria',
+    'ambiental',
+];
+
+export const ESTADOS_TRAMA: readonly Trama['estadoTrama'][] = [
+    'latente',
+    'activa',
+    'cerrada',
+];
+
+export const ACCESOS: readonly PlaceEntity['acceso'][] = [
+    'normal',
+    'portal',
+    'restringido',
+];
+
+// ── Defaults ────────────────────────────────────────────────────────────────
+
+export const DEFAULT_CONOCIMIENTO: Conocimiento = 'desconocido';
+
+export const DEFAULT_ACCESO: PlaceEntity['acceso'] = 'normal';
+
+/** Gauge defaults when estado/grupo.md omits `medidores` (or single entries). */
+export const DEFAULT_MEDIDORES: Readonly<Record<string, number>> = {
+    viveres: 3,
+    combustible: 3,
+    nave: 3,
+};
+
+/** Fallbacks when mundo.md omits travel constants or gauges. */
+export const MANIFEST_DEFAULTS: {
+    viaje: WorldManifest['viaje'];
+    medidores: readonly string[];
+} = {
+    viaje: {
+        diasPorUnidad: 1,
+        intrasistemaDias: 1,
+        combustibleCadaDias: 4,
+        viveresCadaDias: 4,
+    },
+    medidores: ['viveres', 'combustible', 'nave'],
+};

@@ -105,8 +105,14 @@ test.describe('Theme and Styling', () => {
 test.describe('Form Interactions', () => {
     test('should focus PC input on tab', async ({ page }) => {
         await page.goto('/');
+        // FLAKE FIX (M5): under parallel headless workers this page's window
+        // may not hold focus when the test runs, and element.focus() on an
+        // unfocused page races Chromium's focus bookkeeping (observed as a
+        // first-run-only failure that passes in isolation). Bring the page to
+        // front and focus through a real click; the assertion is unchanged.
+        await page.bringToFront();
         const input = page.getByPlaceholder(/Enter PC name/i);
-        await input.focus();
+        await input.click();
         await expect(input).toBeFocused();
     });
 

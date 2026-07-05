@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,6 +23,25 @@ interface InitiativeEntry {
 interface InitiativeTrackerProps {
   playerCharacters: string[];
   pcStats?: PlayerCharacterStats[];
+  /**
+   * World-mode only: a monotonically increasing counter. Each time it changes
+   * the tracker force-expands (unpins + opens the full panel) so a "Combate"
+   * button can pop it open. Undefined (the /play default) = no effect: the
+   * tracker keeps its self-managed hover-to-expand behavior, byte-unchanged.
+   */
+  openSignal?: number;
+  /**
+   * World-mode only: a signal to append prefilled NPC combatants (e.g. from a
+   * parsed threat statblock). Same monotonic-nonce pattern as openSignal: each
+   * time `nonce` increments, the `combatants` payload is appended as NPC rows
+   * (currentHP=maxHP, defense set, initiative 0 for the GM to roll). Names that
+   * collide with existing rows are suffixed #2/#3. Undefined (the /play
+   * default) = inert: the tracker behaves byte-identically to before.
+   */
+  addCombatants?: {
+    nonce: number;
+    combatants: { name: string; maxHP: number; defense: number }[];
+  };
 }
 
 interface CombatState {
@@ -33,7 +52,7 @@ interface CombatState {
 
 const STORAGE_KEY = 'initiativeTrackerState';
 
-export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrackerProps) {
+export function InitiativeTracker({ playerCharacters, pcStats, openSignal, addCombatants }: InitiativeTrackerProps) {
   const [entries, setEntries] = useState<InitiativeEntry[]>([]);
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0);
   const [roundCount, setRoundCount] = useState(1);
@@ -44,6 +63,64 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
   const [isPinned, setIsPinned] = useState(false);
   const [newStatusInput, setNewStatusInput] = useState<Record<string, string>>({});
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
+
+  // World-mode force-open: expand the full panel when openSignal increments.
+  // The initial mount value is ignored (no spurious auto-open); /play never
+  // passes openSignal so this is inert there.
+  const prevOpenSignal = useRef<number | undefined>(openSignal);
+  useEffect(() => {
+    if (openSignal === undefined) return;
+    if (prevOpenSignal.current === openSignal) return;
+    prevOpenSignal.current = openSignal;
+    setIsPinned(false);
+    setIsExpanded(true);
+  }, [openSignal]);
+
+  // World-mode append: when addCombatants.nonce increments, append the payload
+  // as NPC rows with HP/AC prefilled. The initial mount value is ignored (no
+  // spurious add). /play never passes addCombatants so this is inert there.
+  const prevAddNonce = useRef<number | undefined>(addCombatants?.nonce);
+  useEffect(() => {
+    if (addCombatants === undefined) return;
+    if (prevAddNonce.current === addCombatants.nonce) return;
+    prevAddNonce.current = addCombatants.nonce;
+    const incoming = addCombatants.combatants;
+    if (incoming.length === 0) return;
+
+    setEntries(prev => {
+      // De-dupe names against existing rows AND within this batch: a repeated
+      // name gets a " #2" / " #3" suffix so the tracker never shows twins.
+      const used = new Set(prev.map(e => e.name));
+      const uniqueName = (name: string): string => {
+        if (!used.has(name)) {
+          used.add(name);
+          return name;
+        }
+        let n = 2;
+        while (used.has(`${name} #${n}`)) n++;
+        const result = `${name} #${n}`;
+        used.add(result);
+        return result;
+      };
+
+      const rows: InitiativeEntry[] = incoming.map((c, i) => {
+        const maxHP = Math.max(0, Math.floor(c.maxHP) || 0);
+        return {
+          id: `npc-${Date.now()}-${i}`,
+          name: uniqueName(c.name),
+          initiative: 0,
+          type: 'npc' as const,
+          currentHP: maxHP,
+          maxHP,
+          tempHP: 0,
+          defense: Math.max(0, Math.floor(c.defense) || 0),
+          statusEffects: [],
+        };
+      });
+
+      return [...prev, ...rows].sort((a, b) => b.initiative - a.initiative);
+    });
+  }, [addCombatants]);
 
   useEffect(() => {
     const savedState = localStorage.getItem(STORAGE_KEY);
@@ -287,6 +364,7 @@ export function InitiativeTracker({ playerCharacters, pcStats }: InitiativeTrack
       {/* Semi-circle indicator when collapsed */}
       {!isExpanded && (
         <div
+          data-initiative-toggle
           className="fixed left-0 top-1/2 -translate-y-1/2 z-40 cursor-pointer"
           onMouseEnter={() => setIsExpanded(true)}
         >

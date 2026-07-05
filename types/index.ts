@@ -18,6 +18,7 @@ export interface Part {
   name: string;
   planFile: FileReference | null;
   images: FileReference[];
+  battlemaps: FileReference[]; // gridded battlemap IMAGES from maps/ (markdown maps stay in supportDocs)
   supportDocs: FileReference[];
   bgmPlaylist: AudioFile[];
   eventPlaylists: EventPlaylist[];

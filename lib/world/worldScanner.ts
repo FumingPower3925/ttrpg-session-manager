@@ -1,0 +1,1664 @@
+/**
+ * World scanner: materializes a campaign folder's `mundo/` tree into a WorldModel.
+ *
+ * NEVER throws on bad content — every problem degrades into a ValidationIssue in
+ * `problemas` (nivel 'error' | 'aviso') so the world always loads, however broken.
+ * Reads are batched (Promise.all in chunks of 25) with an optional progress callback.
+ */
+
+import { FileReference, SessionConfig } from '@/types';
+import {
+    CondContext,
+    Conocimiento,
+    EventTable,
+    FactionEntity,
+    FactionPresence,
+    Guia,
+    JournalDay,
+    Lead,
+    NpcEntity,
+    PartyState,
+    PlaceEntity,
+    Shop,
+    SystemEntity,
+    Trama,
+    ValidationIssue,
+    WorldEntityBase,
+    WorldManifest,
+    WorldModel,
+} from '@/types/world';
+import { scanSessionFolder } from '@/lib/sessionScanner';
+import {
+    createAudioFile,
+    createFileReference,
+    fileNameToDisplayName,
+    getFilesFromDirectory,
+    getSubdirectory,
+    readFileContent,
+} from '@/lib/fsScanUtils';
+import { SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_IMAGE_EXTENSIONS } from '@/lib/fileSystem';
+import { buildCondContext, evalConditions, isParseableCondition } from './conditions';
+import { parseEventTable } from './eventEngine';
+import { parseJournal, parseLlegadaPayload, parseSabePayload } from './logEntries';
+import { parseShop } from './shops';
+import { ancestryChain } from './worldNav';
+import { defaultPartyState, parsePartyState } from './partyState';
+import {
+    asCoords,
+    asNumber,
+    asString,
+    asStringArray,
+    normalizeKeys,
+    parseFrontmatter,
+} from './frontmatter';
+import {
+    ACCESOS,
+    ACTITUDES,
+    CONOCIMIENTOS,
+    DEFAULT_ACCESO,
+    DEFAULT_CONOCIMIENTO,
+    ENTITY_DIRS,
+    ESTADOS_PISTA,
+    GUIA_FILES,
+    IMAGES_DIR,
+    ESTADOS_TRAMA,
+    MANIFEST_DEFAULTS,
+    MANIFEST_FILE,
+    MUSIC_DIR,
+    NIVELES_PRESENCIA,
+    PARTY_STATE_FILE,
+    PLACE_FOLDER_FILE,
+    RESUMEN_FILE,
+    ROLES_PNJ,
+    ROLES_TRAMA,
+    SERVICIOS,
+    TIENDAS_DIR,
+    TIPOS_LUGAR,
+    WORLD_DIR,
+    isIgnoredDir,
+    isIgnoredFile,
+} from './constants';
+
+export type ScanProgressCallback = (done: number, total: number) => void;
+
+/** Files read per Promise.all batch. */
+const READ_BATCH_SIZE = 25;
+
+const MANIFEST_PATH = `${WORLD_DIR}/${MANIFEST_FILE}`;
+
+const PARTY_STATE_PATH = `${WORLD_DIR}/${ENTITY_DIRS.estado}/${PARTY_STATE_FILE}`;
+
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/** Cheap probe: does the campaign folder contain `mundo/mundo.md`? */
+export async function hasWorld(handle: FileSystemDirectoryHandle): Promise<boolean> {
+    const mundoDir = await getSubdirectory(handle, WORLD_DIR);
+    if (!mundoDir) return false;
+    try {
+        await mundoDir.getFileHandle(MANIFEST_FILE);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Scans `mundo/` under the campaign folder handle into a WorldModel.
+ * Degrades every problem into `problemas`; only infrastructure failures
+ * outside the scanned content could ever throw.
+ */
+export async function scanWorldFolder(
+    handle: FileSystemDirectoryHandle,
+    onProgress?: ScanProgressCallback
+): Promise<WorldModel> {
+    const problemas: ValidationIssue[] = [];
+
+    const mundoDir = await getSubdirectory(handle, WORLD_DIR);
+    if (!mundoDir) {
+        problemas.push({
+            nivel: 'error',
+            archivo: WORLD_DIR,
+            mensaje: `No se encontró la carpeta "${WORLD_DIR}/" en la carpeta de campaña`,
+        });
+        onProgress?.(1, 1);
+        return assembleModel(
+            defaultManifest(),
+            [],
+            problemas,
+            null,
+            emptyMusica(),
+            new Map(),
+            null,
+            []
+        );
+    }
+
+    // Enumerate first (cheap directory listings), then read contents in batches.
+    const tasks = await collectTasks(mundoDir);
+    const totalReads = 2 + tasks.length; // +2 = manifest + estado/grupo.md
+    let done = 0;
+
+    // Manifest read
+    let manifestContent: string | null = null;
+    try {
+        const manifestHandle = await mundoDir.getFileHandle(MANIFEST_FILE);
+        manifestContent = await readFileContent(manifestHandle);
+    } catch {
+        manifestContent = null;
+    }
+    done = 1;
+    onProgress?.(done, totalReads);
+
+    // Party state read (estado/grupo.md)
+    const estadoGrupo = await readPartyState(mundoDir, problemas);
+    done = 2;
+    onProgress?.(done, totalReads);
+
+    // World-level music (musica/): directory listings only, never file reads,
+    // so it stays outside the read-progress accounting.
+    const musica = await scanWorldMusic(mundoDir);
+
+    // Entity profile images (imagenes/): one directory listing, never read.
+    const imagenes = await scanEntityImages(mundoDir);
+
+    // Session recap (resumen.md): one optional read, like the manifest — plain
+    // markdown, null when absent, never an entity and never an aviso.
+    const resumen = await readResumen(mundoDir);
+
+    // GM play-aid sheets (GUIA_FILES allowlist): a handful of optional reads at
+    // the mundo/ root, each tolerant like the recap — absent files are skipped.
+    const guias = await readGuias(mundoDir);
+
+    // Entity reads, batched
+    const records: RawEntityFile[] = [];
+    for (let i = 0; i < tasks.length; i += READ_BATCH_SIZE) {
+        const chunk = tasks.slice(i, i + READ_BATCH_SIZE);
+        const results = await Promise.all(chunk.map((task) => task()));
+        for (const result of results) {
+            problemas.push(...result.issues);
+            if (result.record) records.push(result.record);
+        }
+        done += chunk.length;
+        onProgress?.(done, totalReads);
+    }
+
+    const manifest = parseManifest(manifestContent, problemas);
+    return assembleModel(
+        manifest,
+        records,
+        problemas,
+        estadoGrupo,
+        musica,
+        imagenes,
+        resumen,
+        guias
+    );
+}
+
+/**
+ * Reads the OPTIONAL `mundo/resumen.md` recap. Returns its whole text, or null
+ * when the file is absent (or unreadable) — the recap is optional by design,
+ * so absence is silent (no aviso), exactly like an empty musica/ folder.
+ */
+async function readResumen(mundoDir: FileSystemDirectoryHandle): Promise<string | null> {
+    try {
+        const handle = await mundoDir.getFileHandle(RESUMEN_FILE);
+        const file = await handle.getFile();
+        return await file.text();
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Reads the curated GUIA_FILES allowlist at the `mundo/` root — the GM play-aid
+ * sheets (run of show, thread map, cast). Each read is tolerant like readResumen
+ * (absent → skip, unreadable → skip, never throws); the allowlist keeps design
+ * docs out of the header menu. The display title prefers the file's first
+ * markdown `# heading`, falling back to the mapping's `titulo`. Returns the
+ * present guías in allowlist order (empty array when none exist).
+ */
+async function readGuias(mundoDir: FileSystemDirectoryHandle): Promise<Guia[]> {
+    const guias: Guia[] = [];
+    for (const { file, titulo } of GUIA_FILES) {
+        try {
+            const handle = await mundoDir.getFileHandle(file);
+            const content = await (await handle.getFile()).text();
+            guias.push({
+                id: file.replace(/\.md$/i, ''),
+                titulo: firstHeading(content) ?? titulo,
+                content,
+            });
+        } catch {
+            // Absent or unreadable — skip silently (each guía is optional).
+        }
+    }
+    return guias;
+}
+
+/** First markdown `# heading` text (single leading `#`), or null when none. */
+function firstHeading(markdown: string): string | null {
+    for (const line of markdown.split('\n')) {
+        const match = /^#\s+(.+?)\s*$/.exec(line);
+        if (match) return match[1];
+    }
+    return null;
+}
+
+// ── Entity profile images (imagenes/) ───────────────────────────────────────
+
+/**
+ * Lists the OPTIONAL `mundo/imagenes/` folder ONCE (directory listing only —
+ * image bytes are never read; the page resolves object URLs lazily): a file
+ * `<entity_id>.<ext>` with a supported image extension becomes the profile
+ * image of the entity with that id, whatever its kind. The usual ignore rules
+ * apply (`_`-prefixed files); an absent folder yields an empty map and NO
+ * aviso — the folder is optional by design. When two files share a basename
+ * (e.g. `kovar_iii.png` + `kovar_iii.svg`) the first in name-sorted order
+ * wins, deterministically. Basenames matching no entity id are flagged in
+ * assembleModel (probable typo) once the entity map exists.
+ */
+async function scanEntityImages(
+    mundoDir: FileSystemDirectoryHandle
+): Promise<Map<string, FileReference>> {
+    const byId = new Map<string, FileReference>();
+    const imagenesDir = await getSubdirectory(mundoDir, IMAGES_DIR);
+    if (!imagenesDir) return byId;
+
+    const files = await getFilesFromDirectory(
+        imagenesDir,
+        `${WORLD_DIR}/${IMAGES_DIR}`,
+        SUPPORTED_IMAGE_EXTENSIONS
+    );
+    for (const file of files) {
+        if (isIgnoredFile(file.name)) continue;
+        const id = file.name.replace(/\.[^.]+$/, '');
+        if (!byId.has(id)) byId.set(id, createFileReference(file, 'image'));
+    }
+    return byId;
+}
+
+// ── World-level music (musica/) ─────────────────────────────────────────────
+
+function emptyMusica(): WorldModel['musica'] {
+    return { bgm: [], eventPlaylists: [] };
+}
+
+/**
+ * Scans the OPTIONAL `mundo/musica/` folder: audio files at its root are the
+ * world BGM rotation (generic ambient/travel beds), each subfolder a named
+ * event playlist (folder name -> display name, files inside -> its tracks).
+ * Markdown prompt docs living there are excluded by the audio-extension
+ * filter; the usual ignore rules apply on top (`_`-prefixed files/dirs,
+ * ALL-CAPS dirs). An absent folder yields empty arrays and NO aviso — the
+ * folder is optional by design. Paths arrive prefixed `mundo/musica/...` so
+ * the world fs manager (campaign root) resolves them directly.
+ */
+async function scanWorldMusic(
+    mundoDir: FileSystemDirectoryHandle
+): Promise<WorldModel['musica']> {
+    const musica = emptyMusica();
+    const musicaDir = await getSubdirectory(mundoDir, MUSIC_DIR);
+    if (!musicaDir) return musica;
+
+    const basePath = `${WORLD_DIR}/${MUSIC_DIR}`;
+    const rootFiles = await getFilesFromDirectory(
+        musicaDir,
+        basePath,
+        SUPPORTED_AUDIO_EXTENSIONS
+    );
+    musica.bgm = rootFiles
+        .filter((file) => !isIgnoredFile(file.name))
+        .map((file) => createAudioFile(file));
+
+    // Subfolders (same dir ignore rules as listEntries), name-sorted so the
+    // playlist order is stable across scans and platforms.
+    const subdirs: Array<{ name: string; handle: FileSystemDirectoryHandle }> = [];
+    for await (const [name, entryHandle] of musicaDir.entries()) {
+        if (entryHandle.kind !== 'directory') continue;
+        if (isIgnoredDir(name) || name.startsWith('_')) continue;
+        subdirs.push({ name, handle: entryHandle as FileSystemDirectoryHandle });
+    }
+    subdirs.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const subdir of subdirs) {
+        const tracks = await getFilesFromDirectory(
+            subdir.handle,
+            `${basePath}/${subdir.name}`,
+            SUPPORTED_AUDIO_EXTENSIONS
+        );
+        const kept = tracks
+            .filter((file) => !isIgnoredFile(file.name))
+            .map((file) => createAudioFile(file));
+        // Empty subfolders never become playlists (same rule as sessionScanner),
+        // and the folder name doubles as a stable, deterministic playlist id.
+        if (kept.length > 0) {
+            musica.eventPlaylists.push({
+                id: subdir.name,
+                name: fileNameToDisplayName(subdir.name),
+                tracks: kept,
+            });
+        }
+    }
+
+    return musica;
+}
+
+/** NotFoundError as thrown by the real FS Access API (DOMException) or the test mock. */
+function isNotFoundError(error: unknown): boolean {
+    if (typeof error === 'object' && error !== null && 'name' in error) {
+        if ((error as { name: unknown }).name === 'NotFoundError') return true;
+    }
+    return error instanceof Error && error.message.startsWith('NotFoundError');
+}
+
+/**
+ * Reads + parses `estado/grupo.md`. An absent file (or absent `estado/` dir)
+ * is a normal pre-M6 world: null model field plus an aviso, never an error.
+ * A file that EXISTS but cannot be read is a real error-level issue carrying
+ * the underlying message — never conflated with absence.
+ */
+async function readPartyState(
+    mundoDir: FileSystemDirectoryHandle,
+    problemas: ValidationIssue[]
+): Promise<PartyState | null> {
+    const readError = (error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        problemas.push({
+            nivel: 'error',
+            archivo: PARTY_STATE_PATH,
+            mensaje: `No se pudo leer ${ENTITY_DIRS.estado}/${PARTY_STATE_FILE}: ${detail}`,
+        });
+    };
+
+    let content: string | null = null;
+    const estadoDir = await getSubdirectory(mundoDir, ENTITY_DIRS.estado);
+    if (estadoDir) {
+        let fileHandle: FileSystemFileHandle | null = null;
+        try {
+            fileHandle = await estadoDir.getFileHandle(PARTY_STATE_FILE);
+        } catch (error) {
+            if (!isNotFoundError(error)) {
+                readError(error);
+                return null;
+            }
+        }
+        if (fileHandle) {
+            // NOT readFileContent(): that helper swallows read failures as ''.
+            try {
+                const file = await fileHandle.getFile();
+                content = await file.text();
+            } catch (error) {
+                readError(error);
+                return null;
+            }
+        }
+    }
+
+    if (content === null) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: PARTY_STATE_PATH,
+            mensaje: `No se encontró ${ENTITY_DIRS.estado}/${PARTY_STATE_FILE} — no hay estado del grupo`,
+        });
+        return null;
+    }
+
+    const { state, issues } = parsePartyState(content, PARTY_STATE_PATH);
+    problemas.push(...issues);
+    return state;
+}
+
+// ── Enumeration + batched reads ─────────────────────────────────────────────
+
+type EntityKind = 'sistema' | 'lugar' | 'faccion' | 'pnj' | 'pista' | 'trama';
+
+interface RawEntityFile {
+    /** 'diario' records become JournalDays and 'evento' records EventTables — never entities. */
+    kind: EntityKind | 'diario' | 'evento';
+    /** filename minus .md, or the folder name for playable place folders. */
+    id: string;
+    /** Path relative to the campaign folder. */
+    filePath: string;
+    content: string;
+    /** Set for playable place folders with session content. */
+    playable?: SessionConfig;
+    /** Parsed shops from the place folder's optional `tiendas/` subfolder. */
+    tiendas?: Shop[];
+}
+
+interface TaskResult {
+    record: RawEntityFile | null;
+    issues: ValidationIssue[];
+}
+
+type ScanTask = () => Promise<TaskResult>;
+
+/**
+ * Flat entity dirs scanned as `*.md` files. eventos/ and diario/ are scanned
+ * separately below (event tables and journals, not entities) and
+ * estado/grupo.md is read via readPartyState.
+ */
+const FLAT_KIND_DIRS: ReadonlyArray<{ kind: EntityKind; dir: string }> = [
+    { kind: 'sistema', dir: ENTITY_DIRS.sistemas },
+    { kind: 'faccion', dir: ENTITY_DIRS.facciones },
+    { kind: 'pnj', dir: ENTITY_DIRS.pnjs },
+    { kind: 'pista', dir: ENTITY_DIRS.pistas },
+    { kind: 'trama', dir: ENTITY_DIRS.tramas },
+];
+
+function stripMd(name: string): string {
+    return name.replace(/\.md$/i, '');
+}
+
+function isMarkdownFile(name: string): boolean {
+    return name.toLowerCase().endsWith('.md');
+}
+
+async function listEntries(
+    dir: FileSystemDirectoryHandle
+): Promise<{ files: Array<{ name: string; handle: FileSystemFileHandle }>; dirs: Array<{ name: string; handle: FileSystemDirectoryHandle }> }> {
+    const files: Array<{ name: string; handle: FileSystemFileHandle }> = [];
+    const dirs: Array<{ name: string; handle: FileSystemDirectoryHandle }> = [];
+
+    for await (const [name, entryHandle] of dir.entries()) {
+        if (entryHandle.kind === 'file') {
+            if (isMarkdownFile(name) && !isIgnoredFile(name)) {
+                files.push({ name, handle: entryHandle as FileSystemFileHandle });
+            }
+        } else {
+            if (!isIgnoredDir(name) && !name.startsWith('_')) {
+                dirs.push({ name, handle: entryHandle as FileSystemDirectoryHandle });
+            }
+        }
+    }
+
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    dirs.sort((a, b) => a.name.localeCompare(b.name));
+    return { files, dirs };
+}
+
+async function collectTasks(mundoDir: FileSystemDirectoryHandle): Promise<ScanTask[]> {
+    const tasks: ScanTask[] = [];
+
+    // Flat dirs: sistemas/, facciones/, pnjs/, pistas/, tramas/
+    for (const { kind, dir } of FLAT_KIND_DIRS) {
+        const dirHandle = await getSubdirectory(mundoDir, dir);
+        if (!dirHandle) continue;
+        const { files } = await listEntries(dirHandle);
+        for (const file of files) {
+            const filePath = `${WORLD_DIR}/${dir}/${file.name}`;
+            tasks.push(async () => ({
+                record: {
+                    kind,
+                    id: stripMd(file.name),
+                    filePath,
+                    content: await readFileContent(file.handle),
+                },
+                issues: [],
+            }));
+        }
+    }
+
+    // lugares/: flat *.md files PLUS playable subfolders (lugar.md + session categories)
+    const lugaresDir = await getSubdirectory(mundoDir, ENTITY_DIRS.lugares);
+    if (lugaresDir) {
+        const { files, dirs } = await listEntries(lugaresDir);
+        for (const file of files) {
+            const filePath = `${WORLD_DIR}/${ENTITY_DIRS.lugares}/${file.name}`;
+            tasks.push(async () => ({
+                record: {
+                    kind: 'lugar',
+                    id: stripMd(file.name),
+                    filePath,
+                    content: await readFileContent(file.handle),
+                },
+                issues: [],
+            }));
+        }
+        for (const dir of dirs) {
+            tasks.push(() => scanPlaceFolder(dir.name, dir.handle));
+        }
+    }
+
+    // eventos/: event tables (M4) — parsed into model.tablas, not entities.
+    const eventosDir = await getSubdirectory(mundoDir, ENTITY_DIRS.eventos);
+    if (eventosDir) {
+        const { files } = await listEntries(eventosDir);
+        for (const file of files) {
+            const filePath = `${WORLD_DIR}/${ENTITY_DIRS.eventos}/${file.name}`;
+            tasks.push(async () => ({
+                record: {
+                    kind: 'evento',
+                    id: stripMd(file.name),
+                    filePath,
+                    content: await readFileContent(file.handle),
+                },
+                issues: [],
+            }));
+        }
+    }
+
+    // diario/: session journals (M3) — parsed into model.diario, not entities.
+    const diarioDir = await getSubdirectory(mundoDir, ENTITY_DIRS.diario);
+    if (diarioDir) {
+        const { files } = await listEntries(diarioDir);
+        for (const file of files) {
+            const filePath = `${WORLD_DIR}/${ENTITY_DIRS.diario}/${file.name}`;
+            tasks.push(async () => ({
+                record: {
+                    kind: 'diario',
+                    id: stripMd(file.name),
+                    filePath,
+                    content: await readFileContent(file.handle),
+                },
+                issues: [],
+            }));
+        }
+    }
+
+    return tasks;
+}
+
+/**
+ * A playable place folder `lugares/<id>/`: `lugar.md` is the entity; the rest of
+ * the folder is scanned with the EXISTING scanSessionFolder() (classic session
+ * layout) and every FileReference path is re-based onto the campaign folder.
+ */
+async function scanPlaceFolder(
+    id: string,
+    dirHandle: FileSystemDirectoryHandle
+): Promise<TaskResult> {
+    const folderPath = `${WORLD_DIR}/${ENTITY_DIRS.lugares}/${id}`;
+    const issues: ValidationIssue[] = [];
+
+    let placeFileHandle: FileSystemFileHandle;
+    try {
+        placeFileHandle = await dirHandle.getFileHandle(PLACE_FOLDER_FILE);
+    } catch {
+        issues.push({
+            nivel: 'error',
+            archivo: folderPath,
+            mensaje: `Carpeta de lugar sin ${PLACE_FOLDER_FILE}`,
+        });
+        return { record: null, issues };
+    }
+
+    const content = await readFileContent(placeFileHandle);
+
+    let playable: SessionConfig | undefined;
+    try {
+        const config = await scanSessionFolder(dirHandle);
+        // A folder with lugar.md but no session content is just a plain place.
+        if (config.parts.length > 0) {
+            playable = prefixSessionConfigPaths(splitFlatPlanParts(config), `${folderPath}/`);
+        }
+    } catch {
+        issues.push({
+            nivel: 'aviso',
+            archivo: folderPath,
+            mensaje: 'No se pudo escanear el contenido jugable de la carpeta',
+        });
+    }
+
+    const tiendas = await scanShops(dirHandle, folderPath, issues);
+
+    return {
+        record: {
+            kind: 'lugar',
+            id,
+            filePath: `${folderPath}/${PLACE_FOLDER_FILE}`,
+            content,
+            playable,
+            tiendas,
+        },
+        issues,
+    };
+}
+
+/**
+ * Reads the OPTIONAL `tiendas/` subfolder of a place folder: each `*.md`
+ * (ignore rules apply — `_`-prefixed files, ALL-CAPS dirs) parses into one
+ * Shop via parseShop. An absent folder yields [] and NO aviso (optional by
+ * design). Shopkeeper `pnj` refs are validated later in assembleModel, once
+ * the entity map exists.
+ */
+async function scanShops(
+    dirHandle: FileSystemDirectoryHandle,
+    folderPath: string,
+    issues: ValidationIssue[]
+): Promise<Shop[]> {
+    const tiendasDir = await getSubdirectory(dirHandle, TIENDAS_DIR);
+    if (!tiendasDir) return [];
+
+    const { files } = await listEntries(tiendasDir);
+    const shops: Shop[] = [];
+    for (const file of files) {
+        const filePath = `${folderPath}/${TIENDAS_DIR}/${file.name}`;
+        const content = await readFileContent(file.handle);
+        const { shop, issues: shopIssues } = parseShop(content, filePath, stripMd(file.name));
+        issues.push(...shopIssues);
+        shops.push(shop);
+    }
+    return shops;
+}
+
+/**
+ * Splits the legacy single-part fallback of scanSessionFolder into one Part per
+ * plan/*.md file. A playable PLACE keeps its acts as flat files (plan/acto2.md,
+ * plan/acto2b.md, ...) and scanForSinglePart would bundle them into one "Part 1"
+ * with the extra acts demoted to support docs — wrong for the ActRunner, where
+ * each act must be its own selectable part with its own timer.
+ *
+ * Classic session mode is untouched: this transform runs only on world playable
+ * places, only on the exact single-part fallback shape, and support content
+ * (characters/threats/maps/music/images) stays attached to the FIRST part —
+ * the same convention branching path folders use.
+ */
+function splitFlatPlanParts(config: SessionConfig): SessionConfig {
+    if (config.parts.length !== 1) return config;
+    const [part] = config.parts;
+    if (!part.planFile || !part.planFile.path.startsWith('plan/')) return config;
+
+    const planDocs = part.supportDocs.filter((doc) => doc.path.startsWith('plan/'));
+    if (planDocs.length === 0) return config;
+    const otherDocs = part.supportDocs.filter((doc) => !doc.path.startsWith('plan/'));
+
+    const actFiles = [part.planFile, ...planDocs].sort((a, b) => a.path.localeCompare(b.path));
+    const parts = actFiles.map((ref, i) => ({
+        id: `${part.id}-acto${i}`,
+        name: fileNameToDisplayName(ref.name),
+        planFile: ref,
+        images: i === 0 ? part.images : [],
+        battlemaps: i === 0 ? part.battlemaps : [],
+        supportDocs: i === 0 ? otherDocs : [],
+        bgmPlaylist: i === 0 ? part.bgmPlaylist : [],
+        eventPlaylists: i === 0 ? part.eventPlaylists : [],
+    }));
+    return { ...config, parts };
+}
+
+function prefixFileReference<T extends FileReference>(ref: T, prefix: string): T {
+    return { ...ref, path: `${prefix}${ref.path}` };
+}
+
+/** Re-bases every FileReference in a SessionConfig onto the campaign folder root. */
+function prefixSessionConfigPaths(config: SessionConfig, prefix: string): SessionConfig {
+    return {
+        ...config,
+        parts: config.parts.map((part) => ({
+            ...part,
+            planFile: part.planFile ? prefixFileReference(part.planFile, prefix) : null,
+            images: part.images.map((ref) => prefixFileReference(ref, prefix)),
+            battlemaps: part.battlemaps.map((ref) => prefixFileReference(ref, prefix)),
+            supportDocs: part.supportDocs.map((ref) => prefixFileReference(ref, prefix)),
+            bgmPlaylist: part.bgmPlaylist.map((ref) => prefixFileReference(ref, prefix)),
+            eventPlaylists: part.eventPlaylists.map((playlist) => ({
+                ...playlist,
+                tracks: playlist.tracks.map((ref) => prefixFileReference(ref, prefix)),
+            })),
+        })),
+    };
+}
+
+// ── Manifest ────────────────────────────────────────────────────────────────
+
+function defaultManifest(): WorldManifest {
+    return {
+        nombre: 'Mundo',
+        calendario: { era: '', anoEpoca: 0, diasPorMes: 30, meses: [] },
+        viaje: { ...MANIFEST_DEFAULTS.viaje },
+        medidores: [...MANIFEST_DEFAULTS.medidores],
+        regiones: [],
+    };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * `viaje.combustible_cada_dias` with legacy-knob migration: the pre-economy
+ * `combustible_por_tramo` (flat units per jump) is dimensionally different
+ * from per-day cadence, so it is NEVER mapped numerically — a manifest still
+ * carrying it gets the default cadence plus an aviso (and when both keys are
+ * present, `combustible_cada_dias` wins, still with the aviso).
+ */
+function parseCombustibleCadaDias(
+    viaje: Record<string, unknown> | undefined,
+    fallback: WorldManifest,
+    problemas: ValidationIssue[]
+): number {
+    const cada = asNumber(viaje?.combustible_cada_dias) ?? fallback.viaje.combustibleCadaDias;
+    if (viaje !== undefined && viaje.combustible_por_tramo !== undefined) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: MANIFEST_PATH,
+            mensaje:
+                '«viaje.combustible_por_tramo» está obsoleto — usa «combustible_cada_dias» ' +
+                `(aplicado: ${cada})`,
+        });
+    }
+    return cada;
+}
+
+function parseManifest(content: string | null, problemas: ValidationIssue[]): WorldManifest {
+    const fallback = defaultManifest();
+
+    if (content === null) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: MANIFEST_PATH,
+            mensaje: `No se encontró ${MANIFEST_FILE} — se usan los valores por defecto`,
+        });
+        return fallback;
+    }
+
+    const parsed = parseFrontmatter(content, MANIFEST_PATH);
+    if (parsed.issue) problemas.push(parsed.issue);
+    const data = normalizeKeys(parsed.data);
+
+    const missing = (campo: string) => {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: MANIFEST_PATH,
+            mensaje: `Falta "${campo}" en el manifiesto — se usa el valor por defecto`,
+        });
+    };
+
+    const nombre = asString(data.nombre);
+    if (nombre === undefined) missing('nombre');
+
+    const cal = isRecord(data.calendario) ? data.calendario : undefined;
+    if (cal === undefined) missing('calendario');
+
+    const viaje = isRecord(data.viaje) ? data.viaje : undefined;
+    if (viaje === undefined) missing('viaje');
+
+    if (data.medidores === undefined) missing('medidores');
+    if (data.regiones === undefined) missing('regiones');
+
+    const medidores =
+        data.medidores === undefined ? [...fallback.medidores] : asStringArray(data.medidores);
+    // Whitespace would break the strict `medidor <nombre> A->B` journal
+    // payload grammar (the name parses as \S+) AND the condition grammar.
+    for (const nombre of medidores) {
+        if (/\s/.test(nombre)) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: MANIFEST_PATH,
+                mensaje:
+                    `Nombre de medidor con espacios: "${nombre}" — ` +
+                    'no funciona en las entradas "medidor" del diario ni en condiciones',
+            });
+        }
+    }
+
+    return {
+        nombre: nombre ?? fallback.nombre,
+        calendario: {
+            era: asString(cal?.era) ?? fallback.calendario.era,
+            anoEpoca:
+                asNumber(cal?.ano_epoca ?? cal?.['año_epoca']) ?? fallback.calendario.anoEpoca,
+            diasPorMes: asNumber(cal?.dias_por_mes) ?? fallback.calendario.diasPorMes,
+            meses: cal?.meses === undefined ? fallback.calendario.meses : asStringArray(cal.meses),
+        },
+        viaje: {
+            diasPorUnidad: asNumber(viaje?.dias_por_unidad) ?? fallback.viaje.diasPorUnidad,
+            intrasistemaDias:
+                asNumber(viaje?.intrasistema_dias) ?? fallback.viaje.intrasistemaDias,
+            combustibleCadaDias: parseCombustibleCadaDias(viaje, fallback, problemas),
+            viveresCadaDias:
+                asNumber(viaje?.viveres_cada_dias) ?? fallback.viaje.viveresCadaDias,
+        },
+        medidores,
+        regiones: data.regiones === undefined ? fallback.regiones : asStringArray(data.regiones),
+    };
+}
+
+// ── Entity building ─────────────────────────────────────────────────────────
+
+/**
+ * Validates a value against a closed vocabulary. A missing value silently gets
+ * the fallback; an out-of-vocabulary value gets the fallback plus an aviso.
+ */
+function vocabOrDefault<T extends string>(
+    value: unknown,
+    vocab: readonly T[],
+    fallbackValue: T,
+    campo: string,
+    archivo: string,
+    problemas: ValidationIssue[]
+): T {
+    const str = asString(value);
+    if (str === undefined) return fallbackValue;
+    if ((vocab as readonly string[]).includes(str)) return str as T;
+    problemas.push({
+        nivel: 'aviso',
+        archivo,
+        mensaje: `Valor fuera de vocabulario en "${campo}": "${str}" — se usa "${fallbackValue}"`,
+    });
+    return fallbackValue;
+}
+
+function buildBase(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    defaultTipo: string,
+    problemas: ValidationIssue[],
+    options: { estadoIsProse: boolean }
+): WorldEntityBase {
+    return {
+        id: record.id,
+        tipo: asString(data.tipo) ?? defaultTipo,
+        nombre: asString(data.nombre) ?? fileNameToDisplayName(record.id),
+        filePath: record.filePath,
+        conocimiento: vocabOrDefault(
+            data.conocimiento,
+            CONOCIMIENTOS,
+            DEFAULT_CONOCIMIENTO,
+            'conocimiento',
+            record.filePath,
+            problemas
+        ),
+        etiquetas: asStringArray(data.etiquetas),
+        resumen: asString(data.resumen),
+        // For pistas/tramas the `estado:` key holds the workflow state, not prose.
+        estado: options.estadoIsProse ? asString(data.estado) : undefined,
+        raw: data,
+        body,
+    };
+}
+
+function buildSistema(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    problemas: ValidationIssue[]
+): SystemEntity {
+    const coordenadas = asCoords(data.coordenadas);
+    if (coordenadas === undefined) {
+        problemas.push({
+            nivel: 'error',
+            archivo: record.filePath,
+            mensaje: 'Sistema sin coordenadas',
+        });
+    }
+    return {
+        ...buildBase(record, data, body, 'sistema', problemas, { estadoIsProse: true }),
+        tipo: 'sistema',
+        coordenadas: coordenadas ?? { x: 0, y: 0 },
+        region: asString(data.region),
+    };
+}
+
+function parseFactionPresences(
+    value: unknown,
+    archivo: string,
+    problemas: ValidationIssue[]
+): FactionPresence[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo,
+            mensaje: '"facciones" debe ser una lista de {faccion, nivel} — se ignora',
+        });
+        return [];
+    }
+
+    const presences: FactionPresence[] = [];
+    for (const item of value) {
+        if (!isRecord(item)) continue;
+        const faccion = asString(item.faccion);
+        if (faccion === undefined) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo,
+                mensaje: 'Entrada de "facciones" sin campo "faccion" — se omite',
+            });
+            continue;
+        }
+        presences.push({
+            faccion,
+            nivel: vocabOrDefault(
+                item.nivel,
+                NIVELES_PRESENCIA,
+                'presente',
+                'facciones.nivel',
+                archivo,
+                problemas
+            ),
+        });
+    }
+    return presences;
+}
+
+function buildLugar(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    problemas: ValidationIssue[]
+): PlaceEntity {
+    const base = buildBase(record, data, body, 'lugar', problemas, { estadoIsProse: true });
+
+    // TIPOS_LUGAR is an open (recommended) list: keep the value, warn once.
+    const tipoRaw = asString(data.tipo);
+    if (tipoRaw !== undefined && !TIPOS_LUGAR.includes(tipoRaw)) {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: record.filePath,
+            mensaje: `Valor fuera de vocabulario en "tipo": "${tipoRaw}"`,
+        });
+    }
+
+    const servicios = asStringArray(data.servicios);
+    for (const servicio of servicios) {
+        if (!SERVICIOS.includes(servicio)) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: record.filePath,
+                mensaje: `Valor fuera de vocabulario en "servicios": "${servicio}"`,
+            });
+        }
+    }
+
+    const en = asString(data.en);
+    const coordenadas = asCoords(data.coordenadas);
+    if (en === undefined && coordenadas === undefined) {
+        problemas.push({
+            nivel: 'error',
+            archivo: record.filePath,
+            mensaje: 'Lugar sin "en" ni coordenadas',
+        });
+    }
+
+    return {
+        ...base,
+        en,
+        coordenadas,
+        orbita: asNumber(data.orbita),
+        // Local Plano coords (0..100); malformed -> undefined, never throws.
+        poi: asCoords(data.poi),
+        region: asString(data.region),
+        servicios,
+        facciones: parseFactionPresences(data.facciones, record.filePath, problemas),
+        acceso: vocabOrDefault(
+            data.acceso,
+            ACCESOS,
+            DEFAULT_ACCESO,
+            'acceso',
+            record.filePath,
+            problemas
+        ),
+        peligro: asNumber(data.peligro),
+        playable: record.playable,
+    };
+}
+
+function buildFaccion(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    problemas: ValidationIssue[]
+): FactionEntity {
+    return {
+        ...buildBase(record, data, body, 'faccion', problemas, { estadoIsProse: true }),
+        actitud: vocabOrDefault(
+            data.actitud,
+            ACTITUDES,
+            'neutral',
+            'actitud',
+            record.filePath,
+            problemas
+        ),
+        poder: asNumber(data.poder),
+        objetivos: asStringArray(data.objetivos),
+    };
+}
+
+function buildPnj(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    problemas: ValidationIssue[]
+): NpcEntity {
+    return {
+        ...buildBase(record, data, body, 'pnj', problemas, { estadoIsProse: true }),
+        faccion: asString(data.faccion),
+        rol: vocabOrDefault(data.rol, ROLES_PNJ, 'neutral', 'rol', record.filePath, problemas),
+        ubicacion: asString(data.ubicacion),
+    };
+}
+
+function buildPista(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    problemas: ValidationIssue[]
+): Lead {
+    return {
+        ...buildBase(record, data, body, 'pista', problemas, { estadoIsProse: false }),
+        estadoPista: vocabOrDefault(
+            data.estado,
+            ESTADOS_PISTA,
+            'rumor',
+            'estado',
+            record.filePath,
+            problemas
+        ),
+        trama: asString(data.trama),
+        donde: asString(data.donde),
+        origen: asString(data.origen),
+        plazo: asNumber(data.plazo),
+        requisitos: asStringArray(data.requisitos),
+        recompensa: asString(data.recompensa),
+        accionable: false, // derived below in deriveLeadActionability
+    };
+}
+
+function asReloj(value: unknown): { actual: number; max: number } | undefined {
+    if (!isRecord(value)) return undefined;
+    const actual = asNumber(value.actual);
+    const max = asNumber(value.max);
+    if (actual === undefined || max === undefined) return undefined;
+    return { actual, max };
+}
+
+function buildTrama(
+    record: RawEntityFile,
+    data: Record<string, unknown>,
+    body: string,
+    problemas: ValidationIssue[]
+): Trama {
+    return {
+        ...buildBase(record, data, body, 'trama', problemas, { estadoIsProse: false }),
+        rol: vocabOrDefault(
+            data.rol,
+            ROLES_TRAMA,
+            'secundaria',
+            'rol',
+            record.filePath,
+            problemas
+        ),
+        estadoTrama: vocabOrDefault(
+            data.estado,
+            ESTADOS_TRAMA,
+            'latente',
+            'estado',
+            record.filePath,
+            problemas
+        ),
+        reloj: asReloj(data.reloj),
+        lugaresClave: asStringArray(data.lugares_clave),
+        facciones: asStringArray(data.facciones),
+        pistas: [], // grouped below in groupTramaPistas
+    };
+}
+
+// ── Assembly: parse records, cross-validate, derive ─────────────────────────
+
+function assembleModel(
+    manifest: WorldManifest,
+    records: RawEntityFile[],
+    problemas: ValidationIssue[],
+    estadoGrupo: PartyState | null,
+    musica: WorldModel['musica'],
+    imagenes: Map<string, FileReference>,
+    resumen: string | null,
+    guias: Guia[]
+): WorldModel {
+    const entidades = new Map<string, WorldEntityBase>();
+    const sistemas: SystemEntity[] = [];
+    const lugares: PlaceEntity[] = [];
+    const facciones: FactionEntity[] = [];
+    const pnjs: NpcEntity[] = [];
+    const pistas: Lead[] = [];
+    const tramas: Trama[] = [];
+    const tablas: EventTable[] = [];
+    const diario: JournalDay[] = [];
+    // Shops keyed by place id. Collected from the lugar records as we parse
+    // them; pnj refs are validated once the entity map is complete (below).
+    const tiendas = new Map<string, Shop[]>();
+
+    for (const record of records) {
+        // Journals are not entities: no id dedupe, own tolerant parser.
+        if (record.kind === 'diario') {
+            diario.push(parseJournal(record.content, record.filePath));
+            continue;
+        }
+
+        // Event tables live in model.tablas only (drawn from the EventDrawer,
+        // never selected on the map) — like journals, they stay out of the
+        // entity map and its global id dedupe.
+        if (record.kind === 'evento') {
+            const parsedTable = parseEventTable(record.content, record.filePath, record.id);
+            problemas.push(...parsedTable.issues);
+            tablas.push(parsedTable.table);
+            continue;
+        }
+
+        const parsed = parseFrontmatter(record.content, record.filePath);
+        if (parsed.issue) problemas.push(parsed.issue);
+        const data = normalizeKeys(parsed.data);
+
+        // ids are globally unique across all of mundo/: first occurrence wins.
+        const existing = entidades.get(record.id);
+        if (existing) {
+            problemas.push({
+                nivel: 'error',
+                archivo: record.filePath,
+                mensaje: `id duplicado: "${record.id}" ya está definido en ${existing.filePath}`,
+            });
+            continue;
+        }
+
+        switch (record.kind) {
+            case 'sistema': {
+                const entity = buildSistema(record, data, parsed.body, problemas);
+                sistemas.push(entity);
+                entidades.set(entity.id, entity);
+                break;
+            }
+            case 'lugar': {
+                const entity = buildLugar(record, data, parsed.body, problemas);
+                lugares.push(entity);
+                entidades.set(entity.id, entity);
+                if (record.tiendas && record.tiendas.length > 0) {
+                    tiendas.set(entity.id, record.tiendas);
+                }
+                break;
+            }
+            case 'faccion': {
+                const entity = buildFaccion(record, data, parsed.body, problemas);
+                facciones.push(entity);
+                entidades.set(entity.id, entity);
+                break;
+            }
+            case 'pnj': {
+                const entity = buildPnj(record, data, parsed.body, problemas);
+                pnjs.push(entity);
+                entidades.set(entity.id, entity);
+                break;
+            }
+            case 'pista': {
+                const entity = buildPista(record, data, parsed.body, problemas);
+                pistas.push(entity);
+                entidades.set(entity.id, entity);
+                break;
+            }
+            case 'trama': {
+                const entity = buildTrama(record, data, parsed.body, problemas);
+                tramas.push(entity);
+                entidades.set(entity.id, entity);
+                break;
+            }
+        }
+    }
+
+    sortDiario(diario);
+    warnStaleDiario(diario, problemas);
+
+    // Profile images attach to ANY entity kind by id; a basename matching no
+    // entity is almost always a typo in the filename — surface it as an aviso
+    // so the GM finds out why the portrait never shows.
+    for (const [id, ref] of imagenes) {
+        const entity = entidades.get(id);
+        if (entity) {
+            entity.imagen = ref;
+        } else {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: ref.path,
+                mensaje: `Imagen sin entidad: "${ref.name}" no coincide con ningún id (posible errata)`,
+            });
+        }
+    }
+
+    checkDanglingRefs(entidades, lugares, pnjs, pistas, problemas);
+    checkPartyStateRefs(entidades, estadoGrupo, problemas);
+    checkShopRefs(entidades, tiendas, problemas);
+
+    const childrenOf = deriveChildrenOf(entidades, sistemas, lugares);
+    deriveRegionInheritance(entidades, lugares);
+
+    const model: WorldModel = {
+        manifest,
+        entidades,
+        sistemas,
+        lugares,
+        facciones,
+        pnjs,
+        pistas,
+        tramas,
+        tablas,
+        problemas,
+        childrenOf,
+        estadoGrupo,
+        diario,
+        musica,
+        tiendas,
+        resumen,
+        guias,
+    };
+
+    // Unprocessed journals re-overlay in-session knowledge BEFORE the
+    // knowledge-dependent derivations (orphans, accionable) run, so the GM
+    // sees the post-session world even before the agent maintenance loop.
+    overlayUnprocessedJournals(model);
+    warnOrphans(entidades, sistemas, lugares, facciones, pnjs, pistas, tramas, problemas);
+    deriveLeadActionability(model, pistas, problemas);
+    groupTramaPistas(tramas, pistas);
+
+    return model;
+}
+
+// ── Journal overlay (M3) ────────────────────────────────────────────────────
+
+/** Chronological: fecha_real (ISO strings sort lexically), then sesion. */
+function sortDiario(diario: JournalDay[]): void {
+    diario.sort((a, b) => {
+        if (a.fechaReal !== b.fechaReal) return a.fechaReal.localeCompare(b.fechaReal);
+        if (a.sesion !== b.sesion) return a.sesion - b.sesion;
+        return a.filePath.localeCompare(b.filePath);
+    });
+}
+
+/**
+ * An unprocessed journal older than the newest one means the agent
+ * maintenance loop was skipped after some earlier session.
+ */
+function warnStaleDiario(diario: JournalDay[], problemas: ValidationIssue[]): void {
+    let newest = '';
+    for (const day of diario) {
+        if (day.fechaReal > newest) newest = day.fechaReal;
+    }
+    for (const day of diario) {
+        if (!day.procesado && day.fechaReal < newest) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: day.filePath,
+                mensaje:
+                    'Diario sin procesar de una sesión anterior — falta el mantenimiento del agente',
+            });
+        }
+    }
+}
+
+const CONOCIMIENTO_RANK = new Map<Conocimiento, number>(
+    CONOCIMIENTOS.map((nivel, index) => [nivel, index])
+);
+
+/** Raises an entity's conocimiento to at least `minimo` — never lowers it. */
+function bumpConocimiento(
+    entidades: Map<string, WorldEntityBase>,
+    id: string,
+    minimo: Conocimiento
+): void {
+    const entity = entidades.get(id);
+    if (!entity) return;
+    const actual = CONOCIMIENTO_RANK.get(entity.conocimiento) ?? 0;
+    const objetivo = CONOCIMIENTO_RANK.get(minimo) ?? 0;
+    if (objetivo > actual) entity.conocimiento = minimo;
+}
+
+/**
+ * In-memory knowledge effect of arriving at a place: the destination is
+ * raised to at least `visitado` and every `en:` ancestor to at least
+ * `conocido` (knowledge never lowers). Shared by the journal overlay below
+ * and the live "Mover" action on /world (M3) — persistence to entity files
+ * remains the agent's job.
+ */
+export function applyLlegadaConocimiento(model: WorldModel, lugarId: string): void {
+    bumpConocimiento(model.entidades, lugarId, 'visitado');
+    for (const ancestorId of ancestryChain(model, lugarId).slice(1)) {
+        bumpConocimiento(model.entidades, ancestorId, 'conocido');
+    }
+}
+
+/**
+ * Re-derives the in-memory effects of journals the agent has not processed
+ * yet (procesado: false), in chronological order:
+ *   - sabe    -> raise the entity's conocimiento to the logged target level
+ *   - llegada -> destination at least visitado; `en:` ancestors at least
+ *                conocido (same ancestry logic as worldNav)
+ * Unknown ids and unparseable payloads are silently skipped — the journal is
+ * a log, not a validated source, and the agent will reconcile it later.
+ *
+ * TODO(M6) — DELIBERATE ASYMMETRY: `pista` entries are NOT overlaid. Only
+ * knowledge is monotonic (it never lowers, so replaying it is always safe);
+ * pista estados move in both directions and can be corrected mid-journal, so
+ * an overlay would need real replay semantics the scanner doesn't have. The
+ * consequence the GM sees: a pista transitioned live during a session reverts
+ * to its FILE estado on reload until the agent maintenance runs. PROTOCOLO.md
+ * (M6) must therefore instruct the agent to process pista entries promptly
+ * after every session; whether this overlay should learn pista replay is an
+ * M6 decision — do not bolt it on here without deciding the undo/ordering
+ * semantics first. (Same note lives in app/world/page.tsx "SCAN-OVERLAY
+ * ASYMMETRY".)
+ */
+function overlayUnprocessedJournals(model: WorldModel): void {
+    for (const day of model.diario) {
+        if (day.procesado) continue;
+        for (const entrada of day.entradas) {
+            if (entrada.tipo === 'sabe') {
+                const sabe = parseSabePayload(entrada.payload);
+                if (sabe && (CONOCIMIENTOS as readonly string[]).includes(sabe.to)) {
+                    bumpConocimiento(model.entidades, sabe.id, sabe.to as Conocimiento);
+                }
+            } else if (entrada.tipo === 'llegada') {
+                const llegada = parseLlegadaPayload(entrada.payload);
+                if (llegada) applyLlegadaConocimiento(model, llegada.lugarId);
+            }
+        }
+    }
+}
+
+/**
+ * Party-state refs pointing at entities that don't exist are AVISOS (not
+ * errors): grupo.md is app/agent-written state, and a half-built world must
+ * still load with its party readout intact.
+ */
+function checkPartyStateRefs(
+    entidades: Map<string, WorldEntityBase>,
+    estadoGrupo: PartyState | null,
+    problemas: ValidationIssue[]
+): void {
+    if (!estadoGrupo || estadoGrupo.filePath === null) return;
+
+    const dangling = (campo: string, target: string) => {
+        problemas.push({
+            nivel: 'aviso',
+            archivo: estadoGrupo.filePath!,
+            mensaje: `Referencia colgante en "${campo}": "${target}" no existe`,
+        });
+    };
+
+    if (estadoGrupo.ubicacion !== null && !entidades.has(estadoGrupo.ubicacion)) {
+        dangling('ubicacion', estadoGrupo.ubicacion);
+    }
+    if (estadoGrupo.rumbo !== null && !entidades.has(estadoGrupo.rumbo.destino)) {
+        dangling('rumbo.destino', estadoGrupo.rumbo.destino);
+    }
+}
+
+/**
+ * A shop's `pnj` (shopkeeper) pointing at an entity that doesn't exist is an
+ * AVISO, not an error: the shop still works keeper-less, and a half-built world
+ * must load. Shops with no `pnj` are skipped.
+ */
+function checkShopRefs(
+    entidades: Map<string, WorldEntityBase>,
+    tiendas: Map<string, Shop[]>,
+    problemas: ValidationIssue[]
+): void {
+    for (const shops of tiendas.values()) {
+        for (const shop of shops) {
+            if (shop.pnj !== undefined && !entidades.has(shop.pnj)) {
+                problemas.push({
+                    nivel: 'aviso',
+                    archivo: shop.filePath,
+                    mensaje: `Referencia colgante en "pnj": "${shop.pnj}" no existe`,
+                });
+            }
+        }
+    }
+}
+
+function checkDanglingRefs(
+    entidades: Map<string, WorldEntityBase>,
+    lugares: PlaceEntity[],
+    pnjs: NpcEntity[],
+    pistas: Lead[],
+    problemas: ValidationIssue[]
+): void {
+    const dangling = (archivo: string, campo: string, target: string) => {
+        problemas.push({
+            nivel: 'error',
+            archivo,
+            mensaje: `Referencia colgante en "${campo}": "${target}" no existe`,
+        });
+    };
+
+    for (const lugar of lugares) {
+        if (lugar.en !== undefined && !entidades.has(lugar.en)) {
+            dangling(lugar.filePath, 'en', lugar.en);
+        }
+        for (const presence of lugar.facciones) {
+            if (!entidades.has(presence.faccion)) {
+                dangling(lugar.filePath, 'facciones', presence.faccion);
+            }
+        }
+    }
+    for (const pnj of pnjs) {
+        if (pnj.faccion !== undefined && !entidades.has(pnj.faccion)) {
+            dangling(pnj.filePath, 'faccion', pnj.faccion);
+        }
+    }
+    for (const pista of pistas) {
+        if (pista.trama !== undefined && !entidades.has(pista.trama)) {
+            dangling(pista.filePath, 'trama', pista.trama);
+        }
+        if (pista.donde !== undefined && !entidades.has(pista.donde)) {
+            dangling(pista.filePath, 'donde', pista.donde);
+        }
+    }
+}
+
+/**
+ * Orphan aviso: nothing references the entity AND its conocimiento is
+ * desconocido (unreachable content). Scoped to sistemas/lugares/facciones/pnjs —
+ * pistas and tramas are reference SOURCES (nothing points at a pista by design).
+ */
+function warnOrphans(
+    entidades: Map<string, WorldEntityBase>,
+    sistemas: SystemEntity[],
+    lugares: PlaceEntity[],
+    facciones: FactionEntity[],
+    pnjs: NpcEntity[],
+    pistas: Lead[],
+    tramas: Trama[],
+    problemas: ValidationIssue[]
+): void {
+    const referenced = new Set<string>();
+    for (const lugar of lugares) {
+        if (lugar.en !== undefined) referenced.add(lugar.en);
+        for (const presence of lugar.facciones) referenced.add(presence.faccion);
+    }
+    for (const pnj of pnjs) {
+        if (pnj.faccion !== undefined) referenced.add(pnj.faccion);
+        if (pnj.ubicacion !== undefined) referenced.add(pnj.ubicacion);
+    }
+    for (const pista of pistas) {
+        if (pista.trama !== undefined) referenced.add(pista.trama);
+        if (pista.donde !== undefined) referenced.add(pista.donde);
+        if (pista.origen !== undefined) referenced.add(pista.origen);
+    }
+    for (const trama of tramas) {
+        for (const id of trama.lugaresClave) referenced.add(id);
+        for (const id of trama.facciones) referenced.add(id);
+    }
+
+    // A pnj whose ubicacion resolves is ANCHORED to the map through its place —
+    // deliberately forward-seeded NPCs (unknown to the party, waiting at a
+    // not-yet-visited place) are not orphans and should not add Diagnóstico noise.
+    const anchoredPnjs = new Set<string>();
+    for (const pnj of pnjs) {
+        if (pnj.ubicacion !== undefined && entidades.has(pnj.ubicacion)) {
+            anchoredPnjs.add(pnj.id);
+        }
+    }
+
+    for (const entity of [...sistemas, ...lugares, ...facciones, ...pnjs]) {
+        if (
+            entity.conocimiento === 'desconocido' &&
+            !referenced.has(entity.id) &&
+            !anchoredPnjs.has(entity.id)
+        ) {
+            problemas.push({
+                nivel: 'aviso',
+                archivo: entity.filePath,
+                mensaje: 'Entidad huérfana: nada la referencia y su conocimiento es "desconocido"',
+            });
+        }
+    }
+}
+
+/**
+ * childrenOf: parent id -> child ids (inverse of `en:`). Sistemas are always
+ * roots (entry present even when childless); deep-space lugares (coordenadas,
+ * no `en:`) are roots too. Children sort by orbita, then id.
+ */
+function deriveChildrenOf(
+    entidades: Map<string, WorldEntityBase>,
+    sistemas: SystemEntity[],
+    lugares: PlaceEntity[]
+): Map<string, string[]> {
+    const childrenOf = new Map<string, string[]>();
+
+    for (const sistema of sistemas) {
+        childrenOf.set(sistema.id, []);
+    }
+    for (const lugar of lugares) {
+        if (lugar.en === undefined && lugar.coordenadas !== undefined) {
+            childrenOf.set(lugar.id, childrenOf.get(lugar.id) ?? []);
+        }
+    }
+    for (const lugar of lugares) {
+        if (lugar.en === undefined || !entidades.has(lugar.en)) continue;
+        const siblings = childrenOf.get(lugar.en);
+        if (siblings) {
+            siblings.push(lugar.id);
+        } else {
+            childrenOf.set(lugar.en, [lugar.id]);
+        }
+    }
+
+    const orbitaOf = (id: string): number => {
+        const entity = entidades.get(id) as PlaceEntity | undefined;
+        return entity?.orbita ?? Number.POSITIVE_INFINITY;
+    };
+    for (const children of childrenOf.values()) {
+        children.sort((a, b) => {
+            const delta = orbitaOf(a) - orbitaOf(b);
+            if (delta !== 0 && !Number.isNaN(delta)) return delta;
+            return a.localeCompare(b);
+        });
+    }
+
+    return childrenOf;
+}
+
+/** A lugar without region inherits from the nearest ancestor (via `en:`) that has one. */
+function deriveRegionInheritance(
+    entidades: Map<string, WorldEntityBase>,
+    lugares: PlaceEntity[]
+): void {
+    for (const lugar of lugares) {
+        if (lugar.region !== undefined) continue;
+
+        const visited = new Set<string>([lugar.id]);
+        let parentId = lugar.en;
+        while (parentId !== undefined && !visited.has(parentId)) {
+            visited.add(parentId);
+            const parent = entidades.get(parentId) as SystemEntity | PlaceEntity | undefined;
+            if (!parent) break;
+            if (parent.region !== undefined) {
+                lugar.region = parent.region;
+                break;
+            }
+            parentId = (parent as PlaceEntity).en;
+        }
+    }
+}
+
+/** `manual: <texto>` requisito — the app never evaluates it, the GM does. */
+const MANUAL_REQUISITO = /^manual\s*:/;
+
+/**
+ * Lead.accionable (derived, never stored): estadoPista activa/en_curso AND
+ * donde absent-or-conocido/visitado AND requisitos satisfied (M4):
+ *   - all conditions true            -> true
+ *   - any `manual:` entry OR any condition null (unparseable/unevaluable)
+ *                                    -> 'manual' ("según GM" — the GM decides,
+ *                                       so null/manual dominate a false)
+ *   - otherwise (some condition false) -> false
+ * Conditions evaluate through evalConditions against a CondContext built from
+ * estado/grupo.md (party defaults when the file is absent, lugarActual =
+ * estadoGrupo.ubicacion). Syntactically bad requisitos also earn an aviso.
+ *
+ * Exported for /world: live pista transitions re-run it on the touched lead
+ * (with a throwaway issues array). SIGNATURE CHANGED IN M4: takes the whole
+ * WorldModel (was the entidades map) because the context needs ancestry +
+ * estadoGrupo; pass `ctx` to evaluate against LIVE party numbers instead of
+ * the scan-frozen estadoGrupo (the page builds it via buildCondContext).
+ */
+export function deriveLeadActionability(
+    model: WorldModel,
+    pistas: Lead[],
+    problemas: ValidationIssue[],
+    ctx?: CondContext
+): void {
+    const entidades = model.entidades;
+    const context =
+        ctx ??
+        buildCondContext(
+            model,
+            model.estadoGrupo ?? defaultPartyState(),
+            model.estadoGrupo?.ubicacion ?? null
+        );
+
+    for (const pista of pistas) {
+        const manual = pista.requisitos.some((req) => MANUAL_REQUISITO.test(req.trim()));
+        const condiciones = pista.requisitos.filter((req) => !MANUAL_REQUISITO.test(req.trim()));
+
+        // File-content validation — independent of the party's current state.
+        for (const cond of condiciones) {
+            if (!isParseableCondition(cond)) {
+                problemas.push({
+                    nivel: 'aviso',
+                    archivo: pista.filePath,
+                    mensaje: `Requisito no interpretable: "${cond}" — la pista queda "según GM"`,
+                });
+            }
+        }
+
+        const estadoOk = pista.estadoPista === 'activa' || pista.estadoPista === 'en_curso';
+
+        let dondeOk = true;
+        if (pista.donde !== undefined) {
+            const target = entidades.get(pista.donde);
+            dondeOk =
+                target !== undefined &&
+                (target.conocimiento === 'conocido' || target.conocimiento === 'visitado');
+            if (
+                pista.estadoPista === 'activa' &&
+                target !== undefined &&
+                target.conocimiento === 'desconocido'
+            ) {
+                problemas.push({
+                    nivel: 'aviso',
+                    archivo: pista.filePath,
+                    mensaje: `Pista activa en un lugar desconocido: "${pista.donde}"`,
+                });
+            }
+        }
+
+        if (!estadoOk || !dondeOk) {
+            pista.accionable = false;
+            continue;
+        }
+        const cumplidas = evalConditions(condiciones, context); // [] -> true
+        pista.accionable = manual || cumplidas === null ? 'manual' : cumplidas;
+    }
+}
+
+/** Pistas point at their trama (child -> parent); the scanner groups them. */
+function groupTramaPistas(tramas: Trama[], pistas: Lead[]): void {
+    const tramaById = new Map(tramas.map((trama) => [trama.id, trama]));
+    for (const pista of pistas) {
+        if (pista.trama === undefined) continue;
+        tramaById.get(pista.trama)?.pistas.push(pista);
+    }
+}
