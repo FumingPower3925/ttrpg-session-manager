@@ -869,7 +869,7 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
 // ── uiStore ─────────────────────────────────────────────────────────────────
 
 export type MapTier = 'sector' | 'system' | 'place';
-export type PanelTab = 'entidad' | 'pistas' | 'diario' | 'eventos';
+export type PanelTab = 'entidad' | 'pistas' | 'hilos' | 'diario' | 'eventos';
 
 /** Map viewport transform — structurally identical to StarMap's MapViewport. */
 export interface UiViewport {
@@ -893,6 +893,12 @@ export interface UiSlice {
     siteListId: string | null;
     selectedEntityId: string | null;
     panelTab: PanelTab;
+    /**
+     * Trama whose narrative web ("Hilos" feature) is painted on the sector
+     * map; null = none. Persisted; a stale id after a re-scan simply paints
+     * nothing (the derivation returns empty nodes) — it never crashes.
+     */
+    focusTramaId: string | null;
     mapCollapsed: boolean;
     showUnknown: boolean;
     /**
@@ -925,6 +931,13 @@ export interface UiState extends UiSlice {
         closeSiteList: () => void;
         selectEntity: (entityId: string | null) => void;
         setPanelTab: (tab: PanelTab) => void;
+        /**
+         * Paint (or clear) a trama's thread web on the sector map. TOGGLE:
+         * calling with the already-focused id clears it. Focusing also drops
+         * to the sector tier so the web is visible (mirrors backToSector:
+         * tier 'sector', clears focusPlaceId/focusSystemId/siteListId).
+         */
+        focusTrama: (tramaId: string | null) => void;
         setMapCollapsed: (collapsed: boolean) => void;
         setShowUnknown: (show: boolean) => void;
         /** Remembers a gesture-committed viewport under its tier key. */
@@ -940,6 +953,7 @@ const UI_INITIAL: UiSlice = {
     siteListId: null,
     selectedEntityId: null,
     panelTab: 'entidad',
+    focusTramaId: null,
     mapCollapsed: false,
     showUnknown: true,
     viewports: {},
@@ -994,7 +1008,13 @@ export function readPersistedUi(storage: UiStorage | null = sessionStorageOrNull
     const p = parsed as Record<string, unknown>;
     const out: Partial<UiSlice> = {};
     if (p.tier === 'sector' || p.tier === 'system' || p.tier === 'place') out.tier = p.tier;
-    for (const key of ['focusSystemId', 'focusPlaceId', 'siteListId', 'selectedEntityId'] as const) {
+    for (const key of [
+        'focusSystemId',
+        'focusPlaceId',
+        'siteListId',
+        'selectedEntityId',
+        'focusTramaId',
+    ] as const) {
         const value = p[key];
         if (typeof value === 'string' || value === null) out[key] = value;
     }
@@ -1006,6 +1026,7 @@ export function readPersistedUi(storage: UiStorage | null = sessionStorageOrNull
     if (
         p.panelTab === 'entidad' ||
         p.panelTab === 'pistas' ||
+        p.panelTab === 'hilos' ||
         p.panelTab === 'diario' ||
         p.panelTab === 'eventos'
     ) {
@@ -1033,6 +1054,7 @@ export function persistUi(state: UiSlice, storage: UiStorage | null = sessionSto
         siteListId: state.siteListId,
         selectedEntityId: state.selectedEntityId,
         panelTab: state.panelTab,
+        focusTramaId: state.focusTramaId,
         mapCollapsed: state.mapCollapsed,
         showUnknown: state.showUnknown,
         viewports: state.viewports,
@@ -1080,6 +1102,22 @@ export const useUiStore = create<UiState>()((set) => ({
         },
         setPanelTab(tab: PanelTab) {
             set({ panelTab: tab });
+        },
+        focusTrama(tramaId: string | null) {
+            set((state) => {
+                // Toggle: re-focusing the same trama clears the web.
+                const next = tramaId !== null && state.focusTramaId === tramaId ? null : tramaId;
+                // Focusing drops to the sector tier so the web is visible
+                // (reuse backToSector's effect); clearing leaves the tier as-is.
+                if (next === null) return { focusTramaId: null };
+                return {
+                    focusTramaId: next,
+                    tier: 'sector',
+                    focusPlaceId: null,
+                    focusSystemId: null,
+                    siteListId: null,
+                };
+            });
         },
         setMapCollapsed(collapsed: boolean) {
             set({ mapCollapsed: collapsed });

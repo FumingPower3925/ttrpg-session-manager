@@ -15,6 +15,10 @@
  *     (rampa_carga {30,70}, sala_franca {72,40}) so it renders the SPATIAL
  *     Plano tier (data-tier="place"); an EXTRA child (trastienda) carries NO
  *     poi to exercise the "sin ubicar" dashed ring.
+ *   - tramas/: `deudas` (secundaria, 1 pista at porto_verne) plus `contrabando`
+ *     (principal, lugares_clave porto_verne + mercado_de_brasa, 2 pistas whose
+ *     donde resolve to DIFFERENT sector roots — sistema_verne + sistema_kessler)
+ *     so the Hilos thread web has >=2 map points to connect.
  *   - PLANTILLAS/pista.md and lugares/_borrador.md must be IGNORED by the scanner.
  *   - lugares/roto.md has invalid YAML -> degraded load + Diagnostico entry.
  *   - estado/ exists but is EMPTY -> the party bar renders the absent-estado hint.
@@ -343,6 +347,26 @@ origen: mercado_de_brasa
 Se habla de una senal que se enciende cada 47 dias en el Nodo Central.
 Nadie ha vuelto para contarlo dos veces.
 `,
+            'ruta_franca.md': `---
+tipo: pista
+nombre: La ruta franca de Vortex
+estado: activa
+trama: contrabando
+donde: porto_verne
+origen: kael_voss
+---
+Vortex mueve carga sin declarar entre Porto Verne y la estacion franca.
+`,
+            'contacto_brasa.md': `---
+tipo: pista
+nombre: El contacto en Brasa
+estado: rumor
+trama: contrabando
+donde: mercado_de_brasa
+origen: kael_voss
+---
+Alguien en la Sala Franca compra los manifiestos robados sin preguntar.
+`,
         },
         tramas: {
             'deudas.md': `---
@@ -360,6 +384,21 @@ facciones: [vortex_logistics]
 2. Kael desaparece de los muelles.
 3. El Consorcio usa el expediente de Kael contra los PJ.
 4. Cierre: la deuda se salda o Kael cae.
+`,
+            'contrabando.md': `---
+tipo: trama
+nombre: Contrabando
+rol: principal
+estado: activa
+reloj: {actual: 2, max: 6}
+lugares_clave: [porto_verne, mercado_de_brasa]
+facciones: [consorcio_tetrad]
+---
+## Cuando el reloj avance
+
+1. El Consorcio abre una ruta franca permanente por Brasa.
+2. Vortex descubre la fuga y cierra los muelles.
+3. Los PJ quedan en medio del fuego cruzado.
 `,
         },
         eventos: {

@@ -324,6 +324,9 @@ import type { MoverDialogLugar } from '@/components/world/MoverDialog';
 import { JournalPanel } from '@/components/world/JournalPanel';
 import { SessionRecoveryBanner } from '@/components/world/SessionRecoveryBanner';
 import { LeadsBoard } from '@/components/world/LeadsBoard';
+import { HilosBoard } from '@/components/world/HilosBoard';
+import { ThreadLayer } from '@/components/world/ThreadLayer';
+import { tramaThreadNodes, TRAMA_ROL_COLOR } from '@/lib/world/threads';
 import { EventDrawer } from '@/components/world/EventDrawer';
 import type { EventOutcome } from '@/components/world/EventDrawer';
 import { EventosPanel } from '@/components/world/EventosPanel';
@@ -551,6 +554,7 @@ export default function WorldPage() {
   const showUnknown = useUiStore((s) => s.showUnknown);
   const mapCollapsed = useUiStore((s) => s.mapCollapsed);
   const panelTab = useUiStore((s) => s.panelTab);
+  const focusTramaId = useUiStore((s) => s.focusTramaId);
   const uiActions = useUiStore((s) => s.actions);
 
   // Live party fields — hydrated from estado/grupo.md, mutated only via log().
@@ -2286,6 +2290,22 @@ export default function WorldPage() {
     };
   }, [model, ubicacion, selectedEntity, canTravelToSelected, medidores, diaMundo, travel, modelRev]);
 
+  /**
+   * Hilos ("story threads") overlay: the focused trama's sector-root nodes +
+   * rol color. Sector tier only (the web lives on the sector map, like
+   * routePreview); a stale focusTramaId (trama gone after a re-scan) resolves
+   * to empty nodes and paints nothing. Null hides the overlay entirely.
+   */
+  const threadOverlay = useMemo<{ nodes: { id: string; x: number; y: number }[]; color: string; label: string } | null>(() => {
+    void modelRev;
+    if (!model || !focusTramaId || tier !== 'sector') return null;
+    const trama = model.tramas.find((t) => t.id === focusTramaId);
+    if (!trama) return null;
+    const { nodes } = tramaThreadNodes(model, focusTramaId);
+    if (nodes.length === 0) return null;
+    return { nodes, color: TRAMA_ROL_COLOR[trama.rol], label: trama.nombre };
+  }, [model, focusTramaId, tier, modelRev]);
+
   // ── Search & deep link ────────────────────────────────────────────────────
 
   // Model is immutable-after-scan, so the index never staleses within a scan.
@@ -2721,6 +2741,15 @@ export default function WorldPage() {
                     onSelect={selectEntity}
                     onDrillIn={enterEntity}
                     routes={<RouteLayer data={routePreview} />}
+                    threads={
+                      threadOverlay && (
+                        <ThreadLayer
+                          nodes={threadOverlay.nodes}
+                          color={threadOverlay.color}
+                          label={threadOverlay.label}
+                        />
+                      )
+                    }
                   />
                 )}
               </StarMap>
@@ -2742,6 +2771,7 @@ export default function WorldPage() {
                   [
                     ['entidad', 'Entidad'],
                     ['pistas', 'Pistas'],
+                    ['hilos', 'Hilos'],
                     ['diario', 'Diario'],
                   ] as const
                 ).map(([tab, label]) => (
@@ -2934,6 +2964,17 @@ export default function WorldPage() {
                       if (pista) handlePistaTransition(pista, to);
                     }}
                     onSelectPlace={navigateToEntity}
+                    placeNombre={(id) => model.entidades.get(id)?.nombre}
+                  />
+                </div>
+              )}
+
+              {panelTab === 'hilos' && (
+                <div className="min-h-0 flex-1">
+                  <HilosBoard
+                    tramas={model.tramas}
+                    focusTramaId={focusTramaId}
+                    onFocusTrama={(id) => uiActions.focusTrama(id)}
                     placeNombre={(id) => model.entidades.get(id)?.nombre}
                   />
                 </div>

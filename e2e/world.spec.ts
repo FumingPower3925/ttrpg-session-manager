@@ -1457,3 +1457,46 @@ test.describe('World Mode - Perfiles, imagen segura y detalle de pistas', () => 
         await expect(page.locator('[data-lead-detail]')).toHaveCount(0);
     });
 });
+
+test.describe('World Mode - Hilos de historia', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+    });
+
+    test('Hilos tab lists tramas + pistas and paints/clears the focused thread web', async ({
+        page,
+    }) => {
+        // Switch to the Hilos tab: both tramas listed, with a child pista visible.
+        await page.locator('[data-panel-tab="hilos"]').click();
+        const panel = page.locator('[data-hilos-panel]');
+        await expect(panel).toBeVisible();
+        await expect(panel.locator('[data-hilo-id="contrabando"]')).toBeVisible();
+        await expect(panel.locator('[data-hilo-id="deudas"]')).toBeVisible();
+        await expect(panel).toContainText('Contrabando');
+        // A child pista of the trama is listed inside its card.
+        await expect(
+            page.locator('[data-hilo-id="contrabando"] [data-hilo-pista="ruta_franca"]')
+        ).toBeVisible();
+
+        // Nothing painted before focusing.
+        await expect(page.locator('[data-thread-layer]')).toHaveCount(0);
+
+        // Focus contrabando: its 2 lugares_clave resolve to two different sector
+        // roots (sistema_verne + sistema_kessler) -> two thread-node markers.
+        await page.locator('[data-hilo-focus="contrabando"]').click();
+        const layer = page.locator('[data-thread-layer]');
+        await expect(layer).toBeVisible();
+        // Still at the sector tier (focusing drops there).
+        await expect(page.locator('[data-tier="system"]')).toHaveCount(0);
+        await expect(page.locator('[data-tier="place"]')).toHaveCount(0);
+        await expect(layer.locator('[data-thread-node="sistema_verne"]')).toBeAttached();
+        await expect(layer.locator('[data-thread-node="sistema_kessler"]')).toBeAttached();
+        await expect(layer.locator('[data-thread-node]')).toHaveCount(2);
+
+        // Toggle off (re-click the same trama) removes the layer.
+        await page.locator('[data-hilo-focus="contrabando"]').click();
+        await expect(page.locator('[data-thread-layer]')).toHaveCount(0);
+    });
+});

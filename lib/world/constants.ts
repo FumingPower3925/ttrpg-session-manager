@@ -74,6 +74,14 @@ export const IMAGES_DIR = 'imagenes';
 /** Party-state file inside `mundo/estado/`. */
 export const PARTY_STATE_FILE = 'grupo.md';
 
+/**
+ * Pixels per world coordinate unit on the sector map (1 unit = 1 travel day,
+ * per manifest). Hoisted here so pure map-geometry helpers (worldNav,
+ * threads) can compute map pixels without importing the SectorView React
+ * component; SectorView re-exports it for its existing consumers.
+ */
+export const WORLD_SCALE = 60;
+
 // ── Scanner ignore rules ────────────────────────────────────────────────────
 
 /** Dirs written in ALL-CAPS (e.g. PLANTILLAS) are ignored by the scanner. */

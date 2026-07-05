@@ -22,6 +22,7 @@ const SLICE: UiSlice = {
     siteListId: 'porto_verne',
     selectedEntityId: 'torre_korinth',
     panelTab: 'pistas',
+    focusTramaId: 'deudas',
     mapCollapsed: true,
     showUnknown: false,
     viewports: {
@@ -79,6 +80,22 @@ describe('uiStore persistence (persistUi/readPersistedUi)', () => {
         const storage = fakeStorage();
         persistUi({ ...SLICE, panelTab: 'eventos' }, storage);
         expect(readPersistedUi(storage).panelTab).toBe('eventos');
+    });
+
+    test('hilos is a valid persisted panelTab (Hilos feature)', () => {
+        const storage = fakeStorage();
+        persistUi({ ...SLICE, panelTab: 'hilos' }, storage);
+        expect(readPersistedUi(storage).panelTab).toBe('hilos');
+    });
+
+    test('focusTramaId round-trips and drops a wrong-typed value', () => {
+        const storage = fakeStorage();
+        persistUi(SLICE, storage);
+        expect(readPersistedUi(storage).focusTramaId).toBe('deudas');
+        const bad = fakeStorage({
+            [UI_PERSIST_KEY]: JSON.stringify({ focusTramaId: 42 }),
+        });
+        expect('focusTramaId' in readPersistedUi(bad)).toBe(false);
     });
 
     test('round-trips a valid place tier with its focusPlaceId', () => {
