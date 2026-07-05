@@ -602,8 +602,28 @@ export const MUNDO_CAMPAIGN_CON_ESTADO: FileTree = (() => {
         'zara_hollis.md': '# Zara Hollis\n\nPrestamista a la que Kael debe dinero.\n',
         'capataz_vortex.md': '# Capataz de Vortex\n\nSupervisa el muelle 7 con mano dura.\n',
     };
+    // dron_aduanas carries a real CA/PV statblock (fenced, Spanish labels) so
+    // the ActRunner's "Añadir al combate" control appears; cobrador_tetrad is
+    // prose-only (no statblock) to prove the button is threat-AND-statblock
+    // gated. The Depredador-style format is mirrored from the real fichas.
     ((mundo.lugares as FileTree).porto_verne as FileTree).threats = {
-        'dron_aduanas.md': '# Dron de aduanas\n\nEscanea el casco al acoplar. Nivel 1.\n',
+        'dron_aduanas.md': `# Dron de aduanas
+
+Escanea el casco al acoplar. Nivel 1.
+
+\`\`\`
+DRON DE ADUANAS                                  CRIATURA 1
+PEQUEÑO CONSTRUCTO
+Perception +7
+
+CA 16; Fort +5, Ref +8, Will +4
+PV 22
+Debilidad: electricidad 3
+
+ATAQUES
+Cuerpo a cuerpo [1 acción] pinza +8, Daño 1d6+2 contundente
+\`\`\`
+`,
         'cobrador_tetrad.md': '# Cobrador del Tetrad\n\nBusca al mensajero del paquete.\n',
     };
     // Shop system: a tiendas/ subfolder inside the porto_verne place folder.

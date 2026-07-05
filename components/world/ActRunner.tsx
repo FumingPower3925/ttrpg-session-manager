@@ -67,12 +67,15 @@ import {
   SUPPORT_DOC_CATEGORY_ORDER,
   type SupportDocCategory,
 } from '@/lib/world/supportDocCategory';
+import { hasStatblock, parseThreatStatblock } from '@/lib/world/threatStatblock';
 import {
   ChevronDown,
   FileText,
   Grid3x3,
   Image as ImageIcon,
   Map as MapIcon,
+  Minus,
+  Plus,
   Swords,
   User,
   X,
@@ -129,6 +132,15 @@ export function ActRunner({ config, placeName, fsm, onClose, onActChange }: ActR
   const [currentTab, setCurrentTab] = useState('plan');
   const [previousTab, setPreviousTab] = useState('plan');
   const [planContent, setPlanContent] = useState<string | null>(null);
+  // Threat -> combat handoff: bumping this signal appends prefilled NPC rows to
+  // the mounted InitiativeTracker (the "Añadir al combate" one-tap add). The
+  // toast is a brief confirmation of what got added.
+  const [addCombatants, setAddCombatants] = useState<{
+    nonce: number;
+    combatants: { name: string; maxHP: number; defense: number }[];
+  }>({ nonce: 0, combatants: [] });
+  const [combatToast, setCombatToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Content/image caches live in refs so loadContent/loadImageUrl stay stable
   // (play keeps them in state; the runner avoids the identity churn).
   const contentCacheRef = useRef<Map<string, string>>(new Map());
@@ -242,6 +254,36 @@ abrir el acto.`;
     [currentTab]
   );
 
+  // A threat pane's "Añadir al combate" click lands here: parse the doc, build
+  // N combatants, bump the tracker's addCombatants signal, flash a toast. The
+  // fallback name keeps the row usable even if the ficha has no parseable name.
+  const handleAddToCombat = useCallback(
+    (content: string, fallbackName: string, count: number) => {
+      const parsed = parseThreatStatblock(content);
+      if (parsed.ca == null || parsed.pv == null) return;
+      const base = parsed.nombre?.trim() || fallbackName;
+      const n = Math.max(1, Math.min(8, Math.floor(count) || 1));
+      const combatants = Array.from({ length: n }, (_, i) => ({
+        name: n > 1 ? `${base} #${i + 1}` : base,
+        maxHP: parsed.pv as number,
+        defense: parsed.ca as number,
+      }));
+      setAddCombatants((prev) => ({ nonce: prev.nonce + 1, combatants }));
+
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setCombatToast(`${base} ×${n} → combate`);
+      toastTimerRef.current = setTimeout(() => setCombatToast(null), 2600);
+    },
+    []
+  );
+
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    },
+    []
+  );
+
   /** "bram_oskar.md" -> "bram oskar" — tabs read as names, not filenames. */
   const docTabLabel = (name: string): string =>
     name.replace(/\.md$/i, '').replace(/_/g, ' ');
@@ -324,7 +366,18 @@ abrir el acto.`;
       <InitiativeTracker
         playerCharacters={config.playerCharacters}
         pcStats={config.pcStats}
+        addCombatants={addCombatants}
       />
+
+      {combatToast && (
+        <div
+          data-combat-toast
+          role="status"
+          className="fixed top-16 left-1/2 z-[60] -translate-x-1/2 rounded-md border bg-background px-4 py-2 text-sm font-medium shadow-lg"
+        >
+          {combatToast}
+        </div>
+      )}
 
       {currentPart ? (
         <Tabs
@@ -407,7 +460,12 @@ abrir el acto.`;
                 value={`doc-${index}`}
                 className="m-0 h-full data-[state=active]:flex"
               >
-                <RunnerMarkdown file={doc} loadContent={loadContent} />
+                <RunnerMarkdown
+                  file={doc}
+                  loadContent={loadContent}
+                  isThreat={categorizeSupportDoc(doc.path) === 'amenazas'}
+                  onAddToCombat={handleAddToCombat}
+                />
               </TabsContent>
             ))}
           </div>
@@ -425,9 +483,15 @@ abrir el acto.`;
 function RunnerMarkdown({
   file,
   loadContent,
+  isThreat = false,
+  onAddToCombat,
 }: {
   file: FileReference;
   loadContent: (file: FileReference) => Promise<string>;
+  /** True when this doc lives in a threats/ folder (category 'amenazas'). */
+  isThreat?: boolean;
+  /** Adds N combatants parsed from `content` to the initiative tracker. */
+  onAddToCombat?: (content: string, fallbackName: string, count: number) => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
 
@@ -450,14 +514,100 @@ function RunnerMarkdown({
     );
   }
 
-  if (isActFormat(content)) {
-    return <ActPanels content={content} />;
-  }
+  // A threat ficha with a parseable CA/PV statblock gets a one-tap add-to-combat
+  // header above the body. Non-threat docs and threat docs without a statblock
+  // render exactly as before (no header).
+  const showAdd = isThreat && onAddToCombat !== undefined && hasStatblock(content);
 
-  return (
+  const body = isActFormat(content) ? (
+    <ActPanels content={content} />
+  ) : (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-4xl p-6">
         <MarkdownViewer content={content} />
+      </div>
+    </div>
+  );
+
+  if (!showAdd) return body;
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <AddToCombatBar
+        content={content}
+        fallbackName={file.name.replace(/\.md$/i, '').replace(/_/g, ' ')}
+        onAddToCombat={onAddToCombat}
+      />
+      <div className="flex min-h-0 flex-1 overflow-hidden">{body}</div>
+    </div>
+  );
+}
+
+/**
+ * The "⚔️ Añadir al combate" header shown above a threat ficha with a statblock.
+ * A 1–8 count stepper (default 1) plus the add button: clicking hands the raw
+ * doc content + the desired count up to ActRunner, which parses + appends the
+ * combatants and flashes a toast.
+ */
+function AddToCombatBar({
+  content,
+  fallbackName,
+  onAddToCombat,
+}: {
+  content: string;
+  fallbackName: string;
+  onAddToCombat: (content: string, fallbackName: string, count: number) => void;
+}) {
+  const [count, setCount] = useState(1);
+  const parsed = parseThreatStatblock(content);
+  const name = parsed.nombre?.trim() || fallbackName;
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/30 px-4 py-2">
+      <span className="text-sm font-medium">{name}</span>
+      {parsed.ca != null && (
+        <span className="text-muted-foreground text-xs">CA {parsed.ca}</span>
+      )}
+      {parsed.pv != null && (
+        <span className="text-muted-foreground text-xs">PV {parsed.pv}</span>
+      )}
+      <div className="ml-auto flex items-center gap-1">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          aria-label="Menos"
+          onClick={() => setCount((c) => Math.max(1, c - 1))}
+        >
+          <Minus className="h-3.5 w-3.5" />
+        </Button>
+        <span
+          data-threat-count
+          className="w-6 text-center text-sm font-medium tabular-nums"
+        >
+          {count}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-8 w-8"
+          aria-label="Más"
+          onClick={() => setCount((c) => Math.min(8, c + 1))}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          data-threat-add
+          className="ml-1 min-h-8"
+          onClick={() => onAddToCombat(content, fallbackName, count)}
+        >
+          <Swords className="h-3.5 w-3.5" />
+          Añadir al combate
+        </Button>
       </div>
     </div>
   );

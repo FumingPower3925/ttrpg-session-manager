@@ -1106,6 +1106,83 @@ async function openPortoVerneRunner(page: import('@playwright/test').Page): Prom
 }
 
 test.describe('World Mode - ActRunner', () => {
+    test('a threat ficha with a statblock adds prefilled combatants to the initiative tracker', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        // Open the Fichas dropdown and pick the statblock threat (dron aduanas).
+        const fichas = runner.locator('[data-fichas-menu]');
+        await fichas.click();
+        await page
+            .locator('[data-slot="dropdown-menu-content"] [data-fichas-item]', {
+                hasText: 'dron aduanas',
+            })
+            .click();
+
+        // The threat pane shows the one-tap add control (parsed CA 16 / PV 22).
+        const addBtn = runner.locator('[data-threat-add]');
+        await expect(addBtn).toBeVisible();
+        await expect(runner).toContainText('CA 16');
+        await expect(runner).toContainText('PV 22');
+
+        // Bump the count stepper to 2, then add to combat.
+        const count = runner.locator('[data-threat-count]');
+        await expect(count).toHaveText('1');
+        await runner.getByRole('button', { name: 'Más' }).click();
+        await expect(count).toHaveText('2');
+        await addBtn.click();
+
+        // A confirmation toast names the creature and the count.
+        await expect(page.locator('[data-combat-toast]')).toContainText('×2 → combate');
+
+        // Open the initiative tracker (hover its collapsed toggle) and assert two
+        // rows named after the creature, with the parsed HP/AC prefilled (not 0).
+        await page.locator('[data-initiative-toggle]').hover();
+        await expect(page.getByText('Initiative')).toBeVisible();
+        // #1 also appears in the "Current Turn" header; #2 only as a row. Both
+        // prove the two de-duped combatants landed.
+        await expect(page.getByText('Dron de aduanas #1', { exact: true }).first()).toBeVisible();
+        await expect(page.getByText('Dron de aduanas #2', { exact: true }).first()).toBeVisible();
+        // Parsed maxHP shows in each HP readout (22/22), proving it is not 0.
+        await expect(page.getByText('22/22').first()).toBeVisible();
+        await expect(page.getByText('22/22')).toHaveCount(2);
+    });
+
+    test('a threat ficha without a statblock shows no add-to-combat control', async ({ page }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN_CON_ESTADO);
+        await openWorldViaOPFS(page);
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        const fichas = runner.locator('[data-fichas-menu]');
+        await fichas.click();
+        // cobrador_tetrad is prose-only -> no CA/PV -> no button.
+        await page
+            .locator('[data-slot="dropdown-menu-content"] [data-fichas-item]', {
+                hasText: 'cobrador tetrad',
+            })
+            .click();
+        await expect(runner.getByText('Busca al mensajero del paquete')).toBeVisible();
+        await expect(runner.locator('[data-threat-add]')).toHaveCount(0);
+
+        // And a non-threat ficha (a character) never shows it either. Wait for the
+        // menu to fully close before reopening (Radix toggles a mid-close click).
+        await expect(page.locator('[data-slot="dropdown-menu-content"]')).toHaveCount(0);
+        await fichas.click();
+        await page
+            .locator('[data-slot="dropdown-menu-content"] [data-fichas-item]', {
+                hasText: 'zara hollis',
+            })
+            .click();
+        await expect(runner.locator('[data-threat-add]')).toHaveCount(0);
+    });
+
     test('Jugar opens the 3-panel act renderer and Cerrar returns to the cockpit', async ({ page }) => {
         // No estado fixture on purpose: viewing prep without a session is legit.
         await page.goto('/world');
