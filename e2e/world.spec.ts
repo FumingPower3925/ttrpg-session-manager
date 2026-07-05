@@ -1297,6 +1297,58 @@ test.describe('World Mode - ActRunner', () => {
         await expect(gmSectionNote).toBeVisible();
     });
 
+    // ── Reto tracker — skill-challenge success/fail counter on a :::accion ──
+    //
+    // acto1_regreso.md's "Localizar a Kael Voss" accion carries
+    // `reto: 4 exitos / 3 fallos`, so its ActionCard renders a tappable tracker.
+    test('reto tracker: taps count successes to SUPERADO and no tracker without reto', async ({
+        page,
+    }) => {
+        await page.goto('/world');
+        await materializeIntoOPFS(page, MUNDO_CAMPAIGN);
+        await openWorldViaOPFS(page);
+
+        await openPortoVerneRunner(page);
+        const runner = page.locator('[data-act-runner]');
+
+        // The Kael accion (section 1) is visible by default with its tracker.
+        const tracker = runner.locator('[data-reto-tracker]');
+        await expect(tracker).toBeVisible();
+        // 4 success pips + 3 fail pips + the "0/4 · 0/3" readout.
+        await expect(tracker.locator('[data-reto-exito]')).toHaveCount(4);
+        await expect(tracker.locator('[data-reto-fallo]')).toHaveCount(3);
+        const readout = tracker.locator('[data-reto-readout]');
+        await expect(readout).toContainText('éxitos 0/4');
+        await expect(readout).toContainText('fallos 0/3');
+        await expect(readout).not.toContainText('SUPERADO');
+
+        // Tap the 4th success pip -> 4/4 and SUPERADO shows.
+        await tracker.locator('[data-reto-exito="4"]').click();
+        await expect(readout).toContainText('éxitos 4/4');
+        await expect(readout).toContainText('SUPERADO');
+
+        // Tap the 2nd fail pip -> fallos 2/3 (below the 3 threshold, no FALLADO).
+        await tracker.locator('[data-reto-fallo="2"]').click();
+        await expect(readout).toContainText('fallos 2/3');
+        await expect(readout).not.toContainText('FALLADO');
+        // Tap the 3rd fail pip -> 3/3 FALLADO.
+        await tracker.locator('[data-reto-fallo="3"]').click();
+        await expect(readout).toContainText('fallos 3/3');
+        await expect(readout).toContainText('FALLADO');
+
+        // Unfill: tapping the current-topmost success pip (4th) drops to 3/4.
+        await tracker.locator('[data-reto-exito="4"]').click();
+        await expect(readout).toContainText('éxitos 3/4');
+        await expect(readout).not.toContainText('SUPERADO');
+
+        // The reto tracker is GM bookkeeping: Vista jugador hides it (it lives in
+        // the accion right-rail the toggle removes).
+        const toggle = runner.locator('[data-player-view]');
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await expect(runner.locator('[data-reto-tracker]')).toHaveCount(0);
+    });
+
     test('a node place whose first act is acto2 auto-selects it (no phantom acto1)', async ({
         page,
     }) => {

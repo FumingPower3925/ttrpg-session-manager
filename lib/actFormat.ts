@@ -23,6 +23,14 @@ export interface ActBlock {
   actScope: boolean;
   name?: string;
   fields?: ActField[];
+  /**
+   * Optional skill-challenge target declared by a `reto:` field on a :::accion
+   * (e.g. "4 exitos / 3 fallos"). When present the ActionCard renders a tappable
+   * success/fail tracker. Absent → no counter (current behavior unchanged). A
+   * malformed `reto:` is ignored (never throws), so this stays undefined.
+   */
+  exitosMeta?: number;
+  fallosMeta?: number;
 }
 
 export type ActItem =
@@ -65,6 +73,23 @@ function parseAttrs(raw: string | undefined): Record<string, string> {
     if (k) attrs[k] = v ?? 'true';
   }
   return attrs;
+}
+
+// Tolerantly parses a `reto:` value into its success/fail targets. Accepts:
+//   "4 exitos / 3 fallos", "4/3", "4 exitos antes de 3 fallos" (accents/case
+//   ignored, extra words allowed). Returns undefined when it can't extract two
+//   positive integers — a malformed reto is silently ignored (no counter).
+export function parseReto(
+  value: string | undefined
+): { exitosMeta: number; fallosMeta: number } | undefined {
+  if (!value) return undefined;
+  const nums = value.match(/\d+/g);
+  if (!nums || nums.length < 2) return undefined;
+  const exitosMeta = Number(nums[0]);
+  const fallosMeta = Number(nums[1]);
+  if (!Number.isInteger(exitosMeta) || exitosMeta <= 0) return undefined;
+  if (!Number.isInteger(fallosMeta) || fallosMeta <= 0) return undefined;
+  return { exitosMeta, fallosMeta };
 }
 
 function parseAccion(body: string): { name?: string; fields: ActField[] } {
@@ -146,6 +171,13 @@ export function parseAct(content: string): ActModel {
         const parsed = parseAccion(body);
         block.name = parsed.name;
         block.fields = parsed.fields;
+        // Optional skill-challenge target. A malformed reto is ignored (parseReto
+        // returns undefined), leaving the meta absent so no counter renders.
+        const reto = parseReto(parsed.fields.find((f) => f.key === 'reto')?.value);
+        if (reto) {
+          block.exitosMeta = reto.exitosMeta;
+          block.fallosMeta = reto.fallosMeta;
+        }
       }
       if (block.actScope) model.actBlocks.push(block);
       else current!.content.push({ kind: 'block', block });

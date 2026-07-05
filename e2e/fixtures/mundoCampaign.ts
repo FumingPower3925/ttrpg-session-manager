@@ -237,6 +237,7 @@ capataz de Vortex. El capataz se marcha si los PJ se acercan.
 **Localizar a Kael Voss**
 - habilidad: Percepcion o Sociedad
 - cd: 15
+- reto: 4 exitos / 3 fallos
 - exito: encuentran a Kael antes de que el capataz lo eche del muelle
 - fallo: pierden una hora; Kael los encuentra a ellos, molesto
 :::

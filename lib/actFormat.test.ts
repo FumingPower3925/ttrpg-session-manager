@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 import { test, expect, describe } from 'bun:test';
-import { isActFormat, parseAct, visibleBlocks, sectionBlocks, ActSection } from './actFormat';
+import { isActFormat, parseAct, parseReto, visibleBlocks, sectionBlocks, ActSection } from './actFormat';
 
 const SAMPLE = `# ACTO TEST
 ## Sesión 7 — Relanzamiento
@@ -102,6 +102,62 @@ describe('scope: all three node actions visible across section 5', () => {
     const s2a = byLabel('2A');
     const actions = visibleBlocks(m, s2a.id).filter((b) => b.type === 'accion');
     expect(actions.map((a) => a.name)).toEqual(['Negociar con Kael']); // not Bram (sibling)
+  });
+});
+
+describe('reto: skill-challenge target parsing', () => {
+  test('accepts the canonical "<N> exitos / <M> fallos" form', () => {
+    expect(parseReto('4 exitos / 3 fallos')).toEqual({ exitosMeta: 4, fallosMeta: 3 });
+  });
+  test('accepts accents and casing', () => {
+    expect(parseReto('4 Éxitos / 3 Fallos')).toEqual({ exitosMeta: 4, fallosMeta: 3 });
+  });
+  test('accepts the bare "<N>/<M>" form', () => {
+    expect(parseReto('3/2')).toEqual({ exitosMeta: 3, fallosMeta: 2 });
+  });
+  test('accepts the "<N> exitos antes de <M> fallos" prose form', () => {
+    expect(parseReto('3 exitos antes de 2 fallos')).toEqual({ exitosMeta: 3, fallosMeta: 2 });
+  });
+  test('ignores malformed retos (returns undefined, never throws)', () => {
+    expect(parseReto('muchos exitos')).toBeUndefined();
+    expect(parseReto('4 exitos')).toBeUndefined(); // only one number
+    expect(parseReto('0 / 3')).toBeUndefined(); // non-positive
+    expect(parseReto('4 / 0')).toBeUndefined();
+    expect(parseReto('')).toBeUndefined();
+    expect(parseReto(undefined)).toBeUndefined();
+  });
+
+  test('absent reto leaves the ActionBlock meta undefined (behavior unchanged)', () => {
+    const beatA = sectionBlocks(byLabel('5')).find((b) => b.name === 'Beat A')!;
+    expect(beatA.exitosMeta).toBeUndefined();
+    expect(beatA.fallosMeta).toBeUndefined();
+  });
+
+  test('a :::accion carrying reto: exposes exitosMeta/fallosMeta on the block', () => {
+    const model = parseAct(`# T
+## 1. Reto
+:::accion
+**Desafio**
+- check: Athletics DC 15
+- reto: 4 exitos / 3 fallos
+:::
+`);
+    const block = sectionBlocks(model.sections[0]).find((b) => b.type === 'accion')!;
+    expect(block.exitosMeta).toBe(4);
+    expect(block.fallosMeta).toBe(3);
+  });
+
+  test('a malformed rez: on a :::accion leaves the block meta absent (no throw)', () => {
+    const model = parseAct(`# T
+## 1. Reto
+:::accion
+**Desafio**
+- reto: sin numeros
+:::
+`);
+    const block = sectionBlocks(model.sections[0]).find((b) => b.type === 'accion')!;
+    expect(block.exitosMeta).toBeUndefined();
+    expect(block.fallosMeta).toBeUndefined();
   });
 });
 

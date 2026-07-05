@@ -46,7 +46,87 @@ const FIELD_CLASS: Record<string, string> = {
   nota: 'text-muted-foreground',
 };
 
+// Skill-challenge tracker: N success + M fail pips the GM taps to count a
+// "X éxitos antes de Y fallos" beat mid-scene. Stepper feel — tapping the k-th
+// pip sets the count to k; tapping the current-topmost filled pip unfills it.
+// Purely local GM bookkeeping (no store/journal coupling); it lives inside the
+// :::accion card, which the Vista jugador toggle already hides from players.
+function RetoTracker({ exitosMeta, fallosMeta }: { exitosMeta: number; fallosMeta: number }) {
+  const [exitos, setExitos] = useState(0);
+  const [fallos, setFallos] = useState(0);
+
+  // Tap pip index p (1-based): set to p, or unfill to p-1 if it was the top pip.
+  const step = (p: number, cur: number, set: (n: number) => void) => set(cur === p ? p - 1 : p);
+
+  const superado = exitos >= exitosMeta;
+  const fallado = fallos >= fallosMeta;
+
+  const pipBtn = (
+    filled: boolean,
+    onColor: string,
+    onTap: () => void,
+    kind: 'exito' | 'fallo',
+    idx: number
+  ) => (
+    <button
+      key={`${kind}-${idx}`}
+      type="button"
+      data-reto-exito={kind === 'exito' ? idx + 1 : undefined}
+      data-reto-fallo={kind === 'fallo' ? idx + 1 : undefined}
+      aria-label={`${kind === 'exito' ? 'Éxito' : 'Fallo'} ${idx + 1}`}
+      aria-pressed={filled}
+      onClick={onTap}
+      className={`h-5 w-5 rounded-full border transition-colors ${
+        filled ? onColor : 'bg-transparent border-muted-foreground/40'
+      }`}
+    />
+  );
+
+  return (
+    <div data-reto-tracker className="rounded-md border border-dashed bg-muted/25 px-2.5 py-2 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground w-10">Éxito</span>
+        {Array.from({ length: exitosMeta }, (_, i) =>
+          pipBtn(
+            i < exitos,
+            'bg-emerald-500 border-emerald-600 dark:bg-emerald-400 dark:border-emerald-300',
+            () => step(i + 1, exitos, setExitos),
+            'exito',
+            i
+          )
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground w-10">Fallo</span>
+        {Array.from({ length: fallosMeta }, (_, i) =>
+          pipBtn(
+            i < fallos,
+            'bg-rose-500 border-rose-600 dark:bg-rose-400 dark:border-rose-300',
+            () => step(i + 1, fallos, setFallos),
+            'fallo',
+            i
+          )
+        )}
+      </div>
+      <div data-reto-readout className="text-xs text-muted-foreground tabular-nums">
+        éxitos {exitos}/{exitosMeta} · fallos {fallos}/{fallosMeta}
+        {superado && (
+          <span className="ml-1.5 font-semibold text-emerald-600 dark:text-emerald-400">▶ SUPERADO</span>
+        )}
+        {fallado && (
+          <span className="ml-1.5 font-semibold text-rose-600 dark:text-rose-400">▶ FALLADO</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ActionCard({ block }: { block: ActBlock }) {
+  const hasReto = block.exitosMeta !== undefined && block.fallosMeta !== undefined;
+  // The reto: field drives the tracker (below), so don't also list it as a raw
+  // field row. Only filter when it actually parsed into a tracker — a malformed
+  // reto still shows as a plain field so the GM can see/fix it.
+  const fields = hasReto ? block.fields?.filter((f) => f.key !== 'reto') : block.fields;
   return (
     <div className="rounded-lg border bg-card p-3 text-sm space-y-2">
       {block.name && (
@@ -55,9 +135,9 @@ function ActionCard({ block }: { block: ActBlock }) {
           <span>{block.name}</span>
         </div>
       )}
-      {block.fields && block.fields.length > 0 ? (
+      {fields && fields.length > 0 ? (
         <dl className="space-y-1.5">
-          {block.fields.map((f, i) => (
+          {fields.map((f, i) => (
             <div key={i} className="grid grid-cols-[5.5rem_1fr] gap-x-2">
               <dt className="text-[10px] uppercase tracking-wide text-muted-foreground pt-1">
                 {FIELD_LABEL[f.key] ?? f.key}
@@ -68,6 +148,9 @@ function ActionCard({ block }: { block: ActBlock }) {
         </dl>
       ) : (
         <Md>{block.body}</Md>
+      )}
+      {hasReto && (
+        <RetoTracker exitosMeta={block.exitosMeta!} fallosMeta={block.fallosMeta!} />
       )}
     </div>
   );
@@ -312,7 +395,9 @@ export function ActPanels({
           </div>
           <div className="overflow-y-auto p-3 space-y-3">
             {actionBlocks.length ? (
-              actionBlocks.map((b, i) => <ActionCard key={i} block={b} />)
+              // Key by the active section so the per-card reto tracker state
+              // resets when the GM switches acts/parts (not reused by index).
+              actionBlocks.map((b, i) => <ActionCard key={`${activeId ?? 'x'}-${i}`} block={b} />)
             ) : (
               <p className="text-muted-foreground text-xs">— sin acciones para esta sección —</p>
             )}
