@@ -290,6 +290,7 @@ import { readEntityFromUrl, writeEntityToUrl } from '@/lib/world/deepLink';
 import {
   ancestryChain,
   childNodeWithin,
+  placeHasPlano,
   sectorNodeFor,
   tierTargetFor,
 } from '@/lib/world/worldNav';
@@ -298,6 +299,7 @@ import type { BreadcrumbItem, MapViewport } from '@/components/world/StarMap';
 import type { FileReference } from '@/types';
 import { SectorView, WORLD_SCALE } from '@/components/world/SectorView';
 import { SystemView, systemFitRadius } from '@/components/world/SystemView';
+import { PlaceView, placeFitRadius } from '@/components/world/PlaceView';
 import { SiteList } from '@/components/world/SiteList';
 import { PartyStatusBar } from '@/components/world/PartyStatusBar';
 import { EntityPanel } from '@/components/world/EntityPanel';
@@ -539,6 +541,7 @@ export default function WorldPage() {
 
   const tier = useUiStore((s) => s.tier);
   const focusSystemId = useUiStore((s) => s.focusSystemId);
+  const focusPlaceId = useUiStore((s) => s.focusPlaceId);
   const siteListId = useUiStore((s) => s.siteListId);
   const selectedEntityId = useUiStore((s) => s.selectedEntityId);
   const showUnknown = useUiStore((s) => s.showUnknown);
@@ -687,7 +690,7 @@ export default function WorldPage() {
   const mapWrapRef = useRef<HTMLDivElement>(null);
   const fittedRef = useRef<{
     model: WorldModel | null;
-    tier: 'sector' | 'system';
+    tier: 'sector' | 'system' | 'place';
     focus: string | null;
   }>({ model: null, tier: 'sector', focus: null });
   const deepLinkDoneRef = useRef(false);
@@ -782,7 +785,10 @@ export default function WorldPage() {
     actions.setPanelTab('entidad');
     const target = tierTargetFor(currentModel, id);
     if (!target) return; // non-spatial entity — selection is enough
-    if (target.tier === 'system' && target.focusSystemId) {
+    if (target.tier === 'place' && target.focusPlaceId && target.focusSystemId) {
+      // A POI: open the parent place's spatial Plano with the POI selected.
+      actions.focusPlace(target.focusPlaceId, target.focusSystemId);
+    } else if (target.tier === 'system' && target.focusSystemId) {
       actions.focusSystem(target.focusSystemId);
     } else {
       actions.backToSector();
@@ -790,7 +796,13 @@ export default function WorldPage() {
     if (target.siteListId) actions.openSiteList(target.siteListId);
   }, []);
 
-  /** Drill INTO an entity (dblclick / Entrar): sistema -> system tier; place with children -> its SiteList. */
+  /**
+   * Drill INTO an entity (dblclick / Entrar):
+   *   - sistema                         -> system tier
+   *   - place with >=1 poi-coord child  -> spatial Plano (place tier)
+   *   - place with children, none poi   -> non-spatial SiteList (fallback)
+   *   - POI / leaf (no children)        -> select only (already done above)
+   */
   const enterEntity = useCallback((id: string) => {
     const currentModel = useWorldStore.getState().model;
     const actions = useUiStore.getState().actions;
@@ -803,16 +815,26 @@ export default function WorldPage() {
       actions.focusSystem(id);
       return;
     }
-    if ((currentModel.childrenOf.get(id)?.length ?? 0) > 0) {
-      // Make sure the spatial tier behind the list matches the place first.
-      const target = tierTargetFor(currentModel, id);
-      if (target?.tier === 'system' && target.focusSystemId) {
-        actions.focusSystem(target.focusSystemId);
-      } else if (target) {
-        actions.backToSector();
-      }
-      actions.openSiteList(id);
+    if ((currentModel.childrenOf.get(id)?.length ?? 0) === 0) return; // leaf/POI: selection is enough
+    // The place's own map placement fixes the sistema backdrop behind it.
+    const target = tierTargetFor(currentModel, id);
+    if (placeHasPlano(currentModel, id) && target?.focusSystemId) {
+      // Spatial Plano: pin the place AND its parent sistema.
+      actions.focusPlace(id, target.focusSystemId);
+      return;
     }
+    // SiteList fallback: match the spatial tier behind the list first so the
+    // list floats over the right backdrop (never jumping the map all the way
+    // out to sector). A POI with non-poi children has a 'place' target: keep
+    // its parent's Plano behind the list.
+    if (target?.tier === 'place' && target.focusPlaceId && target.focusSystemId) {
+      actions.focusPlace(target.focusPlaceId, target.focusSystemId);
+    } else if (target?.tier === 'system' && target.focusSystemId) {
+      actions.focusSystem(target.focusSystemId);
+    } else if (target) {
+      actions.backToSector();
+    }
+    actions.openSiteList(id);
   }, []);
 
   /** Plain selection (map/list click): also brings the Entidad tab forward. */
@@ -1778,14 +1800,31 @@ export default function WorldPage() {
 
   // ── Derived map data ──────────────────────────────────────────────────────
 
-  /** Focused sistema at the system tier; a stale/invalid focus degrades to the sector tier. */
+  /**
+   * Focused place at the 'place' tier (spatial Plano); a stale/missing/invalid
+   * focusPlaceId degrades to the system (or sector) tier — never a blank map.
+   */
+  const focusPlace = useMemo(() => {
+    if (!model || tier !== 'place' || !focusPlaceId) return null;
+    const entity = model.entidades.get(focusPlaceId);
+    return isPlace(entity) ? entity : null;
+  }, [model, tier, focusPlaceId]);
+
+  /**
+   * Focused sistema at the system OR place tier; a stale/invalid focus degrades
+   * to the sector tier. At the place tier it is the Plano's backdrop sistema
+   * (kept for the breadcrumb and the system-tier fallback).
+   */
   const focusSistema = useMemo(() => {
-    if (!model || tier !== 'system' || !focusSystemId) return null;
+    if (!model || (tier !== 'system' && tier !== 'place') || !focusSystemId) return null;
     const entity = model.entidades.get(focusSystemId);
     return entity && entity.tipo === 'sistema' ? (entity as SystemEntity) : null;
   }, [model, tier, focusSystemId]);
 
-  const activeTier: 'sector' | 'system' = focusSistema ? 'system' : 'sector';
+  // A place tier that failed to resolve its place degrades: to system if the
+  // backdrop sistema is valid, else sector (mirrors the persistence degrade).
+  const activeTier: 'sector' | 'system' | 'place' =
+    tier === 'place' && focusPlace ? 'place' : focusSistema ? 'system' : 'sector';
 
   /** Direct children of the focused sistema (childrenOf is orbita-sorted). */
   const systemChildren = useMemo(() => {
@@ -1794,6 +1833,14 @@ export default function WorldPage() {
       .map((id) => model.entidades.get(id))
       .filter(isPlace);
   }, [model, focusSistema]);
+
+  /** Direct children of the focused place (POIs + any unplaced children). */
+  const placeChildren = useMemo(() => {
+    if (!model || !focusPlace) return [];
+    return (model.childrenOf.get(focusPlace.id) ?? [])
+      .map((id) => model.entidades.get(id))
+      .filter(isPlace);
+  }, [model, focusPlace]);
 
   /** Deep-space lugares: own coordinates, no parent — sector-tier nodes. */
   const deepSpace = useMemo(
@@ -1916,11 +1963,15 @@ export default function WorldPage() {
    */
   const partyMapNodeId = useMemo(() => {
     if (!model || !ubicacion) return null;
+    if (activeTier === 'place' && focusPlace) {
+      // Plano: marker on the focused place itself or its direct POI child.
+      return childNodeWithin(model, ubicacion, focusPlace.id);
+    }
     if (activeTier === 'system' && focusSistema) {
       return childNodeWithin(model, ubicacion, focusSistema.id);
     }
     return sectorNodeFor(model, ubicacion);
-  }, [model, ubicacion, activeTier, focusSistema]);
+  }, [model, ubicacion, activeTier, focusSistema, focusPlace]);
 
   // ── M3: Mover candidates + recents ────────────────────────────────────────
 
@@ -2245,11 +2296,24 @@ export default function WorldPage() {
     setViewport(next);
     const currentModel = useWorldStore.getState().model;
     const ui = useUiStore.getState();
-    const isSystem =
-      ui.tier === 'system' &&
+    // Place tier (valid Plano) keys under place:<id>; a valid focused sistema
+    // under system:<id>; anything else (stale focus) commits under 'sector',
+    // matching what the user actually saw.
+    let key = 'sector';
+    if (
+      ui.tier === 'place' &&
+      ui.focusPlaceId !== null &&
+      isPlace(currentModel?.entidades.get(ui.focusPlaceId))
+    ) {
+      key = `place:${ui.focusPlaceId}`;
+    } else if (
+      (ui.tier === 'system' || ui.tier === 'place') &&
       ui.focusSystemId !== null &&
-      currentModel?.entidades.get(ui.focusSystemId)?.tipo === 'sistema';
-    ui.actions.rememberViewport(isSystem ? `system:${ui.focusSystemId}` : 'sector', next);
+      currentModel?.entidades.get(ui.focusSystemId)?.tipo === 'sistema'
+    ) {
+      key = `system:${ui.focusSystemId}`;
+    }
+    ui.actions.rememberViewport(key, next);
   }, []);
 
   // ── Fit-to-content viewport (per model AND per spatial tier) ─────────────
@@ -2274,12 +2338,21 @@ export default function WorldPage() {
     // While collapsed the wrapper is the slim chip, not the map — defer the
     // fit until the map is expanded (mapCollapsed persists across navigations).
     if (mapCollapsed) return;
-    const focus = focusSistema?.id ?? null;
+    // `focus` scopes the fit AND the viewport key: the place at the Plano
+    // tier, otherwise the focused sistema.
+    const focus =
+      activeTier === 'place' ? (focusPlace?.id ?? null) : (focusSistema?.id ?? null);
+    const viewportKey =
+      activeTier === 'place' && focusPlace
+        ? `place:${focusPlace.id}`
+        : focus
+          ? `system:${focus}`
+          : 'sector';
     const fitted = fittedRef.current;
     if (fitted.model === model && fitted.tier === activeTier && fitted.focus === focus) return;
     // A remembered viewport for this tier (persisted gesture commit) beats
     // the computed fit: the GM returns to where they left the map.
-    const remembered = useUiStore.getState().viewports[focus ? `system:${focus}` : 'sector'];
+    const remembered = useUiStore.getState().viewports[viewportKey];
     if (remembered) {
       fittedRef.current = { model, tier: activeTier, focus };
       setViewport({ ...remembered });
@@ -2293,6 +2366,15 @@ export default function WorldPage() {
     // the ResizeObserver retry recomputes with real dimensions.
     if (width < 50 || height < 50) return;
     fittedRef.current = { model, tier: activeTier, focus };
+
+    if (activeTier === 'place' && focusPlace) {
+      // Plano views are centered on (0,0), POIs out to placeFitRadius.
+      const radius = placeFitRadius(placeChildren);
+      const PADDING = 60;
+      const k = Math.min(1.5, Math.max(0.3, (Math.min(width, height) / 2 - PADDING) / radius));
+      setViewport({ x: width / 2, y: height / 2, k });
+      return;
+    }
 
     if (activeTier === 'system' && focusSistema) {
       // System views are centered on (0,0) with rings out to systemFitRadius.
@@ -2333,7 +2415,18 @@ export default function WorldPage() {
       y: height / 2 - ((minY + maxY) / 2) * k,
       k,
     });
-  }, [status, model, activeTier, focusSistema, systemChildren, deepSpace, mapCollapsed, mapSizeRev]);
+  }, [
+    status,
+    model,
+    activeTier,
+    focusSistema,
+    focusPlace,
+    systemChildren,
+    placeChildren,
+    deepSpace,
+    mapCollapsed,
+    mapSizeRev,
+  ]);
 
   // ── Map breadcrumb (Sector / Sistema / Lugar) with clickable pops ────────
   const breadcrumb = useMemo<BreadcrumbItem[]>(() => {
@@ -2344,17 +2437,25 @@ export default function WorldPage() {
       label: model.manifest.nombre || 'Sector',
       onClick: atRoot ? undefined : () => uiActions.backToSector(),
     });
-    if (activeTier === 'system' && focusSistema) {
-      items.push({
-        label: focusSistema.nombre,
-        onClick: siteListPlace ? () => uiActions.closeSiteList() : undefined,
-      });
+    // At the Plano tier the sistema crumb pops back to the system view; at the
+    // system tier it closes an open SiteList (or is inert at the system root).
+    if ((activeTier === 'system' || activeTier === 'place') && focusSistema) {
+      const onClick =
+        activeTier === 'place'
+          ? () => uiActions.backToSystem()
+          : siteListPlace
+            ? () => uiActions.closeSiteList()
+            : undefined;
+      items.push({ label: focusSistema.nombre, onClick });
+    }
+    if (activeTier === 'place' && focusPlace) {
+      items.push({ label: focusPlace.nombre });
     }
     if (siteListPlace) {
       items.push({ label: siteListPlace.nombre });
     }
     return items;
-  }, [model, activeTier, focusSistema, siteListPlace, uiActions]);
+  }, [model, activeTier, focusSistema, focusPlace, siteListPlace, uiActions]);
 
   const handleCopyReport = useCallback(() => {
     const current = useWorldStore.getState().model;
@@ -2550,7 +2651,20 @@ export default function WorldPage() {
                 collapsed={mapCollapsed}
                 onToggleCollapsed={() => uiActions.setMapCollapsed(!mapCollapsed)}
               >
-                {activeTier === 'system' && focusSistema ? (
+                {activeTier === 'place' && focusPlace ? (
+                  <PlaceView
+                    place={focusPlace}
+                    children={placeChildren}
+                    selectedId={selectedEntityId}
+                    partyLocationId={partyMapNodeId}
+                    leadsBadgeCounts={leadsBadgeCounts}
+                    factionColor={factionColor}
+                    showUnknown={showUnknown}
+                    onSelect={selectEntity}
+                    onDrillIn={enterEntity}
+                    onBack={() => uiActions.backToSystem()}
+                  />
+                ) : activeTier === 'system' && focusSistema ? (
                   <SystemView
                     sistema={focusSistema}
                     children={systemChildren}

@@ -868,7 +868,7 @@ export const usePartyStore = create<PartyStoreState>()((set, get) => {
 
 // ── uiStore ─────────────────────────────────────────────────────────────────
 
-export type MapTier = 'sector' | 'system';
+export type MapTier = 'sector' | 'system' | 'place';
 export type PanelTab = 'entidad' | 'pistas' | 'diario' | 'eventos';
 
 /** Map viewport transform — structurally identical to StarMap's MapViewport. */
@@ -888,14 +888,17 @@ export interface UiViewport {
 export interface UiSlice {
     tier: MapTier;
     focusSystemId: string | null;
+    /** Place focused at the 'place' tier (spatial Plano); null at other tiers. */
+    focusPlaceId: string | null;
     siteListId: string | null;
     selectedEntityId: string | null;
     panelTab: PanelTab;
     mapCollapsed: boolean;
     showUnknown: boolean;
     /**
-     * Last gesture-committed map viewport per tier key ('sector' or
-     * 'system:<sistemaId>'). Only gesture ENDS land here (StarMap emits
+     * Last gesture-committed map viewport per tier key ('sector',
+     * 'system:<sistemaId>' or 'place:<placeId>'). Only gesture ENDS land here
+     * (StarMap emits
      * onViewportChange once per finished gesture); mid-gesture transforms
      * stay in StarMap's refs and are ephemeral by design.
      */
@@ -907,8 +910,16 @@ export interface UiState extends UiSlice {
         setTier: (tier: MapTier) => void;
         /** Drill into a sistema: sets the focus AND switches to the 'system' tier. */
         focusSystem: (systemId: string) => void;
+        /**
+         * Drill into a place's spatial Plano: switches to the 'place' tier,
+         * pins both the place and its parent sistema (for the system-tier
+         * backdrop and breadcrumb), and closes any open SiteList.
+         */
+        focusPlace: (placeId: string, systemId: string) => void;
         /** Back out to the sector tier (keeps the last focus for re-entry). */
         backToSector: () => void;
+        /** Back out from the Plano to the system tier (keeps focusSystemId). */
+        backToSystem: () => void;
         /** Open the interior list of a lugar (tier stays where it is). */
         openSiteList: (placeId: string) => void;
         closeSiteList: () => void;
@@ -925,6 +936,7 @@ export interface UiState extends UiSlice {
 const UI_INITIAL: UiSlice = {
     tier: 'sector',
     focusSystemId: null,
+    focusPlaceId: null,
     siteListId: null,
     selectedEntityId: null,
     panelTab: 'entidad',
@@ -981,10 +993,15 @@ export function readPersistedUi(storage: UiStorage | null = sessionStorageOrNull
     if (parsed === null || typeof parsed !== 'object') return {};
     const p = parsed as Record<string, unknown>;
     const out: Partial<UiSlice> = {};
-    if (p.tier === 'sector' || p.tier === 'system') out.tier = p.tier;
-    for (const key of ['focusSystemId', 'siteListId', 'selectedEntityId'] as const) {
+    if (p.tier === 'sector' || p.tier === 'system' || p.tier === 'place') out.tier = p.tier;
+    for (const key of ['focusSystemId', 'focusPlaceId', 'siteListId', 'selectedEntityId'] as const) {
         const value = p[key];
         if (typeof value === 'string' || value === null) out[key] = value;
+    }
+    // A 'place' tier with no focus can't render a Plano — degrade to system
+    // (if a sistema is focused) or sector, so a reload never lands blank.
+    if (out.tier === 'place' && !out.focusPlaceId) {
+        out.tier = out.focusSystemId ? 'system' : 'sector';
     }
     if (
         p.panelTab === 'entidad' ||
@@ -1012,6 +1029,7 @@ export function persistUi(state: UiSlice, storage: UiStorage | null = sessionSto
     const slice: UiSlice = {
         tier: state.tier,
         focusSystemId: state.focusSystemId,
+        focusPlaceId: state.focusPlaceId,
         siteListId: state.siteListId,
         selectedEntityId: state.selectedEntityId,
         panelTab: state.panelTab,
@@ -1035,10 +1053,21 @@ export const useUiStore = create<UiState>()((set) => ({
             set({ tier });
         },
         focusSystem(systemId: string) {
-            set({ tier: 'system', focusSystemId: systemId, siteListId: null });
+            set({ tier: 'system', focusSystemId: systemId, focusPlaceId: null, siteListId: null });
+        },
+        focusPlace(placeId: string, systemId: string) {
+            set({
+                tier: 'place',
+                focusPlaceId: placeId,
+                focusSystemId: systemId,
+                siteListId: null,
+            });
         },
         backToSector() {
-            set({ tier: 'sector', siteListId: null });
+            set({ tier: 'sector', focusPlaceId: null, siteListId: null });
+        },
+        backToSystem() {
+            set({ tier: 'system', focusPlaceId: null, siteListId: null });
         },
         openSiteList(placeId: string) {
             set({ siteListId: placeId });

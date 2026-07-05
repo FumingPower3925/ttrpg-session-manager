@@ -18,6 +18,7 @@ function fakeStorage(initial: Record<string, string> = {}): UiStorage & { data: 
 const SLICE: UiSlice = {
     tier: 'system',
     focusSystemId: 'sistema_verne',
+    focusPlaceId: null,
     siteListId: 'porto_verne',
     selectedEntityId: 'torre_korinth',
     panelTab: 'pistas',
@@ -78,6 +79,60 @@ describe('uiStore persistence (persistUi/readPersistedUi)', () => {
         const storage = fakeStorage();
         persistUi({ ...SLICE, panelTab: 'eventos' }, storage);
         expect(readPersistedUi(storage).panelTab).toBe('eventos');
+    });
+
+    test('round-trips a valid place tier with its focusPlaceId', () => {
+        const storage = fakeStorage();
+        const placeSlice: UiSlice = {
+            ...SLICE,
+            tier: 'place',
+            focusSystemId: 'sistema_verne',
+            focusPlaceId: 'porto_verne',
+            siteListId: null,
+        };
+        persistUi(placeSlice, storage);
+        const out = readPersistedUi(storage);
+        expect(out.tier).toBe('place');
+        expect(out.focusPlaceId).toBe('porto_verne');
+        expect(out.focusSystemId).toBe('sistema_verne');
+    });
+
+    test('a place tier with no focusPlaceId degrades to system (backdrop sistema valid)', () => {
+        const storage = fakeStorage({
+            [UI_PERSIST_KEY]: JSON.stringify({
+                tier: 'place',
+                focusSystemId: 'sistema_verne',
+                focusPlaceId: null,
+            }),
+        });
+        const out = readPersistedUi(storage);
+        expect(out.tier).toBe('system');
+        expect(out.focusPlaceId).toBeNull();
+        expect(out.focusSystemId).toBe('sistema_verne');
+    });
+
+    test('a place tier with neither focus degrades all the way to sector', () => {
+        const storage = fakeStorage({
+            [UI_PERSIST_KEY]: JSON.stringify({
+                tier: 'place',
+                focusSystemId: null,
+                focusPlaceId: null,
+            }),
+        });
+        expect(readPersistedUi(storage).tier).toBe('sector');
+    });
+
+    test('a place tier whose focusPlaceId is the wrong type degrades (id dropped first)', () => {
+        const storage = fakeStorage({
+            [UI_PERSIST_KEY]: JSON.stringify({
+                tier: 'place',
+                focusSystemId: 'sistema_verne',
+                focusPlaceId: 42, // wrong type -> dropped -> then degrade
+            }),
+        });
+        const out = readPersistedUi(storage);
+        expect(out.tier).toBe('system');
+        expect('focusPlaceId' in out).toBe(false);
     });
 
     test('a throwing storage never propagates', () => {

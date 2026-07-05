@@ -8,8 +8,13 @@
  *   - 3 systems with the three knowledge extremes (visitado/rumoreado/desconocido)
  *     plus 1 deep-space node with own coords  -> 4 sector-tier map nodes.
  *   - porto_verne/ is a PLAYABLE place folder (lugar.md + plan/characters/music).
- *   - torre_korinth is a CHILD of porto_verne (en: porto_verne) so the
- *     non-spatial SiteList tier (tier 3) is reachable from the fixture.
+ *   - torre_korinth is a CHILD of porto_verne (en: porto_verne) with NO poi
+ *     coords, so porto_verne stays the non-spatial SiteList tier (tier 3) —
+ *     the Plano fallback + regression case.
+ *   - mercado_de_brasa (in sistema_kessler) has TWO poi-coord children
+ *     (rampa_carga {30,70}, sala_franca {72,40}) so it renders the SPATIAL
+ *     Plano tier (data-tier="place"); an EXTRA child (trastienda) carries NO
+ *     poi to exercise the "sin ubicar" dashed ring.
  *   - PLANTILLAS/pista.md and lugares/_borrador.md must be IGNORED by the scanner.
  *   - lugares/roto.md has invalid YAML -> degraded load + Diagnostico entry.
  *   - estado/ exists but is EMPTY -> the party bar renders the absent-estado hint.
@@ -112,6 +117,39 @@ resumen: Estacion franca entre los asteroides de Kessler, segun los mineros.
 servicios: [repostaje, mercado]
 ---
 Dicen que alli se compra de todo y no se pregunta nada.
+`,
+            'rampa_carga.md': `---
+tipo: estructura
+nombre: Rampa de Carga
+en: mercado_de_brasa
+conocimiento: visitado
+poi: {x: 30, y: 70}
+etiquetas: [muelles]
+resumen: Rampa principal de descarga de la estacion franca.
+---
+Un pasillo de grúas y contenedores donde nadie hace preguntas.
+`,
+            'sala_franca.md': `---
+tipo: estructura
+nombre: Sala Franca
+en: mercado_de_brasa
+conocimiento: conocido
+poi: {x: 72, y: 40}
+etiquetas: [mercado]
+servicios: [mercado, contrabando]
+resumen: Salón de trueque de la estacion; se compra de todo.
+---
+Mesas plegables y una barra larga; el corazon comercial de Brasa.
+`,
+            'trastienda.md': `---
+tipo: estructura
+nombre: Trastienda
+en: mercado_de_brasa
+conocimiento: rumoreado
+etiquetas: [oculto]
+resumen: Se rumorea una trastienda sin ubicacion fija en los planos.
+---
+Nadie coincide en donde esta; por eso queda en el anillo "sin ubicar".
 `,
             'nodo_central.md': `---
 tipo: nodo

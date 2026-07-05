@@ -50,6 +50,13 @@ function happyTree(): FileTree {
                     '---\ntipo: estacion\nen: kovar_iii\nconocimiento: rumoreado\nfacciones:\n  - {faccion: consorcio_tetrad, nivel: dominante}\n---\n',
                 'nodo_sigma.md':
                     '---\ntipo: nodo\ncoordenadas: {x: 55, y: 60}\nconocimiento: rumoreado\nacceso: portal\n---\n',
+                // POI child of porto_verne (Plano tier): valid local poi coords.
+                'bar_graviton.md':
+                    '---\ntipo: estructura\nnombre: Bar Graviton\nen: porto_verne\nconocimiento: visitado\npoi: {x: 50, y: 48}\n---\n',
+                // POI-shaped file with a MALFORMED poi: must parse to poi=undefined
+                // silently (poi is optional — no aviso, no error).
+                'muelle_roto.md':
+                    '---\ntipo: estructura\nnombre: Muelle Roto\nen: porto_verne\nconocimiento: conocido\npoi: {x: hola}\n---\n',
                 '_apuntes.md': '---\ntipo: nodo\n---\n',
                 BOCETOS: { 'idea.md': 'boceto suelto' },
                 porto_verne: {
@@ -120,8 +127,10 @@ describe('scanWorldFolder — happy path', () => {
 
         expect(model.sistemas.map((s) => s.id).sort()).toEqual(['sistema_kovar', 'sistema_verne']);
         expect(model.lugares.map((l) => l.id).sort()).toEqual([
+            'bar_graviton',
             'estacion_thal',
             'kovar_iii',
+            'muelle_roto',
             'nodo_sigma',
             'porto_verne',
         ]);
@@ -129,7 +138,7 @@ describe('scanWorldFolder — happy path', () => {
         expect(model.pnjs.map((p) => p.id)).toEqual(['kael_zara']);
         expect(model.pistas.map((p) => p.id).sort()).toEqual(['deuda_kael', 'rumor_sigma']);
         expect(model.tramas.map((t) => t.id)).toEqual(['la_red_despierta']);
-        expect(model.entidades.size).toBe(11);
+        expect(model.entidades.size).toBe(13);
 
         // eventos/estado/diario contents never become entities
         expect(model.entidades.has('viaje_frontera')).toBe(false);
@@ -183,6 +192,23 @@ describe('scanWorldFolder — happy path', () => {
         expect(trama.estadoTrama).toBe('activa');
         expect(trama.reloj).toEqual({ actual: 1, max: 6 });
         expect(trama.lugaresClave).toEqual(['porto_verne', 'nodo_sigma']);
+    });
+
+    test('parses poi: valid coords land on the place; malformed poi is silently dropped', async () => {
+        const model = await scanWorldFolder(makeHandle('campaign', happyTree()));
+
+        const bar = model.entidades.get('bar_graviton') as PlaceEntity;
+        expect(bar.poi).toEqual({ x: 50, y: 48 });
+        expect(bar.en).toBe('porto_verne');
+
+        // Malformed poi -> undefined, and NOT a validation problema (poi is optional).
+        const roto = model.entidades.get('muelle_roto') as PlaceEntity;
+        expect(roto.poi).toBeUndefined();
+        expect(model.problemas.some((p) => p.archivo === 'mundo/lugares/muelle_roto.md')).toBe(false);
+
+        // A lugar without any poi frontmatter has poi undefined.
+        const kovar = model.entidades.get('kovar_iii') as PlaceEntity;
+        expect(kovar.poi).toBeUndefined();
     });
 
     test('only aviso: out-of-vocabulary servicio', async () => {
@@ -306,7 +332,10 @@ describe('scanWorldFolder — happy path', () => {
         expect(model.childrenOf.get('sistema_kovar')).toEqual(['kovar_iii']);
         expect(model.childrenOf.get('kovar_iii')).toEqual(['estacion_thal']);
         expect(model.childrenOf.get('nodo_sigma')).toEqual([]); // deep-space root
-        expect(model.childrenOf.has('porto_verne')).toBe(false); // leaf, not a root
+        // porto_verne now parents two POI children (bar_graviton + muelle_roto),
+        // so it appears in childrenOf (sorted by id: no orbita).
+        expect(model.childrenOf.get('porto_verne')).toEqual(['bar_graviton', 'muelle_roto']);
+        expect(model.childrenOf.has('estacion_thal')).toBe(false); // leaf, not a root
     });
 
     test('region inheritance walks the en-chain to the nearest ancestor', async () => {
@@ -342,8 +371,9 @@ describe('scanWorldFolder — happy path', () => {
         });
 
         // 1 manifest + 1 estado/grupo.md + 2 sistemas + 1 faccion + 1 pnj + 2 pistas
-        // + 1 trama + 3 lugares + 1 carpeta + 1 tabla de eventos + 1 diario
-        const total = 15;
+        // + 1 trama + 5 lugares (incl. bar_graviton + muelle_roto) + 1 carpeta
+        // + 1 tabla de eventos + 1 diario
+        const total = 17;
         expect(calls.length).toBeGreaterThan(0);
         expect(calls[0]).toEqual([1, total]);
         expect(calls[calls.length - 1]).toEqual([total, total]);
@@ -1455,7 +1485,7 @@ describe('worldStore', () => {
         expect(state.status).toBe('ready');
         expect(state.error).toBeNull();
         expect(state.model).not.toBeNull();
-        expect(state.model!.entidades.size).toBe(11);
+        expect(state.model!.entidades.size).toBe(13);
         expect(state.fs).not.toBeNull();
         expect(state.scanProgress.total).toBeGreaterThan(0);
         expect(state.scanProgress.done).toBe(state.scanProgress.total);
@@ -1497,6 +1527,34 @@ describe('uiStore', () => {
         actions.backToSector();
         expect(useUiStore.getState().tier).toBe('sector');
         expect(useUiStore.getState().focusSystemId).toBe('sistema_verne');
+    });
+
+    test('focusPlace opens the Plano; backToSystem keeps the sistema', () => {
+        const { actions } = useUiStore.getState();
+        actions.focusPlace('porto_verne', 'sistema_verne');
+        let state = useUiStore.getState();
+        expect(state.tier).toBe('place');
+        expect(state.focusPlaceId).toBe('porto_verne');
+        expect(state.focusSystemId).toBe('sistema_verne');
+        expect(state.siteListId).toBeNull();
+
+        actions.backToSystem();
+        state = useUiStore.getState();
+        expect(state.tier).toBe('system');
+        expect(state.focusPlaceId).toBeNull();
+        expect(state.focusSystemId).toBe('sistema_verne');
+    });
+
+    test('focusSystem and backToSector clear a lingering focusPlaceId', () => {
+        const { actions } = useUiStore.getState();
+        actions.focusPlace('porto_verne', 'sistema_verne');
+        actions.focusSystem('sistema_kappa');
+        expect(useUiStore.getState().focusPlaceId).toBeNull();
+
+        actions.focusPlace('rust_harbor', 'sistema_kappa');
+        actions.backToSector();
+        expect(useUiStore.getState().tier).toBe('sector');
+        expect(useUiStore.getState().focusPlaceId).toBeNull();
     });
 
     test('selection, panel tab and toggles', () => {

@@ -8,7 +8,13 @@ import {
     WorldManifest,
     WorldModel,
 } from '@/types/world';
-import { ancestryChain, childNodeWithin, sectorNodeFor, tierTargetFor } from './worldNav';
+import {
+    ancestryChain,
+    childNodeWithin,
+    placeHasPlano,
+    sectorNodeFor,
+    tierTargetFor,
+} from './worldNav';
 
 // ── Hand-built minimal model ────────────────────────────────────────────────
 // sistema_a
@@ -40,13 +46,19 @@ function sistema(id: string): SystemEntity {
 
 function lugar(
     id: string,
-    opts: { en?: string; coordenadas?: { x: number; y: number }; orbita?: number } = {}
+    opts: {
+        en?: string;
+        coordenadas?: { x: number; y: number };
+        orbita?: number;
+        poi?: { x: number; y: number };
+    } = {}
 ): PlaceEntity {
     return {
         ...base(id, 'estacion'),
         en: opts.en,
         coordenadas: opts.coordenadas,
         orbita: opts.orbita,
+        poi: opts.poi,
         servicios: [],
         facciones: [],
         acceso: 'normal',
@@ -76,11 +88,24 @@ function makeModel(): WorldModel {
         lugar('huerfano_g', { en: 'fantasma' }),
         lugar('bucle_h', { en: 'bucle_i' }),
         lugar('bucle_i', { en: 'bucle_h' }),
+        // plano_p is a direct child of sistema_a with poi-coord children ->
+        // it qualifies for a spatial Plano. poi_q1 carries poi; poi_q2 does not.
+        lugar('plano_p', { en: 'sistema_a', orbita: 2 }),
+        lugar('poi_q1', { en: 'plano_p', poi: { x: 30, y: 70 } }),
+        lugar('poi_q2', { en: 'plano_p' }),
     ];
     const facciones = [faccion('faccion_x')];
     const entidades = new Map<string, WorldEntityBase>(
         [...sistemas, ...lugares, ...facciones].map((entity) => [entity.id, entity])
     );
+    // childrenOf: inverse of `en:` (placeHasPlano reads it).
+    const childrenOf = new Map<string, string[]>();
+    for (const l of lugares) {
+        if (l.en === undefined) continue;
+        const arr = childrenOf.get(l.en) ?? [];
+        arr.push(l.id);
+        childrenOf.set(l.en, arr);
+    }
     return {
         manifest: MANIFEST,
         entidades,
@@ -92,7 +117,7 @@ function makeModel(): WorldModel {
         tramas: [],
         tablas: [],
         problemas: [],
-        childrenOf: new Map(),
+        childrenOf,
         estadoGrupo: null,
         diario: [],
         musica: { bgm: [], eventPlaylists: [] },
@@ -176,6 +201,7 @@ describe('tierTargetFor', () => {
         expect(tierTargetFor(model, 'sistema_a')).toEqual({
             tier: 'sector',
             focusSystemId: null,
+            focusPlaceId: null,
             siteListId: null,
         });
     });
@@ -184,6 +210,7 @@ describe('tierTargetFor', () => {
         expect(tierTargetFor(model, 'planet_b')).toEqual({
             tier: 'system',
             focusSystemId: 'sistema_a',
+            focusPlaceId: null,
             siteListId: null,
         });
     });
@@ -192,11 +219,13 @@ describe('tierTargetFor', () => {
         expect(tierTargetFor(model, 'site_c')).toEqual({
             tier: 'system',
             focusSystemId: 'sistema_a',
+            focusPlaceId: null,
             siteListId: 'planet_b',
         });
         expect(tierTargetFor(model, 'room_d')).toEqual({
             tier: 'system',
             focusSystemId: 'sistema_a',
+            focusPlaceId: null,
             siteListId: 'site_c',
         });
     });
@@ -205,6 +234,7 @@ describe('tierTargetFor', () => {
         expect(tierTargetFor(model, 'node_e')).toEqual({
             tier: 'sector',
             focusSystemId: null,
+            focusPlaceId: null,
             siteListId: null,
         });
     });
@@ -213,7 +243,36 @@ describe('tierTargetFor', () => {
         expect(tierTargetFor(model, 'pocket_f')).toEqual({
             tier: 'sector',
             focusSystemId: null,
+            focusPlaceId: null,
             siteListId: 'node_e',
+        });
+    });
+
+    test('a plano-eligible place itself -> system tier (drill-in opens the Plano)', () => {
+        // plano_p sits directly in sistema_a; its OWN placement is the system
+        // view — only its POI children land on the place tier.
+        expect(tierTargetFor(model, 'plano_p')).toEqual({
+            tier: 'system',
+            focusSystemId: 'sistema_a',
+            focusPlaceId: null,
+            siteListId: null,
+        });
+    });
+
+    test('a POI (parent has a Plano) -> place tier focused on the parent place', () => {
+        expect(tierTargetFor(model, 'poi_q1')).toEqual({
+            tier: 'place',
+            focusSystemId: 'sistema_a',
+            focusPlaceId: 'plano_p',
+            siteListId: null,
+        });
+        // An unplaced child of a plano-eligible place STILL routes to the place
+        // tier (it renders on the dashed "sin ubicar" ring, not a SiteList).
+        expect(tierTargetFor(model, 'poi_q2')).toEqual({
+            tier: 'place',
+            focusSystemId: 'sistema_a',
+            focusPlaceId: 'plano_p',
+            siteListId: null,
         });
     });
 
@@ -221,5 +280,23 @@ describe('tierTargetFor', () => {
         expect(tierTargetFor(model, 'faccion_x')).toBeNull();
         expect(tierTargetFor(model, 'huerfano_g')).toBeNull();
         expect(tierTargetFor(model, 'no_existe')).toBeNull();
+    });
+});
+
+// ── placeHasPlano ────────────────────────────────────────────────────────────
+
+describe('placeHasPlano', () => {
+    test('true when a direct child carries poi coords', () => {
+        expect(placeHasPlano(model, 'plano_p')).toBe(true);
+    });
+
+    test('false when children exist but none carry poi (SiteList fallback)', () => {
+        // planet_b -> site_c (no poi) -> keeps the non-spatial SiteList.
+        expect(placeHasPlano(model, 'planet_b')).toBe(false);
+    });
+
+    test('false for a childless place and unknown ids', () => {
+        expect(placeHasPlano(model, 'room_d')).toBe(false);
+        expect(placeHasPlano(model, 'no_existe')).toBe(false);
     });
 });

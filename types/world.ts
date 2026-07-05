@@ -52,6 +52,12 @@ export interface PlaceEntity extends WorldEntityBase {
   coordenadas?: { x: number; y: number };
   /** Orbital ordering within the parent system. */
   orbita?: number;
+  /**
+   * Local floor-plan coordinates (0..100 on each axis) within the parent
+   * place's Plano (spatial place tier). Present only on POI lugares — child
+   * places whose parent renders a spatial interior; absent otherwise.
+   */
+  poi?: { x: number; y: number };
   region?: string;
   servicios: string[];
   facciones: FactionPresence[];

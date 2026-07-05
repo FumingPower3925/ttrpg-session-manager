@@ -918,6 +918,8 @@ function buildLugar(
         en,
         coordenadas,
         orbita: asNumber(data.orbita),
+        // Local Plano coords (0..100); malformed -> undefined, never throws.
+        poi: asCoords(data.poi),
         region: asString(data.region),
         servicios,
         facciones: parseFactionPresences(data.facciones, record.filePath, problemas),

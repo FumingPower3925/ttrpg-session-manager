@@ -132,11 +132,14 @@ test.describe('World Mode - Drill-in & tiers', () => {
         await page.locator('[data-entity-id="sistema_verne"]').dblclick();
         await expect(page.locator('[data-tier="system"]')).toBeAttached();
 
-        // porto_verne contains torre_korinth -> dblclick drills into the list.
+        // porto_verne contains torre_korinth (NO poi) -> dblclick drills into
+        // the non-spatial SiteList (the Plano fallback / regression case).
         await page.locator('[data-entity-id="porto_verne"]').dblclick();
         const list = page.locator('[data-site-list="porto_verne"]');
         await expect(list).toBeVisible();
         await expect(list.locator('[data-site-id="torre_korinth"]')).toBeVisible();
+        // No spatial place tier was entered.
+        await expect(page.locator('[data-tier="place"]')).toHaveCount(0);
         // The duplicate EntityPanel for the SAME lugar is suppressed (the list
         // header already names it); selecting a row brings the panel back.
         await expect(page.locator('[data-entity-panel="porto_verne"]')).toHaveCount(0);
@@ -150,6 +153,45 @@ test.describe('World Mode - Drill-in & tiers', () => {
         await crumbs.getByRole('button', { name: 'Sistema Verne' }).click();
         await expect(page.locator('[data-site-list="porto_verne"]')).toHaveCount(0);
         await expect(page.locator('[data-tier="system"]')).toBeAttached();
+    });
+
+    test('double-clicking a place with POI children opens the spatial Plano (tier 3)', async ({
+        page,
+    }) => {
+        await page.locator('[data-entity-id="sistema_kessler"]').dblclick();
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+        await expect(page.locator('[data-entity-id="mercado_de_brasa"]')).toBeAttached();
+
+        // mercado_de_brasa has poi-coord children -> dblclick renders the Plano.
+        await page.locator('[data-entity-id="mercado_de_brasa"]').dblclick();
+        const plano = page.locator('[data-tier="place"]');
+        await expect(plano).toBeAttached();
+        // No non-spatial SiteList this time.
+        await expect(page.locator('[data-site-list="mercado_de_brasa"]')).toHaveCount(0);
+
+        // POIs render spatially as entity nodes (both placed and "sin ubicar").
+        await expect(plano.locator('[data-entity-id="rampa_carga"]')).toBeAttached();
+        await expect(plano.locator('[data-entity-id="sala_franca"]')).toBeAttached();
+        await expect(plano.locator('[data-entity-id="trastienda"]')).toBeAttached();
+        // The hub glyph carries the place's own id.
+        await expect(plano.locator('[data-entity-id="mercado_de_brasa"]')).toBeAttached();
+
+        // Clicking a POI selects it (panel shows it).
+        await plano.locator('[data-entity-id="rampa_carga"]').click();
+        await expect(page.locator('[data-entity-panel="rampa_carga"]')).toBeVisible();
+
+        // Breadcrumb: Sector -> Sistema Kessler -> Mercado de Brasa. The sistema
+        // crumb pops back to the system tier.
+        const crumbs = page.getByRole('navigation', { name: 'Ruta del mapa' });
+        await expect(crumbs).toContainText('Mercado de Brasa');
+        await crumbs.getByRole('button', { name: 'Sistema Kessler' }).click();
+        await expect(page.locator('[data-tier="place"]')).toHaveCount(0);
+        await expect(page.locator('[data-tier="system"]')).toBeAttached();
+
+        // Back out to the sector tier.
+        await page.getByRole('button', { name: 'Sector Eloran' }).click();
+        await expect(page.locator('[data-tier="system"]')).toHaveCount(0);
+        await expect(page.locator('[data-entity-id]')).toHaveCount(4);
     });
 });
 
